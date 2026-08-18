@@ -1,0 +1,4 @@
+node_modules/
+viewer/public/data.json
+dist/
+.playwright-mcp/
