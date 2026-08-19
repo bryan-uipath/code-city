@@ -107,6 +107,29 @@ Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippe
 - Materials: emissive-heavy, slight transparency; additive-blended edge lines on focus; UnrealBloomPass for glow.
 - HUD: monospace/uppercase, thin 1px cyan (#22d3ee) borders on translucent dark panels, orange (#fa4616) for active states. CSS scanline + vignette overlay for the retro-CRT feel.
 
+## Future ideas (recorded, not scheduled)
+
+- **Debug adapter integration** — attach via DAP and show *live values streaming
+  through the system*: data pulses traveling the import arcs / between buildings
+  as the program runs, watched variables as glowing payloads. The city becomes a
+  runtime instrument, not just a static map.
+- **Coding-agent tours** — let a coding agent (Claude Code etc.) drive the camera
+  and highlights to give a guided *tour of a PR or diff*: "here's the entry
+  point, this interface changed, these three files consume it" — camera
+  waypoints + narration + synchronized highlights. Same mechanism doubles as
+  living documentation of an interaction (agent highlights the interfaces/files
+  involved in a flow while explaining it). Natural extension of the
+  city-as-shared-referent idea: the agent doesn't just read the city, it
+  *presents* with it.
+- **PR / diff focus mode** — first-class "show me this PR" view: isolate the
+  PR's changed files plus their import blast-radius, dim the rest of the city,
+  color by added/modified/deleted, with the diff in the sidebar. Entry points:
+  a PR number, a branch, or `git diff main...`.
+- History-resistant layout (persist per-path layout anchors across analyzer
+  runs — EvoStreets lesson; spatial memory survives re-analysis).
+- Hierarchical edge bundling for coupling arcs; org-level "country" view with
+  two-tier semantic zoom.
+
 ## Project layout
 
 ```
