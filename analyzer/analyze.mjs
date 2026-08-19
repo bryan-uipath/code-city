@@ -16,6 +16,8 @@ const SKIP_DIRS = new Set([
 const RESOLVE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '/index.ts', '/index.tsx', '/index.js', '/index.jsx'];
 const FIX_RE = /\b(fix|fixes|fixed|bug|bugfix|hotfix)\b/i;
 const DAY = 86400;
+const MAX_JSON_BYTES = 25 * 1024 * 1024;
+const SUBJECT_MAX = 100;
 const toPosix = (p) => p.split(path.sep).join('/');
 const isUpper = (name) => /^[A-Z]/.test(name);
 
@@ -34,7 +36,7 @@ async function main() {
   const parsed = new Map(); // relPath -> { loc, modules, imports: [specifier] }
   for (const rel of files) parsed.set(rel, parseFile(path.join(repoRoot, rel), rel));
 
-  const churn = collectChurn(repoRoot, fileSet);
+  const { churn, commits } = collectHistory(repoRoot, files);
   const edges = buildEdges(repoRoot, opts.roots, parsed, fileSet);
   const tree = buildTree(repoRoot, files, parsed, churn);
   const prs = opts.prs ? await collectPRs(repoRoot, fileSet) : [];
@@ -49,22 +51,33 @@ async function main() {
     tree,
     edges,
     prs,
+    files,
+    commits,
   };
 
   const outPath = path.resolve(opts.out);
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  const json = JSON.stringify(data);
+  let json = JSON.stringify(data);
+  // Budget guard: trim the oldest commits until the payload fits.
+  while (json.length > MAX_JSON_BYTES && data.commits.length > 1) {
+    data.commits = data.commits.slice(0, Math.floor(data.commits.length * 0.8));
+    json = JSON.stringify(data);
+  }
+  const droppedCommits = commits.length - data.commits.length;
   fs.writeFileSync(outPath, json);
 
   const moduleCount = [...parsed.values()].reduce((n, f) => n + f.modules.length, 0);
+  const oldest = data.commits.length ? data.commits[data.commits.length - 1].ts : null;
   console.log(
     `files: ${files.length}\nmodules: ${moduleCount}\nedges: ${edges.length}\nprs: ${prs.length}\n` +
+    `commits: ${data.commits.length}${droppedCommits ? ` (dropped ${droppedCommits} oldest for size)` : ''}` +
+    `${oldest ? ` back to ${new Date(oldest * 1000).toISOString().slice(0, 10)}` : ''}\n` +
     `out: ${outPath} (${(json.length / 1e6).toFixed(2)} MB)\nelapsed: ${((Date.now() - started) / 1000).toFixed(1)}s`
   );
 }
 
 function parseArgs(argv) {
-  const opts = { repoPath: null, roots: ['packages'], out: 'viewer/public/data.json', prs: true };
+  const opts = { repoPath: null, roots: null, out: 'viewer/public/data.json', prs: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--roots') opts.roots = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
@@ -73,7 +86,12 @@ function parseArgs(argv) {
     else if (!a.startsWith('--')) opts.repoPath = a;
     else throw new Error(`unknown flag: ${a}`);
   }
-  if (!opts.repoPath) throw new Error('usage: analyze.mjs <repoPath> [--roots a,b] [--out path] [--no-prs]');
+  if (!opts.repoPath) opts.repoPath = '.';
+  // Default roots: a `packages/` monorepo dir when present, else the repo root.
+  if (!opts.roots) {
+    const hasPackages = fs.existsSync(path.join(path.resolve(opts.repoPath), 'packages'));
+    opts.roots = hasPackages ? ['packages'] : ['.'];
+  }
   return opts;
 }
 
@@ -118,8 +136,37 @@ function parseFile(absPath, rel) {
 
   const lineOf = (pos) => sf.getLineAndCharacterOfPosition(pos).line;
   const spanLoc = (node) => Math.max(1, lineOf(node.getEnd()) - lineOf(node.getStart(sf)) + 1);
+  const startLine = (node) => lineOf(node.getStart(sf)) + 1; // 1-based
   const isExported = (node) =>
     !!node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+
+  // Class methods/properties/accessors, interface members, enum members.
+  const memberName = (member) => {
+    const n = member.name;
+    if (!n) return null;
+    if (ts.isIdentifier(n) || ts.isStringLiteral(n) || ts.isNumericLiteral(n)) return n.text;
+    if (ts.isPrivateIdentifier(n)) return n.text;
+    return null; // computed names
+  };
+  const classChildren = (node) => {
+    const out = [];
+    for (const member of node.members ?? []) {
+      let kind, name;
+      if (ts.isConstructorDeclaration(member)) { kind = 'method'; name = 'constructor'; }
+      else if (ts.isMethodDeclaration(member)) kind = 'method';
+      else if (ts.isPropertyDeclaration(member)) kind = 'property';
+      else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) kind = 'accessor';
+      else continue;
+      name ??= memberName(member);
+      if (!name) continue;
+      out.push({ name, kind, loc: spanLoc(member), line: startLine(member) });
+    }
+    return out;
+  };
+  const memberChildren = (node) => (node.members ?? []).flatMap((member) => {
+    const name = memberName(member);
+    return name ? [{ name, kind: 'member', loc: spanLoc(member), line: startLine(member) }] : [];
+  });
 
   for (const stmt of sf.statements) {
     if (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) {
@@ -129,16 +176,16 @@ function parseFile(absPath, rel) {
     }
     if (ts.isFunctionDeclaration(stmt)) {
       const name = stmt.name?.text;
-      if (name) modules.push({ name, kind: jsx && isUpper(name) ? 'component' : 'function', loc: spanLoc(stmt), exported: isExported(stmt) });
+      if (name) modules.push({ name, kind: jsx && isUpper(name) ? 'component' : 'function', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt) });
     } else if (ts.isClassDeclaration(stmt)) {
       const name = stmt.name?.text;
-      if (name) modules.push({ name, kind: 'class', loc: spanLoc(stmt), exported: isExported(stmt) });
+      if (name) modules.push({ name, kind: 'class', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: classChildren(stmt) });
     } else if (ts.isInterfaceDeclaration(stmt)) {
-      modules.push({ name: stmt.name.text, kind: 'interface', loc: spanLoc(stmt), exported: isExported(stmt) });
+      modules.push({ name: stmt.name.text, kind: 'interface', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: memberChildren(stmt) });
     } else if (ts.isTypeAliasDeclaration(stmt)) {
-      modules.push({ name: stmt.name.text, kind: 'type', loc: spanLoc(stmt), exported: isExported(stmt) });
+      modules.push({ name: stmt.name.text, kind: 'type', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt) });
     } else if (ts.isEnumDeclaration(stmt)) {
-      modules.push({ name: stmt.name.text, kind: 'enum', loc: spanLoc(stmt), exported: isExported(stmt) });
+      modules.push({ name: stmt.name.text, kind: 'enum', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: memberChildren(stmt) });
     } else if (ts.isVariableStatement(stmt)) {
       const exported = isExported(stmt);
       for (const decl of stmt.declarationList.declarations) {
@@ -147,7 +194,7 @@ function parseFile(absPath, rel) {
         const init = decl.initializer;
         const isFn = !!init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init));
         const kind = isFn ? (jsx && isUpper(name) ? 'component' : 'function') : 'const';
-        modules.push({ name, kind, loc: spanLoc(decl), exported });
+        modules.push({ name, kind, loc: spanLoc(decl), line: startLine(decl), exported });
       }
     }
   }
@@ -156,38 +203,50 @@ function parseFile(absPath, rel) {
 
 // ---------- churn ----------
 
-function collectChurn(repoRoot, fileSet) {
+// Single git-log pass producing both per-file churn and the newest-first commit stream.
+function collectHistory(repoRoot, files) {
   const churn = new Map(); // rel -> {churn, fixChurn, recentChurn}
+  const commits = [];
+  const fileIndex = new Map(files.map((rel, i) => [rel, i]));
   let out;
   try {
-    out = execFileSync('git', ['-C', repoRoot, 'log', '--since=12.months', '--name-only', '--pretty=format:%x01%ct%x09%s'],
+    out = execFileSync('git',
+      ['-C', repoRoot, 'log', '--since=12.months', '--name-only', '--pretty=format:%x01%h%x09%ct%x09%an%x09%s'],
       { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 });
   } catch (err) {
-    console.warn('warn: git log failed, churn will be zero:', err.message);
-    return churn;
+    console.warn('warn: git log failed, churn/commits will be empty:', err.message);
+    return { churn, commits };
   }
   const recentCutoff = Math.floor(Date.now() / 1000) - 30 * DAY;
-  let isFix = false, isRecent = false, seen = new Set();
+  let current = null, isFix = false, isRecent = false, seen = new Set();
+
+  const flush = () => { if (current && current.f.length) commits.push(current); };
+
   for (const line of out.split('\n')) {
     if (line.startsWith('\x01')) {
-      const tab = line.indexOf('\t');
-      const ts_ = Number(line.slice(1, tab));
-      const subject = line.slice(tab + 1);
+      flush();
+      const [h, tsStr, author, ...rest] = line.slice(1).split('\t');
+      const ts_ = Number(tsStr);
+      const subject = rest.join('\t');
       isFix = FIX_RE.test(subject);
       isRecent = ts_ >= recentCutoff;
       seen = new Set();
+      current = { h, ts: ts_, a: author, s: subject.slice(0, SUBJECT_MAX), f: [] };
       continue;
     }
     const rel = line.trim();
-    if (!rel || !fileSet.has(rel) || seen.has(rel)) continue;
+    const idx = fileIndex.get(rel);
+    if (idx === undefined || seen.has(rel)) continue;
     seen.add(rel);
+    if (current) current.f.push(idx);
     let c = churn.get(rel);
     if (!c) churn.set(rel, (c = { churn: 0, fixChurn: 0, recentChurn: 0 }));
     c.churn++;
     if (isFix) c.fixChurn++;
     if (isRecent) c.recentChurn++;
   }
-  return churn;
+  flush();
+  return { churn, commits };
 }
 
 // ---------- import edges ----------
@@ -199,8 +258,7 @@ function buildEdges(repoRoot, roots, parsed, fileSet) {
     for (const spec of info.imports) {
       const target = resolveSpecifier(repoRoot, rel, spec, pkgDirs, fileSet);
       if (!target || target === rel || !fileSet.has(target)) continue;
-      const [a, b] = rel < target ? [rel, target] : [target, rel];
-      const key = a + ' ' + b;
+      const key = rel + ' ' + target; // ordered pair: a imports b
       counts.set(key, (counts.get(key) || 0) + 1);
     }
   }
@@ -377,7 +435,7 @@ async function collectPRs(repoRoot, fileSet) {
   try {
     const { stdout } = await execFileAsync('gh',
       ['pr', 'list', '--repo', repoSlug, '--state', 'open', '--limit', '50',
-        '--json', 'number,title,author,isDraft,updatedAt'],
+        '--json', 'number,title,author,isDraft,updatedAt,additions,deletions'],
       { maxBuffer: 32 * 1024 * 1024 });
     list = JSON.parse(stdout);
   } catch (err) {
@@ -402,6 +460,8 @@ async function collectPRs(repoRoot, fileSet) {
       avatarUrl: pr.author?.avatarUrl || `https://github.com/${login}.png`,
       isDraft: !!pr.isDraft,
       updatedAt: pr.updatedAt,
+      additions: pr.additions ?? 0,
+      deletions: pr.deletions ?? 0,
       files,
     };
   });

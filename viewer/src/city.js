@@ -18,9 +18,17 @@ export const KIND_COLORS = {
   type: 0x64748b,
   enum: 0xfbbf24,
   const: 0x475569,
+  // v2 module members (drill-down inside a building)
+  method: 0x22d3ee,
+  property: 0x38bdf8,
+  accessor: 0xfbbf24,
+  member: 0x8b5cf6,
 };
 
 export const KIND_ORDER = ['function', 'class', 'component', 'interface', 'type', 'enum', 'const'];
+export const MEMBER_ORDER = ['method', 'property', 'accessor', 'member'];
+/** Every kind that can become a building instance bucket. */
+export const ALL_KINDS = [...KIND_ORDER, ...MEMBER_ORDER];
 
 const KIND_OPACITY = {
   function: 0.92,
@@ -30,7 +38,14 @@ const KIND_OPACITY = {
   type: 0.92,
   enum: 0.92,
   const: 0.92,
+  method: 0.92,
+  property: 0.9,
+  accessor: 0.92,
+  member: 0.7,
 };
+
+/** Members read as distinct silhouettes: properties are slabs, accessors squat. */
+const KIND_HEIGHT_SCALE = { property: 0.3, accessor: 0.6, member: 0.5 };
 
 export const PALETTE = {
   bg: 0x05080f,
@@ -126,6 +141,7 @@ export function walk(node, fn) {
 // --- plates ----------------------------------------------------------------
 
 const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
+UNIT_BOX.userData.shared = true;
 
 function buildPlates(nodes, isFile) {
   if (!nodes.length) return { mesh: null, records: [] };
@@ -203,7 +219,7 @@ function buildingMaterial(kind) {
 function buildBuildings(files) {
   // Bucket module plots by kind so each kind gets one InstancedMesh.
   const buckets = new Map();
-  for (const kind of KIND_ORDER) buckets.set(kind, []);
+  for (const kind of ALL_KINDS) buckets.set(kind, []);
 
   for (const file of files) {
     if (!file.plots) continue;
@@ -224,7 +240,7 @@ function buildBuildings(files) {
   const scale = new THREE.Vector3();
   const color = new THREE.Color();
 
-  for (const kind of KIND_ORDER) {
+  for (const kind of ALL_KINDS) {
     const entries = buckets.get(kind);
     if (!entries.length) continue;
 
@@ -237,7 +253,7 @@ function buildBuildings(files) {
     const meta = new Array(entries.length);
     for (let i = 0; i < entries.length; i++) {
       const { file, plot } = entries[i];
-      const h = buildingHeight(plot.mod.loc);
+      const h = buildingHeight(plot.mod.loc) * (KIND_HEIGHT_SCALE[kind] ?? 1);
       pos.set(plot.x + plot.w / 2, file.top, plot.z + plot.h / 2);
       scale.set(Math.max(plot.w, 0.25), h, Math.max(plot.h, 0.25));
       m.compose(pos, q, scale);
@@ -376,60 +392,36 @@ export function makeLabelSprite(text, { color = '#a8f4ff', worldHeight = 12, glo
   return sprite;
 }
 
-/** Labels for folders at depth <= maxDepth. Returns a Group. */
-export function buildStaticLabels(root, maxDepth = 2) {
-  const group = new THREE.Group();
-  group.name = 'labels:static';
-  walk(root, (node) => {
-    if (!node.rect || node.type === 'file') return;
-    if (node.depth === 0 || node.depth > maxDepth) return;
-    const s = labelForNode(node);
-    if (s) group.add(s);
-  });
-  return group;
-}
-
-export function labelForNode(node) {
-  if (!node.rect) return null;
-  const r = node.rect;
-  const size = Math.min(r.w, r.h);
-  if (size < 6) return null;
-  const worldHeight = Math.min(Math.max(size * 0.15, 3.5), 40);
-  const sprite = makeLabelSprite(node.name, {
-    color: node.type === 'file' ? '#7fd8ea' : '#bdf3ff',
-    worldHeight,
-  });
-  const lift = node.type === 'file' ? 6 : 10 + node.depth * 0.5;
-  sprite.position.set(r.x + r.w / 2, plateTop(node.depth, node.type === 'file') + lift, r.z + r.h / 2);
-  sprite.userData.node = node;
-  return sprite;
-}
-
-export function disposeGroup(group) {
-  const kids = [...group.children];
-  for (const child of kids) {
-    group.remove(child);
-    if (child.userData.dispose) child.userData.dispose();
-    else {
-      if (child.geometry) child.geometry.dispose();
-      if (child.material) {
-        const mats = Array.isArray(child.material) ? child.material : [child.material];
-        for (const mm of mats) {
-          if (mm.map) mm.map.dispose();
-          mm.dispose();
-        }
-      }
+/** Deep-dispose everything under (and including) `obj`, then detach it. */
+export function disposeObject(obj) {
+  obj.traverse((child) => {
+    if (child.userData.dispose) { child.userData.dispose(); return; }
+    if (child.geometry && !child.geometry.userData.shared) child.geometry.dispose();
+    const mats = child.material ? (Array.isArray(child.material) ? child.material : [child.material]) : [];
+    for (const m of mats) {
+      if (m.map && m.map !== _dotTex) m.map.dispose();
+      m.dispose();
     }
-  }
+  });
+  obj.parent?.remove(obj);
 }
+
 
 // ---------------------------------------------------------------------------
 // Coupling arcs
 // ---------------------------------------------------------------------------
 
+/** The shared arc shape — importer to imported, bowed over the city. */
+export function arcCurve(from, to) {
+  const dist = from.distanceTo(to);
+  const mid = from.clone().add(to).multiplyScalar(0.5);
+  mid.y += Math.min(28 + dist * 0.32, 220);
+  return new THREE.QuadraticBezierCurve3(from.clone(), mid, to.clone());
+}
+
 /**
  * @param {Array<{from:THREE.Vector3, to:THREE.Vector3, strength:number}>} arcs
- *        strength in 0..1 (drives brightness + tube radius)
+ *        strength in 0..1 (drives brightness + tube radius); from = importer
  * @param {{thick?:boolean}} [opts]
  * @returns {THREE.Mesh|null} one merged additive mesh
  */
@@ -443,16 +435,13 @@ export function buildCouplingArcs(arcs, opts = {}) {
   const normals = [];
   let vertexOffset = 0;
 
-  const mid = new THREE.Vector3();
   const color = new THREE.Color();
+  const shade = new THREE.Color();
   const cyan = new THREE.Color(PALETTE.cyan);
   const violet = new THREE.Color(0xa78bfa);
 
   for (const arc of arcs) {
-    const dist = arc.from.distanceTo(arc.to);
-    mid.copy(arc.from).add(arc.to).multiplyScalar(0.5);
-    mid.y += Math.min(28 + dist * 0.32, 220);
-    const curve = new THREE.QuadraticBezierCurve3(arc.from.clone(), mid.clone(), arc.to.clone());
+    const curve = arcCurve(arc.from, arc.to);
 
     const s = Math.min(Math.max(arc.strength, 0), 1);
     const k = opts.scale ?? 1;
@@ -468,10 +457,15 @@ export function buildCouplingArcs(arcs, opts = {}) {
     const pos = tube.attributes.position;
     const nrm = tube.attributes.normal;
     const idx = tube.index;
+    // Tube vertices run in curve order, so a per-ring ramp reads as direction:
+    // dim at the importer, bright at the imported end.
+    const ring = (thick ? 8 : 5) + 1;
     for (let i = 0; i < pos.count; i++) {
       positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
       normals.push(nrm.getX(i), nrm.getY(i), nrm.getZ(i));
-      colors.push(color.r, color.g, color.b);
+      const along = Math.min(Math.floor(i / ring) / segs, 1);
+      shade.copy(color).multiplyScalar(0.35 + 0.95 * along);
+      colors.push(shade.r, shade.g, shade.b);
     }
     for (let i = 0; i < idx.count; i++) indices.push(idx.getX(i) + vertexOffset);
     vertexOffset += pos.count;
@@ -499,6 +493,120 @@ export function buildCouplingArcs(arcs, opts = {}) {
   return mesh;
 }
 
+/**
+ * Pulses that travel importer → imported along the same curves, so direction is
+ * readable at a glance. One THREE.Points draw call; positions are lerped from a
+ * precomputed sample table, so `update()` allocates nothing.
+ *
+ * @param {Array<{from:THREE.Vector3,to:THREE.Vector3,strength:number}>} arcs
+ * @returns {{points: THREE.Points, update: (t:number)=>void}|null}
+ */
+export function buildArcFlow(arcs, opts = {}) {
+  if (!arcs.length) return null;
+  const SAMPLES = 24;
+  const perArc = arcs.length > 60 ? 1 : 2;
+  const count = arcs.length * perArc;
+
+  const table = new Float32Array(arcs.length * (SAMPLES + 1) * 3);
+  const sizes = new Float32Array(count);
+  const offsets = new Float32Array(count);
+  const speeds = new Float32Array(count);
+  const arcOf = new Uint16Array(count);
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+
+  const p = new THREE.Vector3();
+  const c = new THREE.Color();
+  let k = 0;
+  for (let a = 0; a < arcs.length; a++) {
+    const curve = arcCurve(arcs[a].from, arcs[a].to);
+    const base = a * (SAMPLES + 1) * 3;
+    for (let s = 0; s <= SAMPLES; s++) {
+      curve.getPoint(s / SAMPLES, p);
+      table[base + s * 3] = p.x;
+      table[base + s * 3 + 1] = p.y;
+      table[base + s * 3 + 2] = p.z;
+    }
+    const strength = Math.min(Math.max(arcs[a].strength, 0), 1);
+    for (let j = 0; j < perArc; j++, k++) {
+      arcOf[k] = a;
+      offsets[k] = (j / perArc + (a % 7) / 7) % 1;
+      speeds[k] = 0.16 + strength * 0.2;
+      sizes[k] = (opts.thick ? 5 : 3) + strength * 4;
+      c.setHex(PALETTE.cyan).lerp(new THREE.Color(0xffffff), strength * 0.4);
+      colors[k * 3] = c.r;
+      colors[k * 3 + 1] = c.g;
+      colors[k * 3 + 2] = c.b;
+    }
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geom.setAttribute('psize', new THREE.BufferAttribute(sizes, 1));
+
+  const mat = new THREE.PointsMaterial({
+    size: 6,
+    map: dotTexture(),
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: false,
+  });
+  // Per-point size without a custom material: scale gl_PointSize by an attribute.
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = 'attribute float psize;\n' + shader.vertexShader.replace(
+      'gl_PointSize = size;',
+      'gl_PointSize = size * psize;'
+    );
+  };
+  mat.size = 1;
+
+  const points = new THREE.Points(geom, mat);
+  points.name = 'arcFlow';
+  points.frustumCulled = false;
+  points.renderOrder = 8;
+
+  const attr = geom.attributes.position;
+  return {
+    points,
+    update(t) {
+      for (let i = 0; i < count; i++) {
+        const f = (offsets[i] + t * speeds[i]) % 1;
+        const a = arcOf[i];
+        const base = a * (SAMPLES + 1) * 3;
+        const x = f * SAMPLES;
+        const s0 = Math.min(Math.floor(x), SAMPLES - 1);
+        const frac = x - s0;
+        const i0 = base + s0 * 3;
+        const i1 = i0 + 3;
+        positions[i * 3] = table[i0] + (table[i1] - table[i0]) * frac;
+        positions[i * 3 + 1] = table[i0 + 1] + (table[i1 + 1] - table[i0 + 1]) * frac;
+        positions[i * 3 + 2] = table[i0 + 2] + (table[i1 + 2] - table[i0 + 2]) * frac;
+      }
+      attr.needsUpdate = true;
+    },
+  };
+}
+
+let _dotTex = null;
+function dotTexture() {
+  if (_dotTex) return _dotTex;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 32;
+  const ctx = canvas.getContext('2d');
+  const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 32, 32);
+  _dotTex = new THREE.CanvasTexture(canvas);
+  return _dotTex;
+}
+
 // ---------------------------------------------------------------------------
 // People / PR layer
 // ---------------------------------------------------------------------------
@@ -506,26 +614,33 @@ export function buildCouplingArcs(arcs, opts = {}) {
 const AVATAR_PX = 160;
 
 /**
- * Avatar sprite + light beam for one PR.
+ * Avatar sprite + light beam for one PR, with a thin light-line and glowing
+ * ring on every file the PR touches so the connection is unmistakable.
+ *
  * @param {{number:number,title:string,author:string,avatarUrl:string|null,isDraft:boolean}} pr
  * @param {THREE.Vector3} anchor  centroid of touched files (ground level)
- * @returns {THREE.Group} group with userData.bob for animation
+ * @param {{hover?:number, weight?:number, targets?:THREE.Vector3[]}} [opts]
+ *        weight = 0..1 magnitude (log-scaled additions+deletions) driving beam size
+ * @returns {THREE.Group} group whose userData drives animation + hover highlight
  */
 export function buildPrMarker(pr, anchor, opts = {}) {
   const hover = opts.hover ?? 58;
+  const weight = Math.min(Math.max(opts.weight ?? 0.35, 0), 1);
+  const targets = opts.targets || [];
   const group = new THREE.Group();
   group.name = `pr:${pr.number}`;
 
   const accent = pr.isDraft ? PALETTE.orange : PALETTE.cyan;
 
-  // --- light beam
+  // --- light beam (radius + glow scale with the PR's size)
   const beamH = hover;
-  const beamGeom = new THREE.CylinderGeometry(1.1, 3.4, beamH, 10, 1, true);
+  const rTop = 0.8 + weight * 4.5;
+  const beamGeom = new THREE.CylinderGeometry(rTop, rTop * 2.6, beamH, 12, 1, true);
   beamGeom.translate(0, beamH / 2, 0);
   const beamMat = new THREE.MeshBasicMaterial({
     color: accent,
     transparent: true,
-    opacity: 0.16,
+    opacity: 0.1 + weight * 0.22,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     side: THREE.DoubleSide,
@@ -535,9 +650,9 @@ export function buildPrMarker(pr, anchor, opts = {}) {
   beam.frustumCulled = false;
   group.add(beam);
 
-  // --- ground pad ring
+  // --- ground pad ring at the centroid
   const ring = new THREE.Mesh(
-    new THREE.RingGeometry(3.2, 4.6, 32),
+    new THREE.RingGeometry(3.2 + weight * 2, 4.6 + weight * 3.4, 32),
     new THREE.MeshBasicMaterial({
       color: accent,
       transparent: true,
@@ -550,6 +665,46 @@ export function buildPrMarker(pr, anchor, opts = {}) {
   ring.rotation.x = -Math.PI / 2;
   ring.position.set(anchor.x, anchor.y + 0.4, anchor.z);
   group.add(ring);
+
+  // --- light-lines from the avatar down to each touched file + a ring on each
+  const capped = targets.slice(0, 20);
+  let links = null;
+  let rings = null;
+  if (capped.length) {
+    const top = new THREE.Vector3(anchor.x, anchor.y + beamH, anchor.z);
+    const lp = [];
+    for (const t of capped) lp.push(top.x, top.y, top.z, t.x, t.y + 0.6, t.z);
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
+    links = new THREE.LineSegments(
+      lg,
+      new THREE.LineBasicMaterial({
+        color: accent,
+        transparent: true,
+        opacity: 0.2,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+    );
+    links.frustumCulled = false;
+    links.renderOrder = 7;
+    group.add(links);
+
+    rings = new THREE.Mesh(
+      ringsGeometry(capped, 1.6, 2.9),
+      new THREE.MeshBasicMaterial({
+        color: accent,
+        transparent: true,
+        opacity: 0.35,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      })
+    );
+    rings.frustumCulled = false;
+    rings.renderOrder = 7;
+    group.add(rings);
+  }
 
   // --- avatar sprite (initials first, swapped in if the image loads)
   const mat = new THREE.SpriteMaterial({
@@ -578,10 +733,35 @@ export function buildPrMarker(pr, anchor, opts = {}) {
     pr,
     sprite,
     beam,
+    links,
+    rings,
+    linkBase: 0.2,
+    ringBase: 0.35,
     baseY: anchor.y + beamH,
     phase: (pr.number % 100) * 0.37,
   };
   return group;
+}
+
+/** One merged flat ring per point, lying on the XZ plane. */
+function ringsGeometry(points, inner, outer, segments = 20) {
+  const positions = [];
+  for (const p of points) {
+    for (let i = 0; i < segments; i++) {
+      const a0 = (i / segments) * Math.PI * 2;
+      const a1 = ((i + 1) / segments) * Math.PI * 2;
+      const y = p.y + 0.5;
+      const x0i = p.x + Math.cos(a0) * inner, z0i = p.z + Math.sin(a0) * inner;
+      const x1i = p.x + Math.cos(a1) * inner, z1i = p.z + Math.sin(a1) * inner;
+      const x0o = p.x + Math.cos(a0) * outer, z0o = p.z + Math.sin(a0) * outer;
+      const x1o = p.x + Math.cos(a1) * outer, z1o = p.z + Math.sin(a1) * outer;
+      positions.push(x0i, y, z0i, x0o, y, z0o, x1o, y, z1o);
+      positions.push(x0i, y, z0i, x1o, y, z1o, x1i, y, z1i);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  return g;
 }
 
 /**

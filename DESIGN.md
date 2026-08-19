@@ -4,6 +4,13 @@ A 3D "code city" built with Three.js, rendered in a retro-futuristic hologram st
 (future-dark: deep navy, glowing cyan/violet, UiPath orange accents — same visual
 family as the flow-presentation tool).
 
+**Vibe inspirations**: *Hackers* (1995) — flying through the Gibson's glowing
+towers of data — and *Jurassic Park*'s "It's a Unix system! I know this!"
+(the real SGI **FSN** 3D file navigator on screen). The city should feel like
+those scenes made useful: a system you fly through and *know*. Drill-down
+transitions expand contents outward from their parent (and contract back on
+zoom-out), like unfolding a hologram.
+
 ## Metaphor hierarchy
 
 | Level | Metaphor | Rendering |
@@ -39,7 +46,7 @@ Produced by `analyzer/analyze.mjs`. All ids are repo-relative POSIX paths.
 
 ```jsonc
 {
-  "repo": { "name": "flow-workbench", "root": "/abs/path", "analyzedAt": "ISO", "githubUrl": "https://github.com/UiPath/flow-workbench" },
+  "repo": { "name": "my-repo", "root": "/abs/path", "analyzedAt": "ISO", "githubUrl": "https://github.com/acme/my-repo" },
   "tree": {                       // root folder node
     "type": "folder",             // 'folder' | 'file'
     "name": "packages",
@@ -59,6 +66,40 @@ Notes:
 - `churn` = commits touching the file in last 12 months; `fixChurn` = subset with /\b(fix|bug)\b/i in subject; `recentChurn` = last 30 days.
 - Edges only between files that both exist in the analyzed set. Workspace package imports (`@x/y`) resolve via packages' package.json names when possible.
 - PR `files` filtered to files present in the tree.
+
+## Data contract v2 (additions)
+
+- **Edges are directional**: `{a, b, n}` means **a imports b** (dedupe per ordered pair, keep both directions if they exist).
+- **Module spans + nesting**: each module gains `line` (1-based start line) and optional `children` for its internals — class methods/properties/accessors, interface members, enum members: `{ name, kind: 'method'|'property'|'accessor'|'member', loc, line }`. This powers module-level drill-down (inside a building).
+- **Commit stream** (for the history timeline + sidebar):
+```jsonc
+{
+  "files": ["packages/a/x.ts", ...],          // index table, positions referenced by commits
+  "commits": [                                 // newest-first, last 12 months
+    { "h": "abc1234", "ts": 1723939200, "a": "author", "s": "subject (≤100 chars)", "f": [0, 5, 9] }
+  ]
+}
+```
+  Only files present in the tree appear in `f`. Commits touching zero tree files are dropped.
+
+## Dev API (vite plugin, dev-server only)
+
+`viewer/vite.config.js` registers middleware that shells out to git in `repo.root` (read from the generated data.json at server start). All paths validated: repo-relative, no `..`/absolute, resolved path must stay under root; invalid → 400. Endpoints:
+
+- `GET /api/source?path=<repo-rel>&start=<1-based>&end=` → `{ path, start, end, lines: [...] }` (cap 400 lines)
+- `GET /api/log?path=` → `{ commits: [{h, ts, a, s}] }` — last 15 commits touching that path
+- `GET /api/diff?path=&h=<hash>` → `{ diff: "unified diff text" }` — `git show <h> -- <path>`, cap ~400 lines; hash validated as /^[0-9a-f]{7,40}$/
+
+Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippet/diff sections.
+
+## Interaction v2
+
+- **No cursor tooltip.** A persistent right sidebar shows hover info (top section, live) and pinned selection detail (on click): stats, PRs, recent commits for that path, and code — module source snippet + latest diff via the dev API. When the focused/selected node is file-level or deeper, the sidebar expands to a wide code pane showing the actual source (module span, or whole file capped).
+- **Double-click = isolate.** Rendering the focused node's subtree ONLY, re-laid out to fill the stage: folder → its city; file → its modules as blocks; module → its `children` (methods etc.) as buildings. Breadcrumb/Esc rebuilds the parent scene. This is the hierarchy: org → repo → folder → file → module → member.
+- **Map-style labels**: labels chosen dynamically from what's in view (projected size within a readable band, capped count, fade in/out) — district names give way to file names give way to building names as you zoom, like a map engine.
+- **PR markers** connect visibly: avatar at centroid, thin beams down to EACH affected file plate + glowing ground ring per file. PRs gain `additions`/`deletions` in the data; the central beam's radius and glow scale with log(additions+deletions) so big PRs read as big pillars of light.
+- **Directional arcs**: animated flow (moving dashes/pulses) from importer → imported.
+- **History timeline**: bottom slider over the commit stream (12 months). Scrubbing sets a time cursor T; recent-focus highlights files touched in [T−30d, T]; sidebar shows the commits around T; play button animates the city through history.
 
 ## Style guide (hologram / future-dark)
 

@@ -1,0 +1,59 @@
+# Code City — codebase visualizer
+
+A 3D "code city" for any TypeScript/JavaScript repo, rendered as a retro-futuristic hologram with [Three.js](https://threejs.org/).
+
+The metaphor: **folders are city blocks, files are plates, and every function, class, and component is a building** — styled by kind, heat-mapped by git churn, with live GitHub PR activity floating above the skyline.
+
+The thesis: as more code is written by agents, we read less of it line-by-line. This is an instrument panel for keeping situational awareness of a codebase you no longer read — *where is the action, where does it keep breaking, who is working where*.
+
+## Features
+
+- **City hierarchy** — repo → folder districts → file blocks → module buildings → (double-click) class members. Double-click isolates and breaks down any level; Esc / breadcrumb zooms back out.
+- **Overlays** — structure (kind colors), churn (12-month commit heat), fix hotspots (bug-fix commits), recent focus (touched in the last 30 days — the default).
+- **People / PR layer** — open PRs as author avatars on light beams over the files they touch. Beam thickness scales with diff size, altitude with activity recency. Draft PRs render as orange scaffolding; files touched by 2+ PRs get red conflict cages.
+- **Coupling arcs** — directional import edges (animated flow importer → imported), aggregated per package when nothing is selected.
+- **History timeline** — scrub or play through the commit stream and watch activity flow across the city.
+- **Inspector sidebar** — stats, open PRs, recent commits, and actual source/diff snippets for the selected node (dev server only).
+- **Map-style labels** — names scope dynamically to what's in view, districts → files → buildings, like a map engine.
+
+All analysis is local: the analyzer runs on your machine and the data never leaves it. The only network calls are optional `gh` PR lookups and GitHub avatar images.
+
+## Quick start
+
+```bash
+npm install
+
+# analyze a repo (writes viewer/public/data.json)
+npm run analyze -- /path/to/your/repo            # analyzes ./packages by default
+npm run analyze -- /path/to/repo --roots src,lib # custom roots
+npm run analyze -- /path/to/repo --no-prs        # skip GitHub PR lookup
+
+# launch the viewer
+npm run dev
+```
+
+Requirements: Node 20+, git; optionally the [`gh` CLI](https://cli.github.com/) (authenticated) for the PR layer.
+
+## Controls
+
+| Input | Action |
+|---|---|
+| Drag / middle-drag / wheel | Orbit / pan / zoom |
+| Hover | Inspect in sidebar |
+| Click | Select (pin details, coupling arcs) |
+| Double-click | Isolate + break down that node |
+| Esc / breadcrumb | Back up a level |
+| `C` | Copy the selected node's repo-relative path |
+
+## How it works
+
+- `analyzer/analyze.mjs` — walks the repo, extracts top-level modules (and class/interface/enum members) with the TypeScript compiler API, mines churn/fix/recency and the full commit stream from a single `git log` pass, resolves import edges (including monorepo workspace packages), and pulls open PRs via `gh`. Output is one JSON file; schema in [DESIGN.md](DESIGN.md).
+- `viewer/` — Vite + Three.js. Squarified-treemap layout, instanced meshes (tested at ~17k buildings / 60fps+), UnrealBloom postprocessing, and a small dev-server API that serves source snippets and diffs from the analyzed repo (path-contained, localhost only).
+
+## Design notes
+
+See [DESIGN.md](DESIGN.md) for the full metaphor, data contract, and style guide. Ancestry and lessons borrowed from [CodeCity](https://wettel.github.io/codecity.html), EvoStreets, TeamWATCH, [Gource](https://gource.io/), and [ExplorViz](https://explorviz.dev/).
+
+## Status
+
+Early prototype, moving fast. An Electron desktop build (bundled analyzer, open-a-folder UX) is in progress.
