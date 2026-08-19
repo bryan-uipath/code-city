@@ -141,7 +141,37 @@ parsing); ships as a "Strata" mode alongside the log-scale massing.
   (API-dependent panes already hide themselves). Use cases: GitHub Pages,
   internal doc hubs, attaching a city snapshot to a PR or design doc.
 
+## Tour SDK (planned — PR-review integration)
+
+A TypeScript SDK for *codifying a guided tour of the city*, so a coding agent
+(or a human) can walk reviewers through a PR or subsystem:
+
+```ts
+export interface Tour { title: string; steps: TourStep[]; }
+export interface TourStep {
+  target: string;            // path, path#module, or path:line-range
+  title: string;
+  narration: string;         // markdown, shown in the sidebar
+  artifacts?: TourArtifact[];// diffs (commit/PR refs), images (demo shots), links
+  camera?: 'isolate' | 'frame' | 'orbit';  // how to present the target
+  highlight?: string[];      // additional paths/modules to co-highlight
+}
+```
+
+The viewer gains a tour player (step list, next/prev, autoplay) that flies the
+camera through each step, isolates/highlights targets, and renders narration +
+artifacts in the sidebar. Tours load from a JSON/TS module or stream in live
+from an agent (CityHost extension). The companion piece is an agent skill:
+"generate a tour of this PR" — the agent reads the diff, picks the key
+locations, writes the Tour object. Primary use case: PR reviews where the
+reviewer flies the change instead of reading a flat file list.
+
 ## Future ideas (recorded, not scheduled)
+
+- **Code coverage overlay** — ingest lcov/istanbul output; per-file and
+  per-module coverage as a color ramp (uncovered = dark voids in the city).
+- **Test pass visualization** — map test results onto the buildings they
+  cover; watch a test run sweep the city green/red as it executes.
 
 - **Debug adapter integration** — attach via DAP and show *live values streaming
   through the system*: data pulses traveling the import arcs / between buildings
