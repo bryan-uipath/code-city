@@ -103,6 +103,8 @@ export interface Commit {
   a: string;
   s: string;
   f: number[];
+  /** Per-file `[additions, deletions]`, aligned index-for-index with `f`. */
+  d?: [number, number][];
 }
 
 // ---------------------------------------------------------------------------

@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Codebase analyzer -> viewer/public/data.json (see DESIGN.md for the contract).
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import ts from 'typescript';
 import type {
@@ -18,9 +20,15 @@ const SKIP_DIRS = new Set([
 ]);
 const RESOLVE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '/index.ts', '/index.tsx', '/index.js', '/index.jsx'];
 const FIX_RE = /\b(fix|fixes|fixed|bug|bugfix|hotfix)\b/i;
+const HASH_RE = /^[0-9a-f]{7,40}$/;
 const DAY = 86400;
 const MAX_JSON_BYTES = 25 * 1024 * 1024;
 const SUBJECT_MAX = 100;
+/** Rolling history window; the cached stream is trimmed to it on every run. */
+const HISTORY_DAYS = 365;
+const CACHE_VERSION = 1;
+/** This project's root — the cache lives here, never inside the analyzed repo. */
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const toPosix = (p: string) => p.split(path.sep).join('/');
 const isUpper = (name: string) => /^[A-Z]/.test(name);
 
@@ -36,6 +44,28 @@ interface Churn {
   churn: number;
   fixChurn: number;
   recentChurn: number;
+}
+
+/** One history pass: the stream, the churn it implies, and how it was obtained. */
+interface History {
+  churn: Map<string, Churn>;
+  commits: Commit[];
+  cacheHit: boolean;
+  /** Commits parsed from git on this run (the whole stream on a miss). */
+  fresh: number;
+  ms: number;
+}
+
+/** The on-disk incremental cache: one processed stream per analyzed repo root. */
+interface HistoryCache {
+  v: number;
+  repoRoot: string;
+  /** The analyzed repo's HEAD when the stream was written. */
+  headHash: string;
+  cutoffTs: number;
+  /** Index table for the cached commits — reindexed against today's files. */
+  files: string[];
+  commits: Commit[];
 }
 
 interface Options {
@@ -66,9 +96,10 @@ async function main(): Promise<void> {
   const parsed = new Map<string, ParsedFile>(); // relPath -> { loc, modules, imports: [specifier] }
   for (const rel of files) parsed.set(rel, parseFile(path.join(repoRoot, rel), rel));
 
-  const { churn, commits } = collectHistory(repoRoot, files);
+  const history = collectHistory(repoRoot, files);
+  const commits = history.commits;
   const edges = buildEdges(repoRoot, opts.roots, parsed, fileSet);
-  const tree = buildTree(repoRoot, files, parsed, churn);
+  const tree = buildTree(repoRoot, files, parsed, history.churn);
   const prs = opts.prs ? await collectPRs(repoRoot, fileSet) : [];
 
   const data: CityData = {
@@ -103,6 +134,8 @@ async function main(): Promise<void> {
     `files: ${files.length}\nmodules: ${moduleCount}\nedges: ${edges.length}\nprs: ${prs.length}\n` +
     `commits: ${data.commits.length}${droppedCommits ? ` (dropped ${droppedCommits} oldest for size)` : ''}` +
     `${oldest ? ` back to ${new Date(oldest * 1000).toISOString().slice(0, 10)}` : ''}\n` +
+    `history: cache ${history.cacheHit ? `hit (+${history.fresh} new commits)` : 'miss (full pass)'}` +
+    ` in ${(history.ms / 1000).toFixed(1)}s\n` +
     `out: ${outPath} (${(json.length / 1e6).toFixed(2)} MB)\nelapsed: ${((Date.now() - started) / 1000).toFixed(1)}s`
   );
 }
@@ -238,24 +271,64 @@ function parseFile(absPath: string, rel: string): ParsedFile {
   return { loc, modules, imports };
 }
 
-// ---------- churn ----------
+// ---------- history (commit stream + churn) ----------
 
-// Single git-log pass producing both per-file churn and the newest-first commit stream.
-function collectHistory(repoRoot: string, files: string[]): { churn: Map<string, Churn>; commits: Commit[] } {
-  const churn = new Map<string, Churn>(); // rel -> {churn, fixChurn, recentChurn}
-  const commits: Commit[] = [];
-  const fileIndex = new Map(files.map((rel, i) => [rel, i]));
-  let out: string;
+/**
+ * Per-file churn and the newest-first commit stream, from one `git log --numstat`
+ * pass — or, when the cache still lines up with HEAD, from the cached stream plus
+ * a pass over `<cachedHead>..HEAD` only.
+ */
+function collectHistory(repoRoot: string, files: string[]): History {
+  const started = Date.now();
+  const cutoffTs = Math.floor(Date.now() / 1000) - HISTORY_DAYS * DAY;
+  const head = gitHead(repoRoot);
+  const cachePath = cachePathFor(repoRoot);
+  const cached = readCache(cachePath, repoRoot, files);
+
+  let commits: Commit[] | null = null;
+  let hit = false;
+  let fresh = 0;
+  if (cached && head && isAncestor(repoRoot, cached.headHash, head)) {
+    const added = readLog(repoRoot, files, `${cached.headHash}..HEAD`);
+    const kept = added ? reindexCached(cached, files) : null;
+    if (added && kept) {
+      fresh = added.length;
+      commits = [...added, ...kept].filter((c) => c.ts >= cutoffTs);
+      hit = true;
+    }
+  }
+  if (!commits) {
+    commits = readLog(repoRoot, files, null) ?? [];
+    fresh = commits.length;
+  }
+  if (head) writeCache(cachePath, { v: CACHE_VERSION, repoRoot, headHash: head, cutoffTs, files, commits });
+
+  return { churn: countChurn(commits, files), commits, cacheHit: hit, fresh, ms: Date.now() - started };
+}
+
+/**
+ * One `git log --numstat` pass, parsed against today's file index table.
+ * @param range  a revision range (incremental) or null for the 12-month window
+ * @returns null when git itself failed — the caller falls back to a full pass
+ */
+function readLog(repoRoot: string, files: string[], range: string | null): Commit[] | null {
+  const args = ['-C', repoRoot, 'log', '--numstat', '--pretty=format:%x01%h%x09%ct%x09%an%x09%s'];
+  args.push(range ?? '--since=12.months');
   try {
-    out = execFileSync('git',
-      ['-C', repoRoot, 'log', '--since=12.months', '--name-only', '--pretty=format:%x01%h%x09%ct%x09%an%x09%s'],
-      { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 });
+    const out = execFileSync('git', args, { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 });
+    return parseLog(out, files);
   } catch (err: unknown) {
     console.warn('warn: git log failed, churn/commits will be empty:', errMessage(err));
-    return { churn, commits };
+    return null;
   }
-  const recentCutoff = Math.floor(Date.now() / 1000) - 30 * DAY;
-  let current: Commit | null = null, isFix = false, isRecent = false, seen = new Set<string>();
+}
+
+function parseLog(out: string, files: string[]): Commit[] {
+  const fileIndex = new Map(files.map((rel, i) => [rel, i]));
+  const commits: Commit[] = [];
+  let current: Commit | null = null;
+  let deltas: [number, number][] = [];
+  let seen = new Set<string>();
 
   const flush = () => { if (current && current.f.length) commits.push(current); };
 
@@ -263,27 +336,158 @@ function collectHistory(repoRoot: string, files: string[]): { churn: Map<string,
     if (line.startsWith('\x01')) {
       flush();
       const [h, tsStr, author, ...rest] = line.slice(1).split('\t');
-      const ts_ = Number(tsStr);
-      const subject = rest.join('\t');
-      isFix = FIX_RE.test(subject);
-      isRecent = ts_ >= recentCutoff;
+      deltas = [];
       seen = new Set();
-      current = { h: h ?? '', ts: ts_, a: author ?? '', s: subject.slice(0, SUBJECT_MAX), f: [] };
+      current = {
+        h: h ?? '', ts: Number(tsStr), a: author ?? '',
+        s: rest.join('\t').slice(0, SUBJECT_MAX), f: [], d: deltas,
+      };
       continue;
     }
-    const rel = line.trim();
-    const idx = fileIndex.get(rel);
-    if (idx === undefined || seen.has(rel)) continue;
-    seen.add(rel);
-    if (current) current.f.push(idx);
-    let c = churn.get(rel);
-    if (!c) churn.set(rel, (c = { churn: 0, fixChurn: 0, recentChurn: 0 }));
-    c.churn++;
-    if (isFix) c.fixChurn++;
-    if (isRecent) c.recentChurn++;
+    const stat = parseNumstat(line);
+    if (!stat || !current) continue;
+    const idx = fileIndex.get(stat.path);
+    if (idx === undefined || seen.has(stat.path)) continue;
+    seen.add(stat.path);
+    current.f.push(idx);
+    deltas.push([stat.adds, stat.dels]);
   }
   flush();
-  return { churn, commits };
+  return commits;
+}
+
+/** One numstat line: `adds\tdels\tpath`. Binary files (`-`) are skipped. */
+function parseNumstat(line: string): { adds: number; dels: number; path: string } | null {
+  const t1 = line.indexOf('\t');
+  const t2 = t1 < 0 ? -1 : line.indexOf('\t', t1 + 1);
+  if (t1 < 0 || t2 < 0) return null;
+  const adds = Number(line.slice(0, t1));
+  const dels = Number(line.slice(t1 + 1, t2));
+  if (!Number.isFinite(adds) || !Number.isFinite(dels)) return null; // binary: "-"
+  const rel = renameTarget(line.slice(t2 + 1).trim());
+  return rel ? { adds, dels, path: rel } : null;
+}
+
+/**
+ * Renames arrive as `old.ts => new.ts` or `dir/{a => b}/x.ts`; both resolve to
+ * the new path, which is the one the file has in the analyzed tree.
+ */
+function renameTarget(raw: string): string {
+  if (!raw.includes(' => ')) return raw;
+  const braced = /^(.*)\{[^{}]* => ([^{}]*)\}(.*)$/.exec(raw);
+  if (braced) return `${braced[1] ?? ''}${braced[2] ?? ''}${braced[3] ?? ''}`.replace(/\/{2,}/g, '/');
+  return raw.slice(raw.lastIndexOf(' => ') + 4);
+}
+
+function countChurn(commits: Commit[], files: string[]): Map<string, Churn> {
+  const churn = new Map<string, Churn>(); // rel -> {churn, fixChurn, recentChurn}
+  const recentCutoff = Math.floor(Date.now() / 1000) - 30 * DAY;
+  for (const commit of commits) {
+    const isFix = FIX_RE.test(commit.s);
+    const isRecent = commit.ts >= recentCutoff;
+    for (const i of commit.f) {
+      const rel = files[i];
+      if (rel === undefined) continue;
+      let c = churn.get(rel);
+      if (!c) churn.set(rel, (c = { churn: 0, fixChurn: 0, recentChurn: 0 }));
+      c.churn++;
+      if (isFix) c.fixChurn++;
+      if (isRecent) c.recentChurn++;
+    }
+  }
+  return churn;
+}
+
+// ---------- history cache ----------
+
+/** `<this project>/.codecity/<sha1 of the analyzed repo root>.json`. */
+function cachePathFor(repoRoot: string): string {
+  const key = crypto.createHash('sha1').update(repoRoot).digest('hex');
+  return path.join(PROJECT_ROOT, '.codecity', `${key}.json`);
+}
+
+/**
+ * The cached stream, or null when anything at all does not line up — a cache
+ * miss is always silent, and costs only the full pass the analyzer did before.
+ */
+function readCache(cachePath: string, repoRoot: string, files: string[]): HistoryCache | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!isHistoryCache(raw) || raw.v !== CACHE_VERSION || raw.repoRoot !== repoRoot) return null;
+  // The cached stream was already filtered to the file set of its run, so it can
+  // only be reused when today's files are a subset of that one.
+  const cachedFiles = new Set(raw.files);
+  for (const rel of files) if (!cachedFiles.has(rel)) return null;
+  return raw;
+}
+
+/** Cached commits re-pointed at today's `files` index table; null if malformed. */
+function reindexCached(cache: HistoryCache, files: string[]): Commit[] | null {
+  const indexOf = new Map(files.map((rel, i) => [rel, i]));
+  const out: Commit[] = [];
+  for (const commit of cache.commits) {
+    if (!isCommit(commit)) return null;
+    const f: number[] = [];
+    const d: [number, number][] = [];
+    const deltas = commit.d ?? [];
+    for (let i = 0; i < commit.f.length; i++) {
+      const cachedIdx = commit.f[i];
+      const rel = cachedIdx === undefined ? undefined : cache.files[cachedIdx];
+      const idx = rel === undefined ? undefined : indexOf.get(rel);
+      if (idx === undefined) continue;
+      f.push(idx);
+      d.push(deltas[i] ?? [0, 0]);
+    }
+    if (f.length) out.push({ h: commit.h, ts: commit.ts, a: commit.a, s: commit.s, f, d });
+  }
+  return out;
+}
+
+function writeCache(cachePath: string, cache: HistoryCache): void {
+  try {
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    fs.writeFileSync(cachePath, JSON.stringify(cache));
+  } catch (err: unknown) {
+    console.warn('warn: could not write the history cache:', errMessage(err));
+  }
+}
+
+function isHistoryCache(value: unknown): value is HistoryCache {
+  if (!isRecord(value)) return false;
+  return typeof value.v === 'number'
+    && typeof value.repoRoot === 'string'
+    && typeof value.headHash === 'string' && HASH_RE.test(value.headHash)
+    && typeof value.cutoffTs === 'number'
+    && Array.isArray(value.files)
+    && Array.isArray(value.commits);
+}
+
+function isCommit(value: unknown): value is Commit {
+  if (!isRecord(value)) return false;
+  return typeof value.h === 'string' && typeof value.ts === 'number'
+    && typeof value.a === 'string' && typeof value.s === 'string'
+    && Array.isArray(value.f) && (value.d === undefined || Array.isArray(value.d));
+}
+
+function gitHead(repoRoot: string): string | null {
+  try {
+    return execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function isAncestor(repoRoot: string, older: string, newer: string): boolean {
+  try {
+    execFileSync('git', ['-C', repoRoot, 'merge-base', '--is-ancestor', older, newer], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---------- import edges ----------
