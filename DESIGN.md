@@ -141,6 +141,43 @@ parsing); ships as a "Strata" mode alongside the log-scale massing.
   (API-dependent panes already hide themselves). Use cases: GitHub Pages,
   internal doc hubs, attaching a city snapshot to a PR or design doc.
 
+## Hierarchy legibility (planned — UX polish pass)
+
+At repo scale it's hard to tell a top-level package from folders nested inside
+it. The fixes, layered:
+
+- **Elevated terraces** — folder plate elevation steps by hierarchy tier, so
+  top-level districts sit visibly raised and nesting reads as stacked terraces.
+- **Side-wall names** — top 1–2 folder tiers get their names rendered on the
+  terrace side faces (plinth signage, camera-facing side); floating label pills
+  only from level 3 down. Top-level names most visible.
+- **Clickable labels** — every label joins the raycast set (click = select,
+  double-click = isolate).
+- **Parent→child label leader lines** — thin links from a parent's label to its
+  children's labels, shown contextually (parent hovered/selected, or when two
+  label tiers are visible) so containment is explicit without constant clutter.
+- **Smooth hierarchical zoom** — drill/back transitions chain through each
+  intermediate level instead of re-centering per jump.
+- Sidebar polish: condensed PR/commit rows (expand on demand); identifiers in
+  true case (no uppercase transform on data-derived names).
+
+## Markdown support (planned)
+
+Treat a notes vault / docs tree as a codebase: discover `.md` files; modules =
+headings (nesting by heading depth → `children`); edges = relative markdown
+links and `[[wikilinks]]` (resolved by filename/slug); new `section` building
+kind. Churn/timeline/strata work unchanged — strata on a growing document is a
+natural fit.
+
+## Working-tree view (in progress)
+
+`GET /api/status` (implemented) returns `git status --porcelain` as
+`{changes: [{path, x, y, untracked}]}`. Viewer gains a "Working tree" layer:
+modified files glow amber, untracked render as ghost outlines, deletions as red
+voids; sidebar lists the changes; refresh on demand. Completes the time
+spectrum: strata → 12-month timeline → 30-day recent → open PRs → **now**.
+Dev-server (and future VS Code host) only; hidden on static exports.
+
 ## Tour SDK (planned — PR-review integration)
 
 A TypeScript SDK for *codifying a guided tour of the city*, so a coding agent

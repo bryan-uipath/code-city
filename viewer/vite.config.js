@@ -74,6 +74,21 @@ const ROUTES = {
     send(res, 200, { diff: stdout.split('\n').slice(0, MAX_LINES).join('\n') });
   },
 
+  // Working-tree state: modified / added / deleted / untracked (the "now" view).
+  '/status': Object.assign(async ({ res, root }) => {
+    const { stdout } = await git(root, ['status', '--porcelain']);
+    const changes = stdout.split('\n').filter(Boolean).slice(0, 2000).map((line) => {
+      const x = line[0] || ' ';
+      const y = line[1] || ' ';
+      let p = line.slice(3);
+      const arrow = p.indexOf(' -> '); // renames: report the new path
+      if (arrow >= 0) p = p.slice(arrow + 4);
+      if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+      return { path: p, x, y, untracked: x === '?' };
+    });
+    send(res, 200, { changes });
+  }, { noPath: true }),
+
   // Content search over tracked source files (Ctrl+F in the viewer).
   '/search': Object.assign(async ({ res, root, params }) => {
     const q = (params.get('q') || '').trim();
