@@ -112,12 +112,16 @@ function startVite(port) {
   const proc = spawn(process.execPath, [bin, 'viewer', '--port', String(port), '--strictPort'], {
     cwd: REPO,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Color codes split vite's "Local: http…" ready banner mid-word.
+    env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
   });
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('vite did not become ready in 60s')), 60_000);
     let log = '';
     const onData = (buf) => {
-      log += buf.toString();
+      // Strip ANSI escapes defensively — NO_COLOR should prevent them, but the
+      // ready check must not depend on it.
+      log += buf.toString().replace(/\x1b\[[0-9;]*m/g, '');
       if (/Local:\s+http/.test(log)) {
         clearTimeout(timer);
         proc.stdout.off('data', onData);
