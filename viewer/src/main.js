@@ -22,6 +22,7 @@ import {
 import { createLabeler } from './labels.js';
 import { createSidebar, escapeHtml } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW } from './timeline.js';
+import { createSearch } from './search.js';
 
 const MAX_ARCS = 150;
 const DAY = 86400;
@@ -94,7 +95,7 @@ const index = {
 // Three.js objects
 let renderer, scene, camera, controls, composer, bloom;
 let city, envGroup, peopleGroup, scaffoldGroup, stage;
-let labeler, sidebar, timeline;
+let labeler, sidebar, timeline, search;
 let arcMesh = null;
 let arcFlow = null;
 let selectionBox, hoverBox;
@@ -119,6 +120,20 @@ const flight = { active: false, t: 0, dur: 1.1, fromPos: new THREE.Vector3(), to
 const transition = { t: 1, k0: 1, p0: new THREE.Vector3(), mats: [] };
 /** Per-scope-file recency, recomputed (throttled) while scrubbing history. */
 const recency = { map: new Map(), dirty: false, acc: 0 };
+/**
+ * Search highlight pass — while the palette is open this takes precedence over
+ * the overlay/timeline recolor; closing it calls applyOverlay() to restore.
+ * `paths` maps a real file path to { w, mods } (mods = null → the whole file).
+ */
+const searchPaint = {
+  on: false,
+  paths: null,
+  cursor: null,
+  pulseRecs: [],     // instance records under the keyboard cursor
+  pulseMeshes: [],   // their meshes, for a single needsUpdate per frame
+};
+const SEARCH_HL = new THREE.Color(0xbdfcff);
+const _hl = new THREE.Color();
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -144,6 +159,12 @@ async function main() {
   timeline = createTimeline(data, { onChange: onTimeCursor });
   sidebar = createSidebar({ timeline });
   labeler = createLabeler(scene, camera);
+  search = createSearch({
+    getRoot: () => state.root,
+    highlight: setSearchHighlight,
+    reveal: revealPath,
+    notice: showNotice,
+  });
 
   state.focus = state.root;
   buildStaticScene();
@@ -447,6 +468,7 @@ function rebuildScene(opts = {}) {
 
   indexScope();
   buildPeopleLayer();
+  applySearchLayerMute();
 
   if (state.selection && !scope.nodes.has(state.selection.node)) setSelection(null, { keepSidebar: true });
   refreshSelectionBox();
@@ -545,7 +567,7 @@ function clearGroup(group) {
 
 function refreshPickables() {
   pickables = city.pickables.slice();
-  if (state.people) {
+  if (state.people && peopleGroup.visible) {
     for (const g of peopleGroup.children) if (g.userData.sprite) pickables.push(g.userData.sprite);
   }
 }
@@ -670,6 +692,10 @@ function recomputeRecency() {
 
 function applyOverlay() {
   if (!city) return;
+  if (searchPaint.on) {
+    paintSearch();
+    return;
+  }
   const mode = state.mode;
   const scrubbing = mode === 'recent' && state.timeCursor !== null;
   const maxV =
@@ -716,6 +742,140 @@ function applyOverlay() {
     }
     if (city.folderPlates.instanceColor) city.folderPlates.instanceColor.needsUpdate = true;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Search highlight
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {{paths: Map<string,{w:number, mods:Set<string>|null}>,
+ *          cursor: {path:string, mods:Set<string>|null}|null}|null} spec
+ * null restores the active overlay.
+ */
+function setSearchHighlight(spec) {
+  if (!spec || !spec.paths || !spec.paths.size) {
+    const was = searchPaint.on;
+    searchPaint.on = !!spec;
+    searchPaint.paths = spec ? spec.paths : null;
+    searchPaint.cursor = null;
+    searchPaint.pulseRecs.length = 0;
+    searchPaint.pulseMeshes.length = 0;
+    // An open palette with no matches still dims the city; a closed one restores.
+    if (spec || was) applyOverlay();
+    applySearchLayerMute();
+    refreshPickables();
+    return;
+  }
+  searchPaint.on = true;
+  searchPaint.paths = spec.paths;
+  searchPaint.cursor = spec.cursor || null;
+  applyOverlay();
+  applySearchLayerMute();
+  refreshPickables();
+}
+
+/** PR beams/scaffolding would drown the highlight, so they rest while searching. */
+function applySearchLayerMute() {
+  const show = state.people && !searchPaint.on;
+  peopleGroup.visible = show;
+  scaffoldGroup.visible = show;
+}
+
+/** Matches glow white-cyan (brighter with weight), everything else goes dark. */
+function paintSearch() {
+  const paths = searchPaint.paths;
+  const cursor = searchPaint.cursor;
+  searchPaint.pulseRecs.length = 0;
+  searchPaint.pulseMeshes.length = 0;
+
+  for (const rec of city.moduleRecords) {
+    const real = realFileOf(rec.file);
+    const hit = real && paths ? paths.get(real.path) : null;
+    if (hit) {
+      const exact = !hit.mods || hit.mods.has(rec.mod.name);
+      _color.copy(SEARCH_HL).multiplyScalar((exact ? 1 : 0.3) * (0.45 + 0.85 * hit.w));
+      if (cursor && real.path === cursor.path && (!cursor.mods || cursor.mods.has(rec.mod.name))) {
+        searchPaint.pulseRecs.push(rec);
+        if (!searchPaint.pulseMeshes.includes(rec.mesh)) searchPaint.pulseMeshes.push(rec.mesh);
+      }
+    } else {
+      _color.copy(rec.baseColor).multiplyScalar(0.05);
+    }
+    rec.mesh.setColorAt(rec.instanceId, _color);
+  }
+  for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+
+  if (city.filePlates) {
+    for (const rec of city.fileRecords) {
+      const real = realFileOf(rec.node);
+      const hit = real && paths ? paths.get(real.path) : null;
+      if (hit) _color.copy(SEARCH_HL).multiplyScalar(0.18 + 0.22 * hit.w);
+      else _color.copy(rec.baseColor).multiplyScalar(0.1);
+      city.filePlates.setColorAt(rec.instanceId, _color);
+    }
+    if (city.filePlates.instanceColor) city.filePlates.instanceColor.needsUpdate = true;
+  }
+
+  if (city.folderPlates) {
+    for (const rec of city.folderRecords) {
+      _dim.copy(rec.baseColor).multiplyScalar(0.22);
+      city.folderPlates.setColorAt(rec.instanceId, _dim);
+    }
+    if (city.folderPlates.instanceColor) city.folderPlates.instanceColor.needsUpdate = true;
+  }
+}
+
+/** Extra pulse on the row under the keyboard cursor. */
+function pulseSearchCursor(t) {
+  if (!searchPaint.on || !searchPaint.pulseRecs.length) return;
+  const k = 1.15 + 0.85 * (0.5 + 0.5 * Math.sin(t * 5.4));
+  _hl.copy(SEARCH_HL).multiplyScalar(k);
+  for (const rec of searchPaint.pulseRecs) rec.mesh.setColorAt(rec.instanceId, _hl);
+  for (const mesh of searchPaint.pulseMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+/**
+ * Select + fly to a path found in the palette. Matches outside the current
+ * focus scope pop the scope back to the root first.
+ * @returns {boolean} false when the path is not part of the analyzed city.
+ */
+function revealPath(path, opts = {}) {
+  const real = index.filesByPath.get(path);
+  if (!real) {
+    showNotice('Not in this city: ' + path);
+    return false;
+  }
+  // Outside the current scope → pop to the root city. A file too small to get
+  // its own plate at that extent has no footprint there, so drill down to its
+  // folder (then to the file itself) until it has one.
+  if (!scope.byRealPath.has(path)) focusNode(state.root);
+  if (!scope.byRealPath.has(path) && real.parent) focusNode(real.parent);
+  if (!scope.byRealPath.has(path)) focusNode(real);
+
+  const node = scope.byRealPath.get(path);
+  if (!node) {
+    showNotice('No footprint for ' + path);
+    return false;
+  }
+
+  let target = { type: node.type, node, rec: null };
+  if (opts.module) {
+    const rec = city.moduleRecords.find((r) => realFileOf(r.file) === real && r.mod.name === opts.module);
+    if (rec) target = { type: 'module', rec, node: rec.file };
+  }
+  setSelection(target);
+
+  if (Number.isFinite(opts.line) && opts.line > 0) {
+    const desc = describe(target);
+    if (desc) {
+      desc.span = { start: Math.max(1, opts.line - 12), end: opts.line + 60 };
+      desc.deep = true;
+      sidebar.setSelection(desc);
+    }
+  }
+  if (node.rect) flyTo(node);
+  return true;
 }
 
 /** Scrubbing the timeline implies the Recent Focus overlay. */
@@ -1220,6 +1380,10 @@ function bindEvents() {
   });
 
   window.addEventListener('keydown', (e) => {
+    // The palette owns the keyboard while it is open — Escape must close it
+    // only, never also pop the focus scope.
+    if (search && search.isOpen()) return;
+    if (isEditable(e.target)) return;
     if (e.key === 'Escape') {
       const up = state.focus?.parent;
       if (up) focusNode(up);
@@ -1235,6 +1399,12 @@ function bindEvents() {
   });
 
   window.addEventListener('resize', onResize);
+}
+
+function isEditable(el) {
+  if (!el || !el.tagName) return false;
+  const tag = el.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || el.isContentEditable === true;
 }
 
 /** Which node a double-click isolates: buildings drill into their module. */
@@ -1385,6 +1555,7 @@ function animate() {
     const rate = c.userData.pulseRate || 2.4;
     c.material.opacity = 0.42 + 0.34 * (0.5 + 0.5 * Math.sin(t * rate));
   }
+  pulseSearchCursor(t);
   if (settled && state.selection) refreshSelectionBox();
   if (selectionBox.visible) selectionBox.material.opacity = 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(t * 3.2));
 

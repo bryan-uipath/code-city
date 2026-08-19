@@ -301,6 +301,63 @@
   }
   #tl-range::-moz-range-thumb { width: 3px; height: 30px; background: var(--orange); border: 0; border-radius: 0; }
 
+  /* --- command palette (⌘P / ⌘F) */
+  #palette {
+    position: fixed; z-index: 48; top: 76px; left: 50%; transform: translateX(-50%) translateY(-8px);
+    width: min(680px, calc(100vw - 520px)); min-width: 380px;
+    background: var(--panel-solid);
+    padding: 10px 10px 8px;
+    display: none; opacity: 0; transition: opacity 110ms ease, transform 110ms ease;
+  }
+  #palette.on { display: block; opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #pal-tabs { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  #pal-tabs button {
+    appearance: none; cursor: pointer; font-family: var(--mono); font-size: 9.5px;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--foreground-muted);
+    background: rgba(39,39,42,0.72); border: 1px solid var(--border); padding: 4px 9px;
+  }
+  #pal-tabs button:hover { background: var(--surface-hover); color: var(--foreground); border-color: var(--brand); }
+  #pal-tabs button.active {
+    color: #ffd9cd; border-color: var(--orange);
+    background: linear-gradient(90deg, rgba(250,70,22,0.28), rgba(250,70,22,0.06));
+    box-shadow: 0 0 14px rgba(250,70,22,0.2);
+  }
+  #pal-status { margin-left: auto; color: var(--foreground-subtle); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; }
+
+  #pal-input {
+    width: 100%; appearance: none; font-family: var(--mono); font-size: 13px;
+    letter-spacing: 0.08em; color: var(--foreground);
+    background: rgba(2,7,14,0.85); border: 1px solid var(--border);
+    padding: 8px 10px; outline: none;
+  }
+  #pal-input:focus { border-color: var(--brand); box-shadow: 0 0 14px rgba(8,145,178,0.28); }
+  #pal-input::placeholder { color: var(--foreground-subtle); }
+
+  #pal-list { max-height: 46vh; overflow-y: auto; margin-top: 6px; scrollbar-width: thin; }
+  #pal-list::-webkit-scrollbar { width: 6px; }
+  #pal-list::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .pal-row {
+    display: flex; align-items: baseline; gap: 8px; cursor: pointer;
+    padding: 4px 7px; border: 1px solid transparent; font-size: 11px; white-space: nowrap;
+  }
+  .pal-row:hover { background: var(--surface-overlay); }
+  .pal-row.active { background: rgba(8,145,178,0.2); border-color: var(--brand); }
+  .pal-row .tag {
+    flex: none; font-size: 8px; letter-spacing: 0.14em; color: var(--foreground-subtle);
+    border: 1px solid var(--border-subtle); padding: 0 3px; min-width: 26px; text-align: center;
+  }
+  .pal-row .tag.mod { color: var(--violet); border-color: rgba(167,139,250,0.5); }
+  .pal-row .nm { color: var(--foreground); flex: none; }
+  .pal-row .dir { color: var(--foreground-muted); font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; }
+  .pal-row .cnt { margin-left: auto; color: var(--accent-muted); font-size: 9.5px; flex: none; }
+  .pal-row.line { padding-left: 26px; font-size: 10px; }
+  .pal-row.line .ln { color: var(--foreground-subtle); flex: none; min-width: 34px; text-align: right; }
+  .pal-row.line .src { color: #b9e6f2; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; }
+  .pal-row mark { background: rgba(250,70,22,0.28); color: #ffd9cd; }
+  .pal-empty { color: var(--foreground-muted); font-size: 10px; letter-spacing: 0.14em; padding: 8px 7px; text-transform: uppercase; opacity: 0.7; }
+
   /* --- boot / error banner */
   #boot {
     position: fixed; inset: 0; z-index: 60; display: flex;
@@ -370,6 +427,7 @@
     <div><kbd>DRAG</kbd> orbit &nbsp; <kbd>MMB</kbd> pan &nbsp; <kbd>WHEEL</kbd> zoom</div>
     <div><kbd>CLICK</kbd> select &nbsp; <kbd>DBL</kbd> isolate</div>
     <div><kbd>ESC</kbd> up one level &nbsp; <kbd>C</kbd> copy path</div>
+    <div><kbd>&#8984;P</kbd> find file &nbsp; <kbd>&#8984;F</kbd> find in files</div>
   </div>
 
   <!-- right sidebar -->
