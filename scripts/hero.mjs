@@ -34,7 +34,7 @@ const SCALE = 2;
  * the shot we want: several file blocks of module buildings, close enough to
  * read, with the import arcs between them in frame.
  */
-const TARGETS = ['viewer/src', 'viewer', 'analyzer', 'viewer/src/main.js'];
+const TARGETS = ['viewer/src', 'viewer', 'analyzer', 'viewer/src/main.ts'];
 
 main().catch((err) => {
   console.error('\nhero: ' + (err?.stack || err));
@@ -82,7 +82,7 @@ function stashData() {
 
 function analyze() {
   console.log('hero: analyzing this repository...');
-  execFileSync('node', ['analyzer/analyze.mjs', '.', '--no-prs', '--out', 'viewer/public/data.json'], {
+  execFileSync('npx', ['tsx', 'analyzer/analyze.ts', '.', '--no-prs', '--out', 'viewer/public/data.json'], {
     cwd: REPO,
     stdio: 'inherit',
   });

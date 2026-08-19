@@ -1,5 +1,5 @@
 /**
- * main.js — scene wiring, data loading, focus stack, overlays, interaction.
+ * main.ts — scene wiring, data loading, focus stack, overlays, interaction.
  *
  * The city is always rendered for ONE focus scope: double-clicking pushes into
  * a node (folder → file → module → member), which disposes the current city and
@@ -13,16 +13,21 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
+import type { CityHost } from '../../shared/host.js';
+import { HttpHost } from '../../shared/host.js';
+import type { CityData, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr } from '../../shared/types.js';
 import { layoutCity, plateTop, buildingHeight } from './layout.js';
 import {
   buildCity, buildEnvironment, disposeObject,
   buildCouplingArcs, buildArcFlow, buildPrMarker, buildScaffolding, makeSelectionBox, frameNodeBox,
   heatColor, walk, KIND_COLORS, KIND_ORDER, MEMBER_ORDER, PALETTE,
+  type Arc, type ArcFlow, type CityBuild, type ModuleRecord,
 } from './city.js';
-import { createLabeler } from './labels.js';
-import { createSidebar, escapeHtml } from './sidebar.js';
-import { createTimeline, RECENT_WINDOW, FLASH_WINDOW } from './timeline.js';
-import { createSearch } from './search.js';
+import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
+import { createSidebar, escapeHtml, type Descriptor, type Sidebar } from './sidebar.js';
+import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
+import { createSearch, type HighlightSpec, type SearchPalette } from './search.js';
+import { asVNode, type VMod, type VNode } from './vtree.js';
 
 const MAX_ARCS = 150;
 const DAY = 86400;
@@ -32,7 +37,7 @@ const TRANSITION_DUR = 0.42;
 const MODULE_LABEL_BUDGET = 800;
 
 /** World extent of the root plate, scaled so buildings keep a city-like ratio. */
-function cityExtent(fileCount) {
+function cityExtent(fileCount: number): number {
   return Math.min(Math.max(Math.sqrt(fileCount) * 15, 260), 900);
 }
 let CITY_SIZE = 900;
@@ -41,7 +46,36 @@ let CITY_SIZE = 900;
 // State
 // ---------------------------------------------------------------------------
 
-const state = {
+type Mode = 'structure' | 'churn' | 'fix' | 'recent';
+
+/** A node (or building) the pointer / selection is on. */
+interface NodeTarget {
+  type: 'folder' | 'file' | 'module';
+  node: VNode;
+  rec: ModuleRecord | null;
+}
+
+/** A PR avatar. */
+interface PrTarget {
+  type: 'pr';
+  pr: Pr;
+}
+
+type Target = NodeTarget | PrTarget;
+
+const state: {
+  data: CityData | null;
+  root: VNode | null;
+  mode: Mode;
+  coupling: boolean;
+  people: boolean;
+  fx: boolean;
+  focus: VNode | null;
+  selection: Target | null;
+  hover: Target | null;
+  timeCursor: number | null;
+  usingFake: boolean;
+} = {
   data: null,
   root: null,
   mode: 'recent',
@@ -58,7 +92,12 @@ const state = {
 };
 
 /** Everything derived from the current focus scope; rebuilt on every transition. */
-const scope = {
+const scope: {
+  root: VNode | null;
+  fileNodes: VNode[];
+  byRealPath: Map<string, VNode>;
+  nodes: Set<VNode>;
+} = {
   root: null,
   fileNodes: [],
   byRealPath: new Map(),
@@ -66,22 +105,31 @@ const scope = {
 };
 
 const dom = {
-  scene: document.getElementById('scene'),
-  boot: document.getElementById('boot'),
-  notice: document.getElementById('notice'),
-  breadcrumb: document.getElementById('breadcrumb'),
-  repoName: document.getElementById('repo-name'),
-  statFiles: document.getElementById('stat-files'),
-  statModules: document.getElementById('stat-modules'),
-  statLoc: document.getElementById('stat-loc'),
-  statFps: document.getElementById('stat-fps'),
-  legend: document.getElementById('legend-body'),
-  modes: document.getElementById('modes'),
-  toggles: document.getElementById('toggles'),
+  scene: requireEl('scene'),
+  boot: requireEl('boot'),
+  notice: requireEl('notice'),
+  breadcrumb: requireEl('breadcrumb'),
+  repoName: requireEl('repo-name'),
+  statFiles: requireEl('stat-files'),
+  statModules: requireEl('stat-modules'),
+  statLoc: requireEl('stat-loc'),
+  statFps: requireEl('stat-fps'),
+  legend: requireEl('legend-body'),
+  modes: requireEl('modes'),
+  toggles: requireEl('toggles'),
 };
 
 // Index structures (built once, over the real tree)
-const index = {
+const index: {
+  filesByPath: Map<string, VNode>;
+  nodesByPath: Map<string, VNode>;
+  prsByFile: Map<string, Pr[]>;
+  prsByNode: Map<VNode, Pr[]>;
+  groupMaps: Map<VNode, Map<string, VNode>>;
+  edgesOut: Map<string, Array<{ other: string; n: number }>>;
+  edgesIn: Map<string, Array<{ other: string; n: number }>>;
+  max: { churn: number; fixChurn: number; recentChurn: number };
+} = {
   filesByPath: new Map(),
   nodesByPath: new Map(),
   prsByFile: new Map(),   // path -> PR[]
@@ -92,20 +140,36 @@ const index = {
   max: { churn: 1, fixChurn: 1, recentChurn: 1 },
 };
 
+// The environment adapter — the only thing that talks to the outside world.
+const host: CityHost = new HttpHost();
+
 // Three.js objects
-let renderer, scene, camera, controls, composer, bloom;
-let city, envGroup, peopleGroup, scaffoldGroup, stage;
-let labeler, sidebar, timeline, search;
-let arcMesh = null;
-let arcFlow = null;
-let selectionBox, hoverBox;
-let crumbNodes = [];
+let renderer: THREE.WebGLRenderer;
+let scene: THREE.Scene;
+let camera: THREE.PerspectiveCamera;
+let controls: OrbitControls;
+let composer: EffectComposer;
+let bloom: UnrealBloomPass;
+let city: CityBuild | null = null;
+let envGroup: THREE.Group;
+let peopleGroup: THREE.Group;
+let scaffoldGroup: THREE.Group;
+let stage: THREE.Group;
+let labeler: Labeler;
+let sidebar: Sidebar;
+let timeline: Timeline;
+let search: SearchPalette | null = null;
+let arcMesh: THREE.Mesh | null = null;
+let arcFlow: ArcFlow | null = null;
+let selectionBox: THREE.LineSegments;
+let hoverBox: THREE.LineSegments;
+let crumbNodes: VNode[] = [];
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 let pointerDirty = false;
 let pointerInside = false;
-let pickables = [];
+let pickables: THREE.Object3D[] = [];
 
 // Scratch objects — never allocate inside the render loop.
 const _m4 = new THREE.Matrix4();
@@ -117,15 +181,25 @@ const _dim = new THREE.Color();
 
 const flight = { active: false, t: 0, dur: 1.1, fromPos: new THREE.Vector3(), toPos: new THREE.Vector3(), fromTarget: new THREE.Vector3(), toTarget: new THREE.Vector3() };
 /** Scope transition: the new scene starts mapped onto the old footprint and unfolds. */
-const transition = { t: 1, k0: 1, p0: new THREE.Vector3(), mats: [] };
+const transition: { t: number; k0: number; p0: THREE.Vector3; mats: Array<{ m: THREE.Material; base: number }> } = {
+  t: 1, k0: 1, p0: new THREE.Vector3(), mats: [],
+};
 /** Per-scope-file recency, recomputed (throttled) while scrubbing history. */
-const recency = { map: new Map(), dirty: false, acc: 0 };
+const recency: { map: Map<VNode, { count: number; flash: number }>; dirty: boolean; acc: number } = {
+  map: new Map(), dirty: false, acc: 0,
+};
 /**
  * Search highlight pass — while the palette is open this takes precedence over
  * the overlay/timeline recolor; closing it calls applyOverlay() to restore.
  * `paths` maps a real file path to { w, mods } (mods = null → the whole file).
  */
-const searchPaint = {
+const searchPaint: {
+  on: boolean;
+  paths: Map<string, { w: number; mods: Set<string> | null }> | null;
+  cursor: { path: string; mods: Set<string> | null } | null;
+  pulseRecs: ModuleRecord[];
+  pulseMeshes: THREE.InstancedMesh[];
+} = {
   on: false,
   paths: null,
   cursor: null,
@@ -139,16 +213,16 @@ const _hl = new THREE.Color();
 // Boot
 // ---------------------------------------------------------------------------
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(err);
-  showNotice('FATAL: ' + err.message);
+  showNotice('FATAL: ' + errMessage(err));
   dom.boot.classList.add('hide');
 });
 
-async function main() {
+async function main(): Promise<void> {
   const data = await loadData();
   state.data = data;
-  state.root = data.tree;
+  state.root = asVNode(data.tree);
 
   normalizeTree(state.root);
   buildIndex(data);
@@ -157,13 +231,14 @@ async function main() {
   initScene();
 
   timeline = createTimeline(data, { onChange: onTimeCursor });
-  sidebar = createSidebar({ timeline });
+  sidebar = createSidebar({ host, timeline, githubUrl: data.repo?.githubUrl });
   labeler = createLabeler(scene, camera);
   search = createSearch({
-    getRoot: () => state.root,
+    getRoot: () => state.root ?? asVNode(data.tree),
     highlight: setSearchHighlight,
     reveal: revealPath,
     notice: showNotice,
+    search: (q) => host.search(q),
   });
 
   state.focus = state.root;
@@ -181,22 +256,18 @@ async function main() {
 // Data
 // ---------------------------------------------------------------------------
 
-async function loadData() {
+async function loadData(): Promise<CityData> {
   try {
-    const res = await fetch('./data.json', { cache: 'no-cache' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const json = await res.json();
-    if (!json || !json.tree) throw new Error('malformed data.json');
-    return json;
-  } catch (err) {
-    console.warn('[code-city] falling back to synthetic dataset:', err.message);
+    return await host.loadData();
+  } catch (err: unknown) {
+    console.warn('[code-city] falling back to synthetic dataset:', errMessage(err));
     state.usingFake = true;
     return makeFakeData();
   }
 }
 
 /** Fill in missing fields and recompute folder aggregates bottom-up. */
-function normalizeTree(node, parent = null) {
+function normalizeTree(node: VNode, parent: VNode | null = null): VNode {
   node.parent = parent;
   node.type = node.type === 'file' ? 'file' : 'folder';
   node.name = node.name ?? '(unnamed)';
@@ -205,11 +276,11 @@ function normalizeTree(node, parent = null) {
   if (node.type === 'file') {
     node.modules = Array.isArray(node.modules) ? node.modules : [];
     for (const m of node.modules) {
-      m.kind = KIND_ORDER.includes(m.kind) ? m.kind : 'const';
+      m.kind = KIND_ORDER.some((k) => k === m.kind) ? m.kind : 'const';
       m.loc = Math.max(Number(m.loc) || 1, 1);
       if (Array.isArray(m.children)) {
         for (const ch of m.children) {
-          ch.kind = MEMBER_ORDER.includes(ch.kind) ? ch.kind : 'member';
+          ch.kind = MEMBER_ORDER.some((k) => k === ch.kind) ? ch.kind : 'member';
           ch.loc = Math.max(Number(ch.loc) || 1, 1);
         }
       }
@@ -234,8 +305,10 @@ function normalizeTree(node, parent = null) {
   return node;
 }
 
-function buildIndex(data) {
-  walk(state.root, (n) => {
+function buildIndex(data: CityData): void {
+  const root = state.root;
+  if (!root) return;
+  walk(root, (n) => {
     index.nodesByPath.set(n.path, n);
     if (n.type === 'file') {
       index.filesByPath.set(n.path, n);
@@ -249,11 +322,12 @@ function buildIndex(data) {
   for (const pr of data.prs) {
     pr.files = (pr.files || []).filter((p) => index.filesByPath.has(p));
     for (const p of pr.files) {
-      if (!index.prsByFile.has(p)) index.prsByFile.set(p, []);
-      index.prsByFile.get(p).push(pr);
+      let list = index.prsByFile.get(p);
+      if (!list) index.prsByFile.set(p, (list = []));
+      list.push(pr);
     }
   }
-  aggregatePrs(state.root);
+  aggregatePrs(root);
 
   data.edges = (Array.isArray(data.edges) ? data.edges : []).filter(
     (e) => e && index.filesByPath.has(e.a) && index.filesByPath.has(e.b) && e.a !== e.b
@@ -265,19 +339,19 @@ function buildIndex(data) {
   }
 }
 
-function push(map, key, value) {
+function push<T>(map: Map<string, T[]>, key: string, value: T): void {
   let arr = map.get(key);
   if (!arr) map.set(key, (arr = []));
   arr.push(value);
 }
 
-function aggregatePrs(node) {
+function aggregatePrs(node: VNode): Pr[] {
   if (node.type === 'file') {
     const list = index.prsByFile.get(node.path) || [];
     index.prsByNode.set(node, list);
     return list;
   }
-  const set = new Set();
+  const set = new Set<Pr>();
   for (const c of node.children || []) for (const pr of aggregatePrs(c)) set.add(pr);
   const list = [...set];
   index.prsByNode.set(node, list);
@@ -293,24 +367,24 @@ function aggregatePrs(node) {
  * becomes a district of its modules, and a module a district of its members
  * (or, with no members, a lone building so it can still be isolated).
  */
-function makeScopeRoot(node) {
+function makeScopeRoot(node: VNode): VNode {
   if (node.type === 'folder' && !node.synth) return node;
   if (node.synth === 'module') return node;
   if (node.type === 'file' && !node.synth) return fileScope(node);
   return wrapLeaf(node); // synthetic single-module / member leaf
 }
 
-function fileScope(file) {
+function fileScope(file: VNode): VNode {
   if (file._scope) return file._scope;
   const root = statsFrom(file, {
     type: 'folder', synth: 'fileScope', name: file.name, path: file.path,
     srcFile: file, parent: file.parent, children: [],
   });
-  root.children = file.modules.map((m) => moduleNode(file, m, root));
+  root.children = (file.modules ?? []).map((m) => moduleNode(file, m, root));
   // A file with no extractable modules (e.g. pure export lists) still gets one
   // building standing in for the file itself, so the isolate never reads empty.
   if (!root.children.length) {
-    const stub = { name: file.name.replace(/\.[^.]+$/, ''), kind: 'const', loc: file.loc, line: 1, exported: true };
+    const stub: VMod = { name: file.name.replace(/\.[^.]+$/, ''), kind: 'const', loc: file.loc, line: 1, exported: true };
     root.children = [moduleNode(file, stub, root)];
   }
   file._scope = root;
@@ -318,7 +392,7 @@ function fileScope(file) {
 }
 
 /** The node representing one module of `file` — a district if it has members. */
-function moduleNode(file, mod, parent) {
+function moduleNode(file: VNode, mod: VMod, parent: VNode | null): VNode {
   if (!file._modNodes) file._modNodes = new Map();
   const cached = file._modNodes.get(mod);
   if (cached) {
@@ -326,7 +400,7 @@ function moduleNode(file, mod, parent) {
     return cached;
   }
   const path = `${file.path}#${mod.name}`;
-  let node;
+  let node: VNode;
   if (Array.isArray(mod.children) && mod.children.length) {
     node = statsFrom(file, {
       type: 'folder', synth: 'module', name: mod.name, path,
@@ -350,7 +424,7 @@ function moduleNode(file, mod, parent) {
 }
 
 /** A single-building scope so a childless module can still be isolated. */
-function wrapLeaf(leaf) {
+function wrapLeaf(leaf: VNode): VNode {
   if (leaf._wrap) return leaf._wrap;
   const wrap = statsFrom(leaf.srcFile || leaf, {
     type: 'folder', synth: 'wrap', name: leaf.name, path: leaf.path,
@@ -360,16 +434,21 @@ function wrapLeaf(leaf) {
   return wrap;
 }
 
-function statsFrom(file, node) {
-  node.loc = node.loc ?? file.loc;
-  node.churn = file.churn;
-  node.fixChurn = file.fixChurn;
-  node.recentChurn = file.recentChurn;
-  return node;
+/** A partially built synthetic node: the stats are copied from its source file. */
+type SynthDraft = Omit<VNode, 'loc' | 'churn' | 'fixChurn' | 'recentChurn'> & { loc?: number };
+
+function statsFrom(file: VNode, draft: SynthDraft): VNode {
+  return {
+    ...draft,
+    loc: draft.loc ?? file.loc,
+    churn: file.churn,
+    fixChurn: file.fixChurn,
+    recentChurn: file.recentChurn,
+  };
 }
 
 /** The real file a (possibly synthetic) node belongs to, or null for folders. */
-function realFileOf(node) {
+function realFileOf(node: VNode | null | undefined): VNode | null {
   if (!node) return null;
   if (node.srcFile) return node.srcFile;
   return node.type === 'file' && !node.synth ? node : null;
@@ -379,7 +458,7 @@ function realFileOf(node) {
 // Scene
 // ---------------------------------------------------------------------------
 
-function initScene() {
+function initScene(): void {
   renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -421,7 +500,7 @@ function initScene() {
 }
 
 /** Scene furniture that survives focus transitions. */
-function buildStaticScene() {
+function buildStaticScene(): void {
   envGroup = buildEnvironment(CITY_SIZE);
   scene.add(envGroup);
 
@@ -443,7 +522,15 @@ function buildStaticScene() {
   hoverBox = makeSelectionBox(PALETTE.cyan);
   scene.add(selectionBox, hoverBox);
 
-  dom.repoName.textContent = '// ' + (state.data.repo?.name || 'repo');
+  dom.repoName.textContent = '// ' + (state.data?.repo?.name || 'repo');
+}
+
+/** Where a node sits in a layout: its centre and average side length. */
+interface Footprint {
+  cx: number;
+  cy: number;
+  cz: number;
+  size: number;
 }
 
 /**
@@ -451,7 +538,9 @@ function buildStaticScene() {
  * Rects are recomputed on every transition, so no level keeps stale world
  * coordinates from another level's layout.
  */
-function rebuildScene(opts = {}) {
+function rebuildScene(opts: { instant?: boolean; anchor?: VNode | null } = {}): void {
+  const focus = state.focus;
+  if (!focus) return;
   const from = opts.anchor ? footprintOf(opts.anchor, scope.root) : null;
   if (city) {
     disposeObject(city.group);
@@ -461,16 +550,19 @@ function rebuildScene(opts = {}) {
   clearGroup(peopleGroup);
   clearGroup(scaffoldGroup);
 
-  scope.root = makeScopeRoot(state.focus);
-  layoutCity(scope.root, { size: stageSize(scope.root) });
-  city = buildCity(scope.root);
+  const root = makeScopeRoot(focus);
+  scope.root = root;
+  layoutCity(root, { size: stageSize(root) });
+  city = buildCity(root);
   stage.add(city.group);
 
   indexScope();
   buildPeopleLayer();
   applySearchLayerMute();
 
-  if (state.selection && !scope.nodes.has(state.selection.node)) setSelection(null, { keepSidebar: true });
+  if (state.selection && state.selection.type !== 'pr' && !scope.nodes.has(state.selection.node)) {
+    setSelection(null, { keepSidebar: true });
+  }
   refreshSelectionBox();
   rebuildArcs();
   applyOverlay();
@@ -479,12 +571,12 @@ function rebuildScene(opts = {}) {
 
   dom.statFiles.textContent = fmt(scope.fileNodes.length);
   dom.statModules.textContent = fmt(city.moduleRecords.length);
-  dom.statLoc.textContent = fmt(scope.root.loc);
+  dom.statLoc.textContent = fmt(root.loc);
   renderBreadcrumb();
   renderLegend();
 
-  startTransition(from, opts.anchor ? footprintOf(opts.anchor, scope.root) : null);
-  flyTo(scope.root, opts.instant);
+  startTransition(from, opts.anchor ? footprintOf(opts.anchor, root) : null);
+  flyTo(root, opts.instant);
 }
 
 /**
@@ -492,7 +584,7 @@ function rebuildScene(opts = {}) {
  * the whole stage, so a node that *is* the current root reports the stage rect —
  * which is what makes the drill-down and drill-up maps symmetric.
  */
-function footprintOf(node, root) {
+function footprintOf(node: VNode, root: VNode | null): Footprint | null {
   if (!root) return null;
   const isRoot = node === root || node.path === root.path || root.srcFile === node;
   const target = isRoot ? root : node;
@@ -511,10 +603,11 @@ function footprintOf(node, root) {
  * the anchor occupied a moment ago, then relax to identity — so drilling in
  * reads as the block unfolding, and drilling out as the scene folding back.
  */
-function startTransition(from, to) {
+function startTransition(from: Footprint | null, to: Footprint | null): void {
   transition.mats = [];
   stage.traverse((o) => {
-    if (o.material && o.material.transparent) transition.mats.push({ m: o.material, base: o.material.opacity });
+    const mat = 'material' in o ? o.material : null;
+    if (mat instanceof THREE.Material && mat.transparent) transition.mats.push({ m: mat, base: mat.opacity });
   });
   if (!from || !to || !to.size || !from.size) {
     transition.t = 1;
@@ -535,18 +628,20 @@ function startTransition(from, to) {
  * file or module scope laid out at the full org extent would read as a pancake;
  * shrink the stage to the number of buildings it actually contains.
  */
-function stageSize(root) {
+function stageSize(root: VNode): number {
   if (!root.synth) return CITY_SIZE;
   let buildings = 0;
   walk(root, (n) => { if (n.type === 'file') buildings += (n.modules || []).length; });
   return Math.min(Math.max(Math.sqrt(Math.max(buildings, 1)) * 55, 60), CITY_SIZE);
 }
 
-function indexScope() {
+function indexScope(): void {
+  const root = scope.root;
+  if (!root) return;
   scope.fileNodes = [];
   scope.byRealPath = new Map();
   scope.nodes = new Set();
-  walk(scope.root, (n) => {
+  walk(root, (n) => {
     scope.nodes.add(n);
     if (n.type !== 'file' || !n.rect) return;
     scope.fileNodes.push(n);
@@ -555,17 +650,18 @@ function indexScope() {
     if (!scope.byRealPath.has(real.path)) scope.byRealPath.set(real.path, n);
   });
   // A file/module scope has no real file plate — anchor its PRs on the scope root.
-  const rootReal = realFileOf(scope.root);
+  const rootReal = realFileOf(root);
   if (rootReal && !scope.byRealPath.has(rootReal.path)) {
-    scope.byRealPath.set(rootReal.path, scope.root);
+    scope.byRealPath.set(rootReal.path, root);
   }
 }
 
-function clearGroup(group) {
+function clearGroup(group: THREE.Group): void {
   for (const child of [...group.children]) disposeObject(child);
 }
 
-function refreshPickables() {
+function refreshPickables(): void {
+  if (!city) return;
   pickables = city.pickables.slice();
   if (state.people && peopleGroup.visible) {
     for (const g of peopleGroup.children) if (g.userData.sprite) pickables.push(g.userData.sprite);
@@ -576,22 +672,25 @@ function refreshPickables() {
 // HUD
 // ---------------------------------------------------------------------------
 
-function buildHud() {
+function buildHud(): void {
   renderLegend();
 
   dom.modes.addEventListener('click', (e) => {
-    const btn = e.target.closest('button.mode');
+    const btn = closest(e.target, 'button.mode');
     if (!btn) return;
-    state.mode = btn.dataset.mode;
-    for (const b of dom.modes.querySelectorAll('button.mode')) b.classList.toggle('active', b === btn);
+    const mode = btn.dataset.mode;
+    if (!isMode(mode)) return;
+    state.mode = mode;
+    for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) b.classList.toggle('active', b === btn);
     applyOverlay();
     renderLegend();
   });
 
   dom.toggles.addEventListener('click', (e) => {
-    const btn = e.target.closest('button.toggle');
+    const btn = closest(e.target, 'button.toggle');
     if (!btn) return;
     const key = btn.dataset.toggle;
+    if (key !== 'coupling' && key !== 'people' && key !== 'fx') return;
     state[key] = !state[key];
     btn.classList.toggle('active', state[key]);
     if (key === 'coupling') rebuildArcs();
@@ -608,10 +707,14 @@ function buildHud() {
   });
 }
 
-function renderLegend() {
-  const rows = [];
+function isMode(value: string | undefined): value is Mode {
+  return value === 'structure' || value === 'churn' || value === 'fix' || value === 'recent';
+}
+
+function renderLegend(): void {
+  const rows: string[] = [];
   if (state.mode === 'structure') {
-    const kinds = scope.root && scope.root.synth ? [...KIND_ORDER, ...MEMBER_ORDER] : KIND_ORDER;
+    const kinds = scope.root && scope.root.synth ? [...KIND_ORDER, ...MEMBER_ORDER] : [...KIND_ORDER];
     for (const kind of kinds) {
       const hex = '#' + KIND_COLORS[kind].toString(16).padStart(6, '0');
       rows.push(`<div class="row"><i class="sw" style="background:${hex};box-shadow:0 0 8px ${hex}"></i><span>${kind}</span></div>`);
@@ -632,15 +735,15 @@ function renderLegend() {
   dom.legend.innerHTML = rows.join('');
 }
 
-function renderBreadcrumb() {
+function renderBreadcrumb(): void {
   crumbNodes = [];
   let n = state.focus || state.root;
-  while (n) { crumbNodes.unshift(n); n = n.parent; }
+  while (n) { crumbNodes.unshift(n); n = n.parent ?? null; }
 
-  const html = [];
+  const html: string[] = [];
   crumbNodes.forEach((node, i) => {
     if (i > 0) html.push('<i class="sep">/</i>');
-    const label = i === 0 ? (state.data.repo?.name || node.name) : node.name;
+    const label = i === 0 ? (state.data?.repo?.name || node.name) : node.name;
     html.push(`<a class="crumb ${i === crumbNodes.length - 1 ? 'active' : ''}" data-idx="${i}">${escapeHtml(label)}</a>`);
   });
   dom.breadcrumb.innerHTML = html.join('');
@@ -648,13 +751,13 @@ function renderBreadcrumb() {
 }
 
 dom.breadcrumb.addEventListener('click', (e) => {
-  const el = e.target.closest('.crumb');
+  const el = closest(e.target, '.crumb');
   if (!el) return;
   const node = crumbNodes[Number(el.dataset.idx)];
   if (node) focusNode(node);
 });
 
-function showNotice(msg) {
+function showNotice(msg: string): void {
   dom.notice.textContent = msg;
   dom.notice.style.display = 'block';
   setTimeout(() => { dom.notice.style.display = 'none'; }, 7000);
@@ -664,7 +767,7 @@ function showNotice(msg) {
 // Overlays
 // ---------------------------------------------------------------------------
 
-function heatValue(fileNode) {
+function heatValue(fileNode: VNode): number {
   if (state.mode === 'churn') return fileNode.churn;
   if (state.mode === 'fix') return fileNode.fixChurn;
   if (state.mode === 'recent') return recentValue(fileNode).count;
@@ -672,12 +775,12 @@ function heatValue(fileNode) {
 }
 
 /** Recency for a scope file — history-cursor aware while scrubbing. */
-function recentValue(fileNode) {
+function recentValue(fileNode: VNode): { count: number; flash: number } {
   if (state.timeCursor === null) return { count: fileNode.recentChurn, flash: 0 };
   return recency.map.get(fileNode) || { count: 0, flash: 0 };
 }
 
-function recomputeRecency() {
+function recomputeRecency(): void {
   recency.map.clear();
   if (!timeline || !timeline.enabled || state.timeCursor === null) return;
   const T = state.timeCursor;
@@ -690,7 +793,7 @@ function recomputeRecency() {
   }
 }
 
-function applyOverlay() {
+function applyOverlay(): void {
   if (!city) return;
   if (searchPaint.on) {
     paintSearch();
@@ -719,7 +822,8 @@ function applyOverlay() {
   }
   for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
-  if (city.filePlates) {
+  const filePlates = city.filePlates;
+  if (filePlates) {
     for (const rec of city.fileRecords) {
       if (mode === 'structure') {
         _color.copy(rec.baseColor);
@@ -730,17 +834,18 @@ function applyOverlay() {
       } else {
         heatColor(Math.sqrt(Math.max(heatValue(rec.node), 0)) / denom, _color).multiplyScalar(0.42);
       }
-      city.filePlates.setColorAt(rec.instanceId, _color);
+      filePlates.setColorAt(rec.instanceId, _color);
     }
-    if (city.filePlates.instanceColor) city.filePlates.instanceColor.needsUpdate = true;
+    if (filePlates.instanceColor) filePlates.instanceColor.needsUpdate = true;
   }
 
-  if (city.folderPlates) {
+  const folderPlates = city.folderPlates;
+  if (folderPlates) {
     for (const rec of city.folderRecords) {
       _dim.copy(rec.baseColor).multiplyScalar(mode === 'structure' ? 1 : 0.7);
-      city.folderPlates.setColorAt(rec.instanceId, _dim);
+      folderPlates.setColorAt(rec.instanceId, _dim);
     }
-    if (city.folderPlates.instanceColor) city.folderPlates.instanceColor.needsUpdate = true;
+    if (folderPlates.instanceColor) folderPlates.instanceColor.needsUpdate = true;
   }
 }
 
@@ -748,12 +853,8 @@ function applyOverlay() {
 // Search highlight
 // ---------------------------------------------------------------------------
 
-/**
- * @param {{paths: Map<string,{w:number, mods:Set<string>|null}>,
- *          cursor: {path:string, mods:Set<string>|null}|null}|null} spec
- * null restores the active overlay.
- */
-function setSearchHighlight(spec) {
+/** null restores the active overlay. */
+function setSearchHighlight(spec: HighlightSpec | null): void {
   if (!spec || !spec.paths || !spec.paths.size) {
     const was = searchPaint.on;
     searchPaint.on = !!spec;
@@ -776,14 +877,15 @@ function setSearchHighlight(spec) {
 }
 
 /** PR beams/scaffolding would drown the highlight, so they rest while searching. */
-function applySearchLayerMute() {
+function applySearchLayerMute(): void {
   const show = state.people && !searchPaint.on;
   peopleGroup.visible = show;
   scaffoldGroup.visible = show;
 }
 
 /** Matches glow white-cyan (brighter with weight), everything else goes dark. */
-function paintSearch() {
+function paintSearch(): void {
+  if (!city) return;
   const paths = searchPaint.paths;
   const cursor = searchPaint.cursor;
   searchPaint.pulseRecs.length = 0;
@@ -792,7 +894,7 @@ function paintSearch() {
   for (const rec of city.moduleRecords) {
     const real = realFileOf(rec.file);
     const hit = real && paths ? paths.get(real.path) : null;
-    if (hit) {
+    if (real && hit) {
       const exact = !hit.mods || hit.mods.has(rec.mod.name);
       _color.copy(SEARCH_HL).multiplyScalar((exact ? 1 : 0.3) * (0.45 + 0.85 * hit.w));
       if (cursor && real.path === cursor.path && (!cursor.mods || cursor.mods.has(rec.mod.name))) {
@@ -806,28 +908,30 @@ function paintSearch() {
   }
   for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
-  if (city.filePlates) {
+  const filePlates = city.filePlates;
+  if (filePlates) {
     for (const rec of city.fileRecords) {
       const real = realFileOf(rec.node);
       const hit = real && paths ? paths.get(real.path) : null;
       if (hit) _color.copy(SEARCH_HL).multiplyScalar(0.18 + 0.22 * hit.w);
       else _color.copy(rec.baseColor).multiplyScalar(0.1);
-      city.filePlates.setColorAt(rec.instanceId, _color);
+      filePlates.setColorAt(rec.instanceId, _color);
     }
-    if (city.filePlates.instanceColor) city.filePlates.instanceColor.needsUpdate = true;
+    if (filePlates.instanceColor) filePlates.instanceColor.needsUpdate = true;
   }
 
-  if (city.folderPlates) {
+  const folderPlates = city.folderPlates;
+  if (folderPlates) {
     for (const rec of city.folderRecords) {
       _dim.copy(rec.baseColor).multiplyScalar(0.22);
-      city.folderPlates.setColorAt(rec.instanceId, _dim);
+      folderPlates.setColorAt(rec.instanceId, _dim);
     }
-    if (city.folderPlates.instanceColor) city.folderPlates.instanceColor.needsUpdate = true;
+    if (folderPlates.instanceColor) folderPlates.instanceColor.needsUpdate = true;
   }
 }
 
 /** Extra pulse on the row under the keyboard cursor. */
-function pulseSearchCursor(t) {
+function pulseSearchCursor(t: number): void {
   if (!searchPaint.on || !searchPaint.pulseRecs.length) return;
   const k = 1.15 + 0.85 * (0.5 + 0.5 * Math.sin(t * 5.4));
   _hl.copy(SEARCH_HL).multiplyScalar(k);
@@ -838,9 +942,9 @@ function pulseSearchCursor(t) {
 /**
  * Select + fly to a path found in the palette. Matches outside the current
  * focus scope pop the scope back to the root first.
- * @returns {boolean} false when the path is not part of the analyzed city.
+ * @returns false when the path is not part of the analyzed city.
  */
-function revealPath(path, opts = {}) {
+function revealPath(path: string, opts: { module?: string | null; line?: number } = {}): boolean {
   const real = index.filesByPath.get(path);
   if (!real) {
     showNotice('Not in this city: ' + path);
@@ -859,17 +963,19 @@ function revealPath(path, opts = {}) {
     return false;
   }
 
-  let target = { type: node.type, node, rec: null };
-  if (opts.module) {
-    const rec = city.moduleRecords.find((r) => realFileOf(r.file) === real && r.mod.name === opts.module);
+  let target: Target = { type: node.type, node, rec: null };
+  const module = opts.module;
+  if (module && city) {
+    const rec = city.moduleRecords.find((r) => realFileOf(r.file) === real && r.mod.name === module);
     if (rec) target = { type: 'module', rec, node: rec.file };
   }
   setSelection(target);
 
-  if (Number.isFinite(opts.line) && opts.line > 0) {
+  const line = opts.line;
+  if (line !== undefined && Number.isFinite(line) && line > 0) {
     const desc = describe(target);
     if (desc) {
-      desc.span = { start: Math.max(1, opts.line - 12), end: opts.line + 60 };
+      desc.span = { start: Math.max(1, line - 12), end: line + 60 };
       desc.deep = true;
       sidebar.setSelection(desc);
     }
@@ -879,11 +985,11 @@ function revealPath(path, opts = {}) {
 }
 
 /** Scrubbing the timeline implies the Recent Focus overlay. */
-function onTimeCursor(t) {
+function onTimeCursor(t: number | null): void {
   state.timeCursor = t;
   if (t !== null && state.mode !== 'recent') {
     state.mode = 'recent';
-    for (const b of dom.modes.querySelectorAll('button.mode')) b.classList.toggle('active', b.dataset.mode === 'recent');
+    for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) b.classList.toggle('active', b.dataset.mode === 'recent');
     renderLegend();
   }
   recency.dirty = true;
@@ -894,7 +1000,7 @@ function onTimeCursor(t) {
 // Coupling (directional)
 // ---------------------------------------------------------------------------
 
-function clearArcs() {
+function clearArcs(): void {
   if (arcMesh) {
     disposeObject(arcMesh);
     arcMesh = null;
@@ -905,11 +1011,11 @@ function clearArcs() {
   }
 }
 
-function rebuildArcs() {
+function rebuildArcs(): void {
   clearArcs();
   if (!state.coupling || !city) return;
 
-  const sel = state.selection ? state.selection.node : null;
+  const sel = state.selection && state.selection.type !== 'pr' ? state.selection.node : null;
   const arcs = sel ? arcsForNode(sel) : packageArcs();
   if (!arcs.length) return;
   arcMesh = buildCouplingArcs(arcs, { thick: !sel, scale: CITY_SIZE / 900 });
@@ -919,15 +1025,15 @@ function rebuildArcs() {
 }
 
 /** Directional arcs between the node and other files inside the current scope. */
-function arcsForNode(node) {
-  const inside = new Set();
+function arcsForNode(node: VNode): Arc[] {
+  const inside = new Set<string>();
   walk(node, (n) => {
     const real = realFileOf(n);
     if (real) inside.add(real.path);
   });
   if (!inside.size) return [];
 
-  const totals = new Map(); // "path|dir" -> { path, out, n }
+  const totals = new Map<string, { path: string; out: boolean; n: number }>(); // "path|dir"
   for (const path of inside) {
     for (const { other, n } of index.edgesOut.get(path) || []) {
       if (inside.has(other) || !scope.byRealPath.has(other)) continue;
@@ -941,14 +1047,18 @@ function arcsForNode(node) {
   if (!totals.size) return [];
 
   const sorted = [...totals.values()].sort((a, b) => b.n - a.n).slice(0, MAX_ARCS);
-  const max = sorted[0].n;
+  const first = sorted[0];
+  if (!first) return [];
+  const max = first.n;
   const anchor = nodeAnchor(node);
+  if (!anchor) return [];
 
-  const out = [];
+  const out: Arc[] = [];
   for (const t of sorted) {
     const target = scope.byRealPath.get(t.path);
     if (!target || !target.rect) continue;
     const far = nodeAnchor(target);
+    if (!far) continue;
     out.push(t.out
       ? { from: anchor.clone(), to: far, strength: t.n / max }
       : { from: far, to: anchor.clone(), strength: t.n / max });
@@ -956,7 +1066,7 @@ function arcsForNode(node) {
   return out;
 }
 
-function addDir(totals, path, out, n) {
+function addDir(totals: Map<string, { path: string; out: boolean; n: number }>, path: string, out: boolean, n: number): void {
   const key = path + (out ? '|>' : '|<');
   const prev = totals.get(key);
   if (prev) prev.n += n;
@@ -964,7 +1074,7 @@ function addDir(totals, path, out, n) {
 }
 
 /** Import counts in both directions between the node and the rest of the repo. */
-function couplingSummary(node) {
+function couplingSummary(node: VNode): { out: number; in: number } | null {
   let out = 0;
   let inn = 0;
   walk(node, (n) => {
@@ -981,19 +1091,19 @@ function couplingSummary(node) {
  * past any single-child wrappers (e.g. repo -> packages) so there is something
  * to compare.
  */
-function groupingRoot() {
+function groupingRoot(): VNode | null {
   let n = scope.root;
   for (let i = 0; i < 8; i++) {
     if (!n || n.type !== 'folder') break;
     const kids = (n.children || []).filter((c) => c.rect);
     if (kids.length !== 1) break;
-    n = kids[0];
+    n = kids[0] ?? n;
   }
   return n && n.type === 'folder' ? n : scope.root;
 }
 
 /** file path -> the child of `parent` that contains it (memoized per parent). */
-function groupMapFor(parent) {
+function groupMapFor(parent: VNode): Map<string, VNode> {
   let map = index.groupMaps.get(parent);
   if (map) return map;
   map = new Map();
@@ -1001,7 +1111,7 @@ function groupMapFor(parent) {
     if (!child.rect) continue;
     walk(child, (n) => {
       const real = realFileOf(n);
-      if (real) map.set(real.path, child);
+      if (real) map?.set(real.path, child);
     });
   }
   index.groupMaps.set(parent, map);
@@ -1012,13 +1122,14 @@ function groupMapFor(parent) {
  * Package-level arcs, aggregated per direction. When both directions exist only
  * the dominant one is drawn (the sidebar reports both counts for a selection).
  */
-function packageArcs() {
+function packageArcs(): Arc[] {
   const parent = groupingRoot();
+  if (!parent) return [];
   const tops = (parent.children || []).filter((c) => c.rect);
   if (tops.length < 2) return [];
   const groupOf = groupMapFor(parent);
-  const totals = new Map();
-  for (const e of state.data.edges) {
+  const totals = new Map<string, { a: VNode; b: VNode; n: number }>();
+  for (const e of state.data?.edges || []) {
     const ta = groupOf.get(e.a);
     const tb = groupOf.get(e.b);
     if (!ta || !tb || ta === tb || !ta.rect || !tb.rect) continue;
@@ -1030,8 +1141,8 @@ function packageArcs() {
   if (!totals.size) return [];
 
   // Net out opposing pairs so the drawn arc shows the dominant flow.
-  const net = [];
-  const done = new Set();
+  const net: Array<{ a: VNode; b: VNode; n: number }> = [];
+  const done = new Set<string>();
   for (const [key, t] of totals) {
     if (done.has(key)) continue;
     const backKey = t.b.path + '>' + t.a.path;
@@ -1044,13 +1155,23 @@ function packageArcs() {
   }
 
   const list = net.sort((x, y) => y.n - x.n).slice(0, MAX_ARCS);
-  const max = list[0].n;
-  return list.map((x) => ({ from: nodeAnchor(x.a), to: nodeAnchor(x.b), strength: x.n / max }));
+  const first = list[0];
+  if (!first) return [];
+  const max = first.n;
+  const arcs: Arc[] = [];
+  for (const x of list) {
+    const from = nodeAnchor(x.a);
+    const to = nodeAnchor(x.b);
+    if (!from || !to) continue;
+    arcs.push({ from, to, strength: x.n / max });
+  }
+  return arcs;
 }
 
-function nodeAnchor(node) {
+function nodeAnchor(node: VNode): THREE.Vector3 | null {
   const r = node.rect;
-  const y = plateTop(node.depth, node.type === 'file') + (node.type === 'file' ? 4 : 2);
+  if (!r) return null;
+  const y = plateTop(node.depth ?? 0, node.type === 'file') + (node.type === 'file' ? 4 : 2);
   return new THREE.Vector3(r.x + r.w / 2, y, r.z + r.h / 2);
 }
 
@@ -1062,26 +1183,28 @@ const PR_HIGH = 118;
 const PR_LOW = 26;
 const PR_STALE_DAYS = 30;
 
-function buildPeopleLayer() {
-  const prs = state.data.prs || [];
-  const draftFiles = [];
+function buildPeopleLayer(): void {
+  const prs = state.data?.prs || [];
+  const draftFiles: VNode[] = [];
   const now = Date.now() / 1000;
 
   let maxWeight = 1;
   for (const pr of prs) maxWeight = Math.max(maxWeight, Math.log2(1 + prSize(pr)));
 
   for (const pr of prs) {
-    const nodes = uniq(pr.files.map((p) => scope.byRealPath.get(p)).filter((n) => n && n.rect));
+    const nodes = uniq(pr.files.map((p) => scope.byRealPath.get(p)).filter(hasRect));
     if (!nodes.length) continue;
 
     let cx = 0, cz = 0, top = 0;
-    const targets = [];
+    const targets: THREE.Vector3[] = [];
     for (const n of nodes) {
-      cx += n.rect.x + n.rect.w / 2;
-      cz += n.rect.z + n.rect.h / 2;
-      const plate = plateTop(n.depth, n.type === 'file');
+      const rect = n.rect;
+      if (!rect) continue;
+      cx += rect.x + rect.w / 2;
+      cz += rect.z + rect.h / 2;
+      const plate = plateTop(n.depth ?? 0, n.type === 'file');
       top = Math.max(top, plate + tallest(n));
-      if (targets.length < 20) targets.push(new THREE.Vector3(n.rect.x + n.rect.w / 2, plate, n.rect.z + n.rect.h / 2));
+      if (targets.length < 20) targets.push(new THREE.Vector3(rect.x + rect.w / 2, plate, rect.z + rect.h / 2));
     }
 
     // Altitude = freshness: recently updated PRs ride high and bob energetically.
@@ -1108,7 +1231,7 @@ function buildPeopleLayer() {
   const scaffold = buildScaffolding(draftFiles);
   if (scaffold) { scaffold.userData.pulseRate = 2.4; scaffoldGroup.add(scaffold); }
 
-  const collisionFiles = [];
+  const collisionFiles: VNode[] = [];
   for (const [p, list] of index.prsByFile) {
     if (list.length < 2) continue;
     const n = scope.byRealPath.get(p);
@@ -1121,19 +1244,23 @@ function buildPeopleLayer() {
   scaffoldGroup.visible = state.people;
 }
 
+function hasRect(node: VNode | undefined): node is VNode {
+  return !!node && !!node.rect;
+}
+
 /** additions+deletions when the data has them, else file count as a stand-in. */
-function prSize(pr) {
+function prSize(pr: Pr): number {
   const a = Number(pr.additions);
   const d = Number(pr.deletions);
   if (Number.isFinite(a) || Number.isFinite(d)) return (a || 0) + (d || 0);
   return pr.files.length * 40;
 }
 
-function uniq(arr) {
+function uniq<T>(arr: T[]): T[] {
   return [...new Set(arr)];
 }
 
-function tallest(node) {
+function tallest(node: VNode): number {
   let m = 0;
   for (const p of node.plots || []) m = Math.max(m, buildingHeight(p.mod.loc));
   if (node.children) for (const c of node.children) m = Math.max(m, tallest(c));
@@ -1144,7 +1271,7 @@ function tallest(node) {
 // Selection / focus
 // ---------------------------------------------------------------------------
 
-function setSelection(target, opts = {}) {
+function setSelection(target: Target | null, opts: { keepSidebar?: boolean } = {}): void {
   state.selection = target;
   refreshSelectionBox();
   if (!opts.keepSidebar) sidebar.setSelection(target ? describe(target) : null);
@@ -1152,22 +1279,22 @@ function setSelection(target, opts = {}) {
   updateLabelCandidates();
 }
 
-function refreshSelectionBox() {
+function refreshSelectionBox(): void {
   const sel = state.selection;
   if (!sel) {
     selectionBox.visible = false;
     return;
   }
-  if (sel.rec) {
+  if (sel.type !== 'pr' && sel.rec) {
     boxAroundInstance(selectionBox, sel.rec);
-  } else if (sel.node.rect) {
+  } else if (sel.type !== 'pr' && sel.node.rect) {
     frameNodeBox(selectionBox, sel.node, boxHeightFor(sel.node));
   } else {
     selectionBox.visible = false;
   }
 }
 
-function boxAroundInstance(box, rec) {
+function boxAroundInstance(box: THREE.LineSegments, rec: ModuleRecord): void {
   rec.mesh.getMatrixAt(rec.instanceId, _m4);
   _m4.decompose(_v3, _q, _scale);
   box.position.set(_v3.x, _v3.y + _scale.y / 2, _v3.z);
@@ -1175,9 +1302,11 @@ function boxAroundInstance(box, rec) {
   box.visible = true;
 }
 
-function boxHeightFor(node) {
+function boxHeightFor(node: VNode): number {
   if (node.type === 'file') return Math.max(tallest(node) + 4, 10);
-  return Math.max(Math.min(node.rect.w, node.rect.h) * 0.28, 18);
+  const r = node.rect;
+  if (!r) return 18;
+  return Math.max(Math.min(r.w, r.h) * 0.28, 18);
 }
 
 /**
@@ -1185,10 +1314,10 @@ function boxHeightFor(node) {
  * The anchor is the deeper node of the transition — the one whose footprint the
  * unfold animation grows out of (or folds back into).
  */
-function focusNode(node, opts = {}) {
+function focusNode(node: VNode | null | undefined, opts: { instant?: boolean } = {}): void {
   if (!node || node === state.focus) return;
   const prev = state.focus;
-  const anchor = isDescendantOf(node, prev) ? node : prev;
+  const anchor = prev && isDescendantOf(node, prev) ? node : prev;
   state.focus = node;
   index.groupMaps.clear();
   rebuildScene({ ...opts, anchor: opts.instant ? null : anchor });
@@ -1197,15 +1326,15 @@ function focusNode(node, opts = {}) {
   else setSelection({ type: node.type, node, rec: null });
 }
 
-function isDescendantOf(node, ancestor) {
-  for (let n = node.parent; n; n = n.parent) if (n === ancestor) return true;
+function isDescendantOf(node: VNode, ancestor: VNode): boolean {
+  for (let n = node.parent; n; n = n.parent ?? null) if (n === ancestor) return true;
   return false;
 }
 
-function flyTo(node, instant) {
+function flyTo(node: VNode, instant?: boolean): void {
   const r = node.rect;
   if (!r) return;
-  const target = new THREE.Vector3(r.x + r.w / 2, plateTop(node.depth, node.type === 'file'), r.z + r.h / 2);
+  const target = new THREE.Vector3(r.x + r.w / 2, plateTop(node.depth ?? 0, node.type === 'file'), r.z + r.h / 2);
   const extent = Math.max(r.w, r.h, 12);
   const vFov = (camera.fov * Math.PI) / 180;
   const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
@@ -1255,7 +1384,7 @@ function flyTo(node, instant) {
 // Descriptors for the sidebar
 // ---------------------------------------------------------------------------
 
-function describe(target) {
+function describe(target: Target | null): Descriptor | null {
   if (!target) return null;
   if (target.type === 'pr') {
     const pr = target.pr;
@@ -1291,7 +1420,7 @@ function describe(target) {
     prs: real ? index.prsByFile.get(real.path) || [] : index.prsByNode.get(node) || [],
     coupling: state.coupling ? couplingSummary(node) : null,
     codePath: real ? real.path : null,
-    span: mod && Number.isFinite(mod.line)
+    span: mod && mod.line !== undefined && Number.isFinite(mod.line)
       ? { start: Math.max(1, mod.line), end: Math.max(1, mod.line) + Math.max(mod.loc, 1) }
       : null,
     deep: !!real,
@@ -1302,9 +1431,9 @@ function describe(target) {
 // Labels
 // ---------------------------------------------------------------------------
 
-function updateLabelCandidates() {
-  if (!city) return;
-  const list = [];
+function updateLabelCandidates(): void {
+  if (!city || !scope.root) return;
+  const list: LabelCandidate[] = [];
 
   walk(scope.root, (n) => {
     if (!n.rect) return;
@@ -1318,7 +1447,7 @@ function updateLabelCandidates() {
       tier: isFile ? 'file' : 'folder',
       pos: new THREE.Vector3(
         n.rect.x + n.rect.w / 2,
-        plateTop(n.depth, isFile) + (isFile ? 5 : 9 + n.depth),
+        plateTop(n.depth ?? 0, isFile) + (isFile ? 5 : 9 + (n.depth ?? 0)),
         n.rect.z + n.rect.h / 2
       ),
       size,
@@ -1326,14 +1455,14 @@ function updateLabelCandidates() {
   });
 
   const many = city.moduleRecords.length > MODULE_LABEL_BUDGET;
-  const selNode = state.selection ? realFileOf(state.selection.node) : null;
+  const selNode = state.selection && state.selection.type !== 'pr' ? realFileOf(state.selection.node) : null;
   for (const rec of city.moduleRecords) {
     if (many && (!selNode || realFileOf(rec.file) !== selNode)) continue;
     list.push({
       key: rec.file.path + '#' + rec.mod.name,
       text: String(rec.mod.name).toUpperCase(),
       tier: 'module',
-      pos: new THREE.Vector3(rec.center.x, rec.file.top + rec.height + 2.5, rec.center.z),
+      pos: new THREE.Vector3(rec.center.x, (rec.file.top ?? 0) + rec.height + 2.5, rec.center.z),
       size: Math.max(rec.height, 3),
     });
   }
@@ -1345,7 +1474,7 @@ function updateLabelCandidates() {
 // Interaction
 // ---------------------------------------------------------------------------
 
-function bindEvents() {
+function bindEvents(): void {
   const el = renderer.domElement;
 
   el.addEventListener('pointermove', (e) => {
@@ -1363,7 +1492,7 @@ function bindEvents() {
   el.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  let downAt = null;
+  let downAt: { x: number; y: number } | null = null;
   el.addEventListener('pointerdown', (e) => { if (e.button === 0) downAt = { x: e.clientX, y: e.clientY }; });
   el.addEventListener('pointerup', (e) => {
     if (!downAt || e.button !== 0) return;
@@ -1389,7 +1518,8 @@ function bindEvents() {
       if (up) focusNode(up);
     }
     if (e.key === 'c' && !e.metaKey && !e.ctrlKey) {
-      const node = state.selection?.node || state.focus;
+      const sel = state.selection;
+      const node = sel && sel.type !== 'pr' ? sel.node : state.focus;
       if (!node || !node.path) return;
       navigator.clipboard?.writeText(node.path).then(
         () => showNotice('Path copied: ' + node.path),
@@ -1401,14 +1531,14 @@ function bindEvents() {
   window.addEventListener('resize', onResize);
 }
 
-function isEditable(el) {
-  if (!el || !el.tagName) return false;
+function isEditable(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement) || !el.tagName) return false;
   const tag = el.tagName.toLowerCase();
   return tag === 'input' || tag === 'textarea' || el.isContentEditable === true;
 }
 
 /** Which node a double-click isolates: buildings drill into their module. */
-function focusTargetFor(hit) {
+function focusTargetFor(hit: NodeTarget): VNode {
   if (hit.rec) {
     const file = hit.rec.file;
     return file.synth ? file : moduleNode(file, hit.rec.mod, file);
@@ -1416,7 +1546,7 @@ function focusTargetFor(hit) {
   return hit.node;
 }
 
-function onResize() {
+function onResize(): void {
   const w = window.innerWidth;
   const h = window.innerHeight;
   camera.aspect = w / h;
@@ -1426,7 +1556,7 @@ function onResize() {
   bloom.setSize(w, h);
 }
 
-function updateHover() {
+function updateHover(): void {
   if (!pointerDirty) return;
   pointerDirty = false;
 
@@ -1436,35 +1566,40 @@ function updateHover() {
   }
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(pickables, false);
-  setHover(hits.length ? resolveHit(hits[0]) : null);
+  const first = hits[0];
+  setHover(first ? resolveHit(first) : null);
 }
 
-function resolveHit(hit) {
+function resolveHit(hit: THREE.Intersection): Target | null {
+  if (!city) return null;
   const o = hit.object;
-  if (o.userData.meta) {
-    const rec = o.userData.meta[hit.instanceId];
+  const id = hit.instanceId;
+  const meta: ModuleRecord[] | null = Array.isArray(o.userData.meta) ? o.userData.meta : null;
+  if (meta) {
+    const rec = id === undefined ? undefined : meta[id];
     return rec ? { type: 'module', rec, node: rec.file } : null;
   }
   if (o === city.filePlates) {
-    const rec = city.fileRecords[hit.instanceId];
+    const rec = id === undefined ? undefined : city.fileRecords[id];
     return rec ? { type: 'file', node: rec.node, rec: null } : null;
   }
   if (o === city.folderPlates) {
-    const rec = city.folderRecords[hit.instanceId];
+    const rec = id === undefined ? undefined : city.folderRecords[id];
     return rec ? { type: 'folder', node: rec.node, rec: null } : null;
   }
   if (o.userData.pickType === 'pr') return { type: 'pr', pr: o.userData.pr };
   return null;
 }
 
-function setHover(hit) {
+function setHover(hit: Target | null): void {
+  const prev = state.hover;
   const same =
-    hit && state.hover && hit.type === state.hover.type &&
-    (hit.type === 'pr' ? hit.pr === state.hover.pr
-      : hit.type === 'module' ? hit.rec === state.hover.rec
-      : hit.node === state.hover.node);
+    hit && prev && hit.type === prev.type &&
+    (hit.type === 'pr' ? prev.type === 'pr' && hit.pr === prev.pr
+      : hit.type === 'module' ? prev.type !== 'pr' && hit.rec === prev.rec
+      : prev.type !== 'pr' && hit.node === prev.node);
   if (same) return;
-  if (!hit && !state.hover) return;
+  if (!hit && !prev) return;
 
   state.hover = hit;
   document.body.style.cursor = hit ? 'pointer' : 'default';
@@ -1476,7 +1611,7 @@ function setHover(hit) {
     return;
   }
 
-  if (hit.type === 'module') boxAroundInstance(hoverBox, hit.rec);
+  if (hit.type === 'module' && hit.rec) boxAroundInstance(hoverBox, hit.rec);
   else if (hit.type === 'pr') hoverBox.visible = false;
   else frameNodeBox(hoverBox, hit.node, boxHeightFor(hit.node));
 
@@ -1484,7 +1619,7 @@ function setHover(hit) {
 }
 
 /** Hovering an avatar brightens that PR's beams and file rings. */
-function highlightPrLinks() {
+function highlightPrLinks(): void {
   const hoveredPr = state.hover && state.hover.type === 'pr' ? state.hover.pr : null;
   for (const g of peopleGroup.children) {
     const u = g.userData;
@@ -1503,7 +1638,7 @@ const clock = new THREE.Clock();
 let fpsAccum = 0;
 let fpsFrames = 0;
 
-function animate() {
+function animate(): void {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
@@ -1553,24 +1688,27 @@ function animate() {
 
   for (const c of scaffoldGroup.children) {
     const rate = c.userData.pulseRate || 2.4;
-    c.material.opacity = 0.42 + 0.34 * (0.5 + 0.5 * Math.sin(t * rate));
+    const mat = 'material' in c ? c.material : null;
+    if (mat instanceof THREE.Material) mat.opacity = 0.42 + 0.34 * (0.5 + 0.5 * Math.sin(t * rate));
   }
   pulseSearchCursor(t);
   if (settled && state.selection) refreshSelectionBox();
-  if (selectionBox.visible) selectionBox.material.opacity = 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(t * 3.2));
+  if (selectionBox.visible && selectionBox.material instanceof THREE.Material) {
+    selectionBox.material.opacity = 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(t * 3.2));
+  }
 
   composer.render();
 
   fpsAccum += dt;
   fpsFrames++;
   if (fpsAccum >= 0.5) {
-    dom.statFps.textContent = Math.round(fpsFrames / fpsAccum);
+    dom.statFps.textContent = String(Math.round(fpsFrames / fpsAccum));
     fpsAccum = 0;
     fpsFrames = 0;
   }
 }
 
-function updatePeople(t) {
+function updatePeople(t: number): void {
   if (!state.people) return;
   for (const g of peopleGroup.children) {
     const u = g.userData;
@@ -1581,7 +1719,7 @@ function updatePeople(t) {
   }
 }
 
-function easeInOutCubic(x) {
+function easeInOutCubic(x: number): number {
   return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
 }
 
@@ -1589,18 +1727,37 @@ function easeInOutCubic(x) {
 // Utils
 // ---------------------------------------------------------------------------
 
-function fmt(n) {
+function fmt(n: number): string {
   return Number(n || 0).toLocaleString('en-US');
+}
+
+function requireEl(id: string): HTMLElement {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`missing #${id} in the HUD markup`);
+  return el;
+}
+
+/** `Element.closest` from an event target that may not be an element at all. */
+function closest(target: EventTarget | null, selector: string): HTMLElement | null {
+  return target instanceof Element ? target.closest<HTMLElement>(selector) : null;
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 // ---------------------------------------------------------------------------
 // Deterministic synthetic dataset (used when data.json is missing/invalid)
 // ---------------------------------------------------------------------------
 
-function makeFakeData() {
+function makeFakeData(): CityData {
   const rnd = mulberry32(0x5eed1337);
-  const pick = (arr) => arr[Math.floor(rnd() * arr.length) % arr.length];
-  const int = (a, b) => a + Math.floor(rnd() * (b - a + 1));
+  function pick<T>(arr: readonly T[]): T {
+    const v = arr[Math.floor(rnd() * arr.length) % arr.length];
+    if (v === undefined) throw new Error('pick from an empty list');
+    return v;
+  }
+  const int = (a: number, b: number) => a + Math.floor(rnd() * (b - a + 1));
 
   const packages = ['canvas', 'runtime', 'ui-kit'];
   const subdirs = ['src/core', 'src/model', 'src/render', 'src/hooks', 'src/util'];
@@ -1609,15 +1766,15 @@ function makeFakeData() {
     'use-canvas', 'serializer', 'validator', 'theme', 'shortcuts', 'toolbar',
     'panel', 'layout-engine', 'diff', 'telemetry', 'registry', 'schema',
   ];
-  const kinds = ['function', 'class', 'component', 'interface', 'type', 'enum', 'const'];
-  const memberKinds = ['method', 'property', 'accessor', 'member'];
+  const kinds: ModuleKind[] = ['function', 'class', 'component', 'interface', 'type', 'enum', 'const'];
+  const memberKinds: MemberKind[] = ['method', 'property', 'accessor', 'member'];
 
-  const root = { type: 'folder', name: 'packages', path: 'packages', children: [] };
-  const allFiles = [];
+  const root = folder('packages', 'packages');
+  const allFiles: FileNode[] = [];
   let made = 0;
 
   for (const pkg of packages) {
-    const pkgNode = { type: 'folder', name: pkg, path: `packages/${pkg}`, children: [] };
+    const pkgNode = folder(pkg, `packages/${pkg}`);
     root.children.push(pkgNode);
 
     const dirs = subdirs.slice(0, int(3, 5));
@@ -1627,17 +1784,19 @@ function makeFakeData() {
       let parent = pkgNode;
       for (const part of parts) {
         const path = `${parent.path}/${part}`;
-        let found = (parent.children || []).find((c) => c.path === path);
-        if (!found) {
-          found = { type: 'folder', name: part, path, children: [] };
-          parent.children.push(found);
+        const existing = parent.children.find((c) => c.path === path);
+        if (existing && existing.type === 'folder') {
+          parent = existing;
+        } else {
+          const next = folder(part, path);
+          parent.children.push(next);
+          parent = next;
         }
-        parent = found;
       }
 
       const nFiles = int(2, 4);
       for (let i = 0; i < nFiles && made < 42; i++) {
-        const stem = fileStems[(made * 7 + i * 3) % fileStems.length];
+        const stem = fileStems[(made * 7 + i * 3) % fileStems.length] ?? 'index';
         const ext = rnd() > 0.65 ? 'tsx' : 'ts';
         const path = `${parent.path}/${stem}.${ext}`;
         if (parent.children.some((c) => c.path === path)) continue;
@@ -1649,8 +1808,8 @@ function makeFakeData() {
         for (let k = 0; k < nMods; k++) {
           const kind = ext === 'tsx' && k === 0 ? 'component' : pick(kinds);
           const mloc = int(6, 220);
-          const mod = {
-            name: `${stem.replace(/-([a-z])/g, (_, c) => c.toUpperCase())}${k ? k : ''}`,
+          const mod: ModuleInfo = {
+            name: `${stem.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}${k ? k : ''}`,
             kind,
             loc: mloc,
             line,
@@ -1672,7 +1831,7 @@ function makeFakeData() {
           line += mloc + 1;
         }
         const churn = int(0, 64);
-        const file = {
+        const file: FileNode = {
           type: 'file',
           name: `${stem}.${ext}`,
           path,
@@ -1691,7 +1850,7 @@ function makeFakeData() {
 
   // v2: directional edges (a imports b), both directions allowed.
   const edges = [];
-  const seen = new Set();
+  const seen = new Set<string>();
   for (let i = 0; i < 90 && allFiles.length > 1; i++) {
     const a = allFiles[Math.floor(rnd() * allFiles.length)];
     const b = allFiles[Math.floor(rnd() * allFiles.length)];
@@ -1755,9 +1914,14 @@ function makeFakeData() {
       },
     ],
   };
+
+  /** Aggregates are recomputed by normalizeTree, so they start at zero. */
+  function folder(name: string, path: string): FolderNode {
+    return { type: 'folder', name, path, loc: 0, churn: 0, fixChurn: 0, recentChurn: 0, children: [] };
+  }
 }
 
-function mulberry32(seed) {
+function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return function () {
     a |= 0;

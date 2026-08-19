@@ -42,7 +42,7 @@ zoom-out), like unfolding a hologram.
 
 ## Data contract — `viewer/public/data.json`
 
-Produced by `analyzer/analyze.mjs`. All ids are repo-relative POSIX paths.
+Produced by `analyzer/analyze.ts`. All ids are repo-relative POSIX paths.
 
 ```jsonc
 {
@@ -167,10 +167,13 @@ parsing); ships as a "Strata" mode alongside the log-scale massing.
 ## Project layout
 
 ```
-analyzer/analyze.mjs      # node analyzer/analyze.mjs <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs]
+shared/types.ts           # the data.json contract, shared analyzer <-> viewer
+shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
+analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs]
 viewer/index.html         # HUD markup + CSS
-viewer/src/main.js        # scene, interaction, overlays
-viewer/src/layout.js      # squarified treemap layout
-viewer/src/city.js        # geometry/instancing builders
+viewer/src/main.ts        # scene, interaction, overlays
+viewer/src/vtree.ts       # the viewer's augmented node type (layout, synthetic scopes)
+viewer/src/layout.ts      # squarified treemap layout
+viewer/src/city.ts        # geometry/instancing builders
 viewer/public/data.json   # generated (gitignored)
 ```

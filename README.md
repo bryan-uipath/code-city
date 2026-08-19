@@ -51,7 +51,7 @@ Requirements: Node 20+, git; optionally the [`gh` CLI](https://cli.github.com/) 
 
 ## How it works
 
-- `analyzer/analyze.mjs` — walks the repo, extracts top-level modules (and class/interface/enum members) with the TypeScript compiler API, mines churn/fix/recency and the full commit stream from a single `git log` pass, resolves import edges (including monorepo workspace packages), and pulls open PRs via `gh`. Output is one JSON file; schema in [DESIGN.md](DESIGN.md).
+- `analyzer/analyze.ts` — walks the repo, extracts top-level modules (and class/interface/enum members) with the TypeScript compiler API, mines churn/fix/recency and the full commit stream from a single `git log` pass, resolves import edges (including monorepo workspace packages), and pulls open PRs via `gh`. Output is one JSON file; schema in [DESIGN.md](DESIGN.md).
 - `viewer/` — Vite + Three.js. Squarified-treemap layout, instanced meshes (tested at ~17k buildings / 60fps+), UnrealBloom postprocessing, and a small dev-server API that serves source snippets and diffs from the analyzed repo (path-contained, localhost only).
 
 ## Development
@@ -59,6 +59,8 @@ Requirements: Node 20+, git; optionally the [`gh` CLI](https://cli.github.com/) 
 ```bash
 npm run dev     # vite dev server (source/diff API enabled)
 npm run build   # production bundle
+npm run export  # static bundle in viewer/dist (bakes in the current data.json)
+npm run typecheck # tsc --noEmit
 npm run hero    # regenerate docs/hero.png
 ```
 
@@ -73,4 +75,4 @@ See [DESIGN.md](DESIGN.md) for the full metaphor, data contract, and style guide
 
 ## Status
 
-Early prototype, moving fast. In progress: TypeScript migration, a "Strata" building mode (height = commits, footprint = size over time), and a VS Code extension (the city as a webview, click a building to open the file).
+Early prototype, moving fast. In progress: a "Strata" building mode (height = commits, footprint = size over time), and a VS Code extension (the city as a webview, click a building to open the file).

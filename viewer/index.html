@@ -250,7 +250,8 @@
   .sb-pr .age { color: var(--foreground-muted); font-size: 9px; }
 
   .sb-commit { font-size: 9.5px; color: var(--foreground); line-height: 1.5; margin-bottom: 3px; letter-spacing: 0.02em; }
-  .sb-commit .h { color: var(--orange); font-size: 9.5px; letter-spacing: 0.05em; display: inline; }
+  .sb-commit .h { color: var(--orange); font-size: 9.5px; letter-spacing: 0.05em; display: inline; text-decoration: none; }
+  a.sb-commit .h:hover, .sb-commit a.h:hover { text-decoration: underline; }
   .sb-commit .when { color: var(--foreground-muted); }
   .sb-commit .who { color: var(--violet); }
   .sb-commit.near { background: rgba(8,145,178,0.18); }
@@ -287,6 +288,8 @@
   }
   #tl-play.on { color: #ffd9cd; border-color: var(--orange); background: rgba(250,70,22,0.2); }
   #tl-date { color: var(--accent-muted); font-size: 10.5px; letter-spacing: 0.16em; white-space: nowrap; }
+  #tl-date a.tl-hash { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+  #tl-date a.tl-hash:hover { text-decoration: none; border-bottom-style: solid; }
   #tl-meta { color: var(--foreground-muted); font-size: 9px; letter-spacing: 0.14em; margin-left: auto; white-space: nowrap; }
   #tl-track { position: relative; height: 30px; margin-top: 5px; }
   #tl-spark { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.75; }
@@ -459,6 +462,6 @@
     <div class="bar"><i></i></div>
   </div>
 
-  <script type="module" src="/src/main.js"></script>
+  <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

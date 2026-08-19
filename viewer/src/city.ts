@@ -1,16 +1,18 @@
 /**
- * city.js — geometry builders for the hologram code-city.
+ * city.ts — geometry builders for the hologram code-city.
  *
- * Everything that touches Three.js geometry lives here; main.js owns state.
+ * Everything that touches Three.js geometry lives here; main.ts owns state.
  */
 import * as THREE from 'three';
+import type { Pr } from '../../shared/types.js';
 import { buildingHeight, plateTop, PLATE_THICKNESS } from './layout.js';
+import type { AnyKind, VMod, VNode } from './vtree.js';
 
 // ---------------------------------------------------------------------------
 // Palette
 // ---------------------------------------------------------------------------
 
-export const KIND_COLORS = {
+export const KIND_COLORS: Record<AnyKind, number> = {
   function: 0x22d3ee,
   class: 0x60a5fa,
   component: 0xf472b6,
@@ -25,12 +27,12 @@ export const KIND_COLORS = {
   member: 0x8b5cf6,
 };
 
-export const KIND_ORDER = ['function', 'class', 'component', 'interface', 'type', 'enum', 'const'];
-export const MEMBER_ORDER = ['method', 'property', 'accessor', 'member'];
+export const KIND_ORDER = ['function', 'class', 'component', 'interface', 'type', 'enum', 'const'] as const;
+export const MEMBER_ORDER = ['method', 'property', 'accessor', 'member'] as const;
 /** Every kind that can become a building instance bucket. */
-export const ALL_KINDS = [...KIND_ORDER, ...MEMBER_ORDER];
+export const ALL_KINDS: AnyKind[] = [...KIND_ORDER, ...MEMBER_ORDER];
 
-const KIND_OPACITY = {
+const KIND_OPACITY: Record<AnyKind, number> = {
   function: 0.92,
   class: 0.92,
   component: 0.92,
@@ -45,7 +47,7 @@ const KIND_OPACITY = {
 };
 
 /** Members read as distinct silhouettes: properties are slabs, accessors squat. */
-const KIND_HEIGHT_SCALE = { property: 0.3, accessor: 0.6, member: 0.5 };
+const KIND_HEIGHT_SCALE: Partial<Record<AnyKind, number>> = { property: 0.3, accessor: 0.6, member: 0.5 };
 
 export const PALETTE = {
   bg: 0x05080f,
@@ -62,14 +64,17 @@ const HEAT_STOPS = [
   [0.34, new THREE.Color(0xfbbf24)],
   [0.7, new THREE.Color(0xfa4616)],
   [1.0, new THREE.Color(0xef4444)],
-];
+] as const;
 
 /** Gray -> yellow -> orange -> red ramp. Writes into `target`. */
-export function heatColor(t, target) {
+export function heatColor(t: number, target: THREE.Color): THREE.Color {
   const x = Math.min(Math.max(t, 0), 1);
   for (let i = 1; i < HEAT_STOPS.length; i++) {
-    const [p1, c1] = HEAT_STOPS[i];
-    const [p0, c0] = HEAT_STOPS[i - 1];
+    const stop = HEAT_STOPS[i];
+    const prev = HEAT_STOPS[i - 1];
+    if (!stop || !prev) continue;
+    const [p1, c1] = stop;
+    const [p0, c0] = prev;
     if (x <= p1 || i === HEAT_STOPS.length - 1) {
       const f = p1 === p0 ? 0 : (x - p0) / (p1 - p0);
       return target.copy(c0).lerp(c1, Math.min(Math.max(f, 0), 1));
@@ -82,25 +87,43 @@ export function heatColor(t, target) {
 // City construction
 // ---------------------------------------------------------------------------
 
-/**
- * Build all static city geometry from a laid-out tree.
- * @returns {{
- *   group: THREE.Group,
- *   buildingMeshes: THREE.InstancedMesh[],
- *   moduleRecords: Array<object>,
- *   filePlates: THREE.InstancedMesh|null,
- *   fileRecords: Array<object>,
- *   folderPlates: THREE.InstancedMesh|null,
- *   folderRecords: Array<object>,
- *   pickables: THREE.Object3D[],
- * }}
- */
-export function buildCity(root) {
+/** One building instance: which mesh slot it owns and what it stands for. */
+export interface ModuleRecord {
+  kind: AnyKind;
+  mesh: THREE.InstancedMesh;
+  instanceId: number;
+  file: VNode;
+  mod: VMod;
+  baseColor: THREE.Color;
+  height: number;
+  center: THREE.Vector3;
+}
+
+/** One plate instance (file or folder). */
+export interface PlateRecord {
+  node: VNode;
+  instanceId: number;
+  baseColor: THREE.Color;
+}
+
+export interface CityBuild {
+  group: THREE.Group;
+  buildingMeshes: THREE.InstancedMesh[];
+  moduleRecords: ModuleRecord[];
+  filePlates: THREE.InstancedMesh | null;
+  fileRecords: PlateRecord[];
+  folderPlates: THREE.InstancedMesh | null;
+  folderRecords: PlateRecord[];
+  pickables: THREE.Object3D[];
+}
+
+/** Build all static city geometry from a laid-out tree. */
+export function buildCity(root: VNode): CityBuild {
   const group = new THREE.Group();
   group.name = 'city';
 
-  const folders = [];
-  const files = [];
+  const folders: VNode[] = [];
+  const files: VNode[] = [];
   walk(root, (node) => {
     if (!node.rect) return;
     if (node.type === 'file') files.push(node);
@@ -117,7 +140,7 @@ export function buildCity(root) {
   for (const m of buildings.meshes) group.add(m);
   if (outlines) group.add(outlines);
 
-  const pickables = [...buildings.meshes];
+  const pickables: THREE.Object3D[] = [...buildings.meshes];
   if (filePart.mesh) pickables.push(filePart.mesh);
   if (folderPart.mesh) pickables.push(folderPart.mesh);
 
@@ -133,7 +156,7 @@ export function buildCity(root) {
   };
 }
 
-export function walk(node, fn) {
+export function walk(node: VNode, fn: (node: VNode) => void): void {
   fn(node);
   if (node.children) for (const c of node.children) walk(c, fn);
 }
@@ -143,7 +166,7 @@ export function walk(node, fn) {
 const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
 UNIT_BOX.userData.shared = true;
 
-function buildPlates(nodes, isFile) {
+function buildPlates(nodes: VNode[], isFile: boolean): { mesh: THREE.InstancedMesh | null; records: PlateRecord[] } {
   if (!nodes.length) return { mesh: null, records: [] };
 
   const material = new THREE.MeshBasicMaterial({
@@ -163,19 +186,21 @@ function buildPlates(nodes, isFile) {
   const scale = new THREE.Vector3();
   const base = new THREE.Color(isFile ? PALETTE.filePlate : PALETTE.folderPlate);
   const tint = new THREE.Color();
-  const records = [];
+  const records: PlateRecord[] = [];
 
   for (let i = 0; i < nodes.length; i++) {
     const n = nodes[i];
-    const r = n.rect;
-    const top = plateTop(n.depth, isFile);
+    const r = n?.rect;
+    if (!n || !r) continue;
+    const depth = n.depth ?? 0;
+    const top = plateTop(depth, isFile);
     pos.set(r.x + r.w / 2, top - PLATE_THICKNESS / 2, r.z + r.h / 2);
     scale.set(r.w, PLATE_THICKNESS, r.h);
     m.compose(pos, q, scale);
     mesh.setMatrixAt(i, m);
 
     // Deeper folders read slightly brighter so nesting is legible.
-    const lift = isFile ? 1 : 1 + Math.min(n.depth, 5) * 0.13;
+    const lift = isFile ? 1 : 1 + Math.min(depth, 5) * 0.13;
     tint.copy(base).multiplyScalar(lift);
     mesh.setColorAt(i, tint);
 
@@ -191,7 +216,7 @@ function buildPlates(nodes, isFile) {
 
 // --- buildings -------------------------------------------------------------
 
-function buildingMaterial(kind) {
+function buildingMaterial(kind: AnyKind): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.55,
@@ -216,24 +241,24 @@ function buildingMaterial(kind) {
   return mat;
 }
 
-function buildBuildings(files) {
+function buildBuildings(files: VNode[]): { meshes: THREE.InstancedMesh[]; records: ModuleRecord[] } {
   // Bucket module plots by kind so each kind gets one InstancedMesh.
-  const buckets = new Map();
+  const buckets = new Map<AnyKind, Array<{ file: VNode; plot: { mod: VMod; x: number; z: number; w: number; h: number } }>>();
   for (const kind of ALL_KINDS) buckets.set(kind, []);
 
   for (const file of files) {
     if (!file.plots) continue;
     for (const plot of file.plots) {
       const kind = buckets.has(plot.mod.kind) ? plot.mod.kind : 'const';
-      buckets.get(kind).push({ file, plot });
+      buckets.get(kind)?.push({ file, plot });
     }
   }
 
   const geom = new THREE.BoxGeometry(1, 1, 1);
   geom.translate(0, 0.5, 0); // base sits at y = 0
 
-  const meshes = [];
-  const records = [];
+  const meshes: THREE.InstancedMesh[] = [];
+  const records: ModuleRecord[] = [];
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const pos = new THREE.Vector3();
@@ -242,7 +267,7 @@ function buildBuildings(files) {
 
   for (const kind of ALL_KINDS) {
     const entries = buckets.get(kind);
-    if (!entries.length) continue;
+    if (!entries || !entries.length) continue;
 
     const mesh = new THREE.InstancedMesh(geom, buildingMaterial(kind), entries.length);
     mesh.name = `buildings:${kind}`;
@@ -250,17 +275,20 @@ function buildBuildings(files) {
     mesh.renderOrder = kind === 'interface' ? 2 : 1;
     color.setHex(KIND_COLORS[kind]);
 
-    const meta = new Array(entries.length);
+    const meta = new Array<ModuleRecord>(entries.length);
     for (let i = 0; i < entries.length; i++) {
-      const { file, plot } = entries[i];
+      const entry = entries[i];
+      if (!entry) continue;
+      const { file, plot } = entry;
+      const top = file.top ?? 0;
       const h = buildingHeight(plot.mod.loc) * (KIND_HEIGHT_SCALE[kind] ?? 1);
-      pos.set(plot.x + plot.w / 2, file.top, plot.z + plot.h / 2);
+      pos.set(plot.x + plot.w / 2, top, plot.z + plot.h / 2);
       scale.set(Math.max(plot.w, 0.25), h, Math.max(plot.h, 0.25));
       m.compose(pos, q, scale);
       mesh.setMatrixAt(i, m);
       mesh.setColorAt(i, color);
 
-      const rec = {
+      const rec: ModuleRecord = {
         kind,
         mesh,
         instanceId: i,
@@ -268,7 +296,7 @@ function buildBuildings(files) {
         mod: plot.mod,
         baseColor: color.clone(),
         height: h,
-        center: new THREE.Vector3(pos.x, file.top + h / 2, pos.z),
+        center: new THREE.Vector3(pos.x, top + h / 2, pos.z),
       };
       meta[i] = rec;
       records.push(rec);
@@ -287,14 +315,16 @@ function buildBuildings(files) {
 // --- outlines --------------------------------------------------------------
 
 /** One merged additive LineSegments tracing the top rim of every plate. */
-function buildOutlines(folders, files) {
-  const positions = [];
-  const colors = [];
+function buildOutlines(folders: VNode[], files: VNode[]): THREE.LineSegments | null {
+  const positions: number[] = [];
+  const colors: number[] = [];
   const c = new THREE.Color();
 
-  const push = (n, isFile) => {
+  const push = (n: VNode, isFile: boolean) => {
     const r = n.rect;
-    const y = plateTop(n.depth, isFile) + 0.02;
+    if (!r) return;
+    const depth = n.depth ?? 0;
+    const y = plateTop(depth, isFile) + 0.02;
     const x0 = r.x;
     const x1 = r.x + r.w;
     const z0 = r.z;
@@ -306,10 +336,10 @@ function buildOutlines(folders, files) {
       [x0, z1], [x0, z0],
     ];
     // Shallow folders glow brighter; deep nesting fades back.
-    const k = isFile ? 0.22 : Math.max(0.5 - n.depth * 0.09, 0.14);
+    const k = isFile ? 0.22 : Math.max(0.5 - depth * 0.09, 0.14);
     c.setHex(isFile ? PALETTE.cyan : PALETTE.edge).multiplyScalar(k);
     for (const [px, pz] of corners) {
-      positions.push(px, y, pz);
+      positions.push(px ?? 0, y, pz ?? 0);
       colors.push(c.r, c.g, c.b);
     }
   };
@@ -343,12 +373,15 @@ const LABEL_FONT = '600 44px "SFMono-Regular", "JetBrains Mono", Menlo, monospac
 
 /**
  * Canvas-texture text sprite. `worldHeight` is the on-screen cap height in
- * world units. Returns a Sprite whose material opacity main.js animates.
+ * world units. Returns a Sprite whose material opacity main.ts animates.
  */
-export function makeLabelSprite(text, { color = '#a8f4ff', worldHeight = 12, glow = true } = {}) {
+export function makeLabelSprite(
+  text: string,
+  { color = '#a8f4ff', worldHeight = 12, glow = true }: { color?: string; worldHeight?: number; glow?: boolean } = {}
+): THREE.Sprite {
   const label = String(text || '').toUpperCase();
   const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
+  const ctx = ctx2d(canvas);
   ctx.font = LABEL_FONT;
   const pad = 26;
   const w = Math.ceil(ctx.measureText(label).width) + pad * 2;
@@ -356,10 +389,15 @@ export function makeLabelSprite(text, { color = '#a8f4ff', worldHeight = 12, glo
   canvas.width = Math.max(w, 8);
   canvas.height = h;
 
-  const c2 = canvas.getContext('2d');
+  const c2 = ctx2d(canvas);
   c2.font = LABEL_FONT;
   c2.textAlign = 'center';
   c2.textBaseline = 'middle';
+  // Dark backing pill so labels stay readable over bright plates.
+  c2.fillStyle = 'rgba(3, 6, 18, 0.78)';
+  c2.beginPath();
+  c2.roundRect(4, h / 2 - 34, canvas.width - 8, 68, 30);
+  c2.fill();
   if (glow) {
     c2.shadowColor = color;
     c2.shadowBlur = 22;
@@ -380,7 +418,8 @@ export function makeLabelSprite(text, { color = '#a8f4ff', worldHeight = 12, glo
     depthTest: false,
     depthWrite: false,
     opacity: 1,
-    blending: THREE.AdditiveBlending,
+    // Normal blending: additive would make the dark backing pill invisible.
+    blending: THREE.NormalBlending,
   });
   const sprite = new THREE.Sprite(mat);
   sprite.scale.set((worldHeight * canvas.width) / canvas.height, worldHeight, 1);
@@ -393,13 +432,18 @@ export function makeLabelSprite(text, { color = '#a8f4ff', worldHeight = 12, glo
 }
 
 /** Deep-dispose everything under (and including) `obj`, then detach it. */
-export function disposeObject(obj) {
+export function disposeObject(obj: THREE.Object3D): void {
   obj.traverse((child) => {
-    if (child.userData.dispose) { child.userData.dispose(); return; }
-    if (child.geometry && !child.geometry.userData.shared) child.geometry.dispose();
-    const mats = child.material ? (Array.isArray(child.material) ? child.material : [child.material]) : [];
+    const dispose = child.userData.dispose;
+    if (typeof dispose === 'function') { dispose(); return; }
+    const geometry = 'geometry' in child ? child.geometry : null;
+    if (geometry instanceof THREE.BufferGeometry && !geometry.userData.shared) geometry.dispose();
+    const own = 'material' in child ? child.material : null;
+    const mats = own ? (Array.isArray(own) ? own : [own]) : [];
     for (const m of mats) {
-      if (m.map && m.map !== _dotTex) m.map.dispose();
+      if (!(m instanceof THREE.Material)) continue;
+      const map = 'map' in m ? m.map : null;
+      if (map instanceof THREE.Texture && map !== _dotTex) map.dispose();
       m.dispose();
     }
   });
@@ -411,28 +455,31 @@ export function disposeObject(obj) {
 // Coupling arcs
 // ---------------------------------------------------------------------------
 
+/** One drawn import relation: `from` is the importer. */
+export interface Arc {
+  from: THREE.Vector3;
+  to: THREE.Vector3;
+  /** 0..1, drives brightness + tube radius. */
+  strength: number;
+}
+
 /** The shared arc shape — importer to imported, bowed over the city. */
-export function arcCurve(from, to) {
+export function arcCurve(from: THREE.Vector3, to: THREE.Vector3): THREE.QuadraticBezierCurve3 {
   const dist = from.distanceTo(to);
   const mid = from.clone().add(to).multiplyScalar(0.5);
   mid.y += Math.min(28 + dist * 0.32, 220);
   return new THREE.QuadraticBezierCurve3(from.clone(), mid, to.clone());
 }
 
-/**
- * @param {Array<{from:THREE.Vector3, to:THREE.Vector3, strength:number}>} arcs
- *        strength in 0..1 (drives brightness + tube radius); from = importer
- * @param {{thick?:boolean}} [opts]
- * @returns {THREE.Mesh|null} one merged additive mesh
- */
-export function buildCouplingArcs(arcs, opts = {}) {
+/** @returns one merged additive mesh. */
+export function buildCouplingArcs(arcs: Arc[], opts: { thick?: boolean; scale?: number } = {}): THREE.Mesh | null {
   if (!arcs.length) return null;
   const thick = !!opts.thick;
 
-  const positions = [];
-  const colors = [];
-  const indices = [];
-  const normals = [];
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+  const normals: number[] = [];
   let vertexOffset = 0;
 
   const color = new THREE.Color();
@@ -457,6 +504,7 @@ export function buildCouplingArcs(arcs, opts = {}) {
     const pos = tube.attributes.position;
     const nrm = tube.attributes.normal;
     const idx = tube.index;
+    if (!pos || !nrm || !idx) { tube.dispose(); continue; }
     // Tube vertices run in curve order, so a per-ring ramp reads as direction:
     // dim at the importer, bright at the imported end.
     const ring = (thick ? 8 : 5) + 1;
@@ -493,15 +541,17 @@ export function buildCouplingArcs(arcs, opts = {}) {
   return mesh;
 }
 
+export interface ArcFlow {
+  points: THREE.Points;
+  update: (t: number) => void;
+}
+
 /**
  * Pulses that travel importer → imported along the same curves, so direction is
  * readable at a glance. One THREE.Points draw call; positions are lerped from a
  * precomputed sample table, so `update()` allocates nothing.
- *
- * @param {Array<{from:THREE.Vector3,to:THREE.Vector3,strength:number}>} arcs
- * @returns {{points: THREE.Points, update: (t:number)=>void}|null}
  */
-export function buildArcFlow(arcs, opts = {}) {
+export function buildArcFlow(arcs: Arc[], opts: { thick?: boolean } = {}): ArcFlow | null {
   if (!arcs.length) return null;
   const SAMPLES = 24;
   const perArc = arcs.length > 60 ? 1 : 2;
@@ -519,7 +569,9 @@ export function buildArcFlow(arcs, opts = {}) {
   const c = new THREE.Color();
   let k = 0;
   for (let a = 0; a < arcs.length; a++) {
-    const curve = arcCurve(arcs[a].from, arcs[a].to);
+    const arc = arcs[a];
+    if (!arc) continue;
+    const curve = arcCurve(arc.from, arc.to);
     const base = a * (SAMPLES + 1) * 3;
     for (let s = 0; s <= SAMPLES; s++) {
       curve.getPoint(s / SAMPLES, p);
@@ -527,7 +579,7 @@ export function buildArcFlow(arcs, opts = {}) {
       table[base + s * 3 + 1] = p.y;
       table[base + s * 3 + 2] = p.z;
     }
-    const strength = Math.min(Math.max(arcs[a].strength, 0), 1);
+    const strength = Math.min(Math.max(arc.strength, 0), 1);
     for (let j = 0; j < perArc; j++, k++) {
       arcOf[k] = a;
       offsets[k] = (j / perArc + (a % 7) / 7) % 1;
@@ -574,29 +626,35 @@ export function buildArcFlow(arcs, opts = {}) {
     points,
     update(t) {
       for (let i = 0; i < count; i++) {
-        const f = (offsets[i] + t * speeds[i]) % 1;
-        const a = arcOf[i];
+        const f = ((offsets[i] ?? 0) + t * (speeds[i] ?? 0)) % 1;
+        const a = arcOf[i] ?? 0;
         const base = a * (SAMPLES + 1) * 3;
         const x = f * SAMPLES;
         const s0 = Math.min(Math.floor(x), SAMPLES - 1);
         const frac = x - s0;
         const i0 = base + s0 * 3;
         const i1 = i0 + 3;
-        positions[i * 3] = table[i0] + (table[i1] - table[i0]) * frac;
-        positions[i * 3 + 1] = table[i0 + 1] + (table[i1 + 1] - table[i0 + 1]) * frac;
-        positions[i * 3 + 2] = table[i0 + 2] + (table[i1 + 2] - table[i0 + 2]) * frac;
+        positions[i * 3] = lerpAt(table, i0, i1, frac);
+        positions[i * 3 + 1] = lerpAt(table, i0 + 1, i1 + 1, frac);
+        positions[i * 3 + 2] = lerpAt(table, i0 + 2, i1 + 2, frac);
       }
-      attr.needsUpdate = true;
+      if (attr) attr.needsUpdate = true;
     },
   };
 }
 
-let _dotTex = null;
-function dotTexture() {
+function lerpAt(table: Float32Array, i0: number, i1: number, frac: number): number {
+  const a = table[i0] ?? 0;
+  const b = table[i1] ?? 0;
+  return a + (b - a) * frac;
+}
+
+let _dotTex: THREE.CanvasTexture | null = null;
+function dotTexture(): THREE.CanvasTexture {
   if (_dotTex) return _dotTex;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 32;
-  const ctx = canvas.getContext('2d');
+  const ctx = ctx2d(canvas);
   const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
   g.addColorStop(0, 'rgba(255,255,255,1)');
   g.addColorStop(0.45, 'rgba(255,255,255,0.55)');
@@ -617,13 +675,16 @@ const AVATAR_PX = 160;
  * Avatar sprite + light beam for one PR, with a thin light-line and glowing
  * ring on every file the PR touches so the connection is unmistakable.
  *
- * @param {{number:number,title:string,author:string,avatarUrl:string|null,isDraft:boolean}} pr
- * @param {THREE.Vector3} anchor  centroid of touched files (ground level)
- * @param {{hover?:number, weight?:number, targets?:THREE.Vector3[]}} [opts]
- *        weight = 0..1 magnitude (log-scaled additions+deletions) driving beam size
- * @returns {THREE.Group} group whose userData drives animation + hover highlight
+ * @param pr
+ * @param anchor  centroid of touched files (ground level)
+ * @param opts.weight 0..1 magnitude (log-scaled additions+deletions) driving beam size
+ * @returns group whose userData drives animation + hover highlight
  */
-export function buildPrMarker(pr, anchor, opts = {}) {
+export function buildPrMarker(
+  pr: Pr,
+  anchor: THREE.Vector3,
+  opts: { hover?: number; weight?: number; targets?: THREE.Vector3[] } = {}
+): THREE.Group {
   const hover = opts.hover ?? 58;
   const weight = Math.min(Math.max(opts.weight ?? 0.35, 0), 1);
   const targets = opts.targets || [];
@@ -668,11 +729,11 @@ export function buildPrMarker(pr, anchor, opts = {}) {
 
   // --- light-lines from the avatar down to each touched file + a ring on each
   const capped = targets.slice(0, 20);
-  let links = null;
-  let rings = null;
+  let links: THREE.LineSegments | null = null;
+  let rings: THREE.Mesh | null = null;
   if (capped.length) {
     const top = new THREE.Vector3(anchor.x, anchor.y + beamH, anchor.z);
-    const lp = [];
+    const lp: number[] = [];
     for (const t of capped) lp.push(top.x, top.y, top.z, t.x, t.y + 0.6, t.z);
     const lg = new THREE.BufferGeometry();
     lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
@@ -744,8 +805,8 @@ export function buildPrMarker(pr, anchor, opts = {}) {
 }
 
 /** One merged flat ring per point, lying on the XZ plane. */
-function ringsGeometry(points, inner, outer, segments = 20) {
-  const positions = [];
+function ringsGeometry(points: THREE.Vector3[], inner: number, outer: number, segments = 20): THREE.BufferGeometry {
+  const positions: number[] = [];
   for (const p of points) {
     for (let i = 0; i < segments; i++) {
       const a0 = (i / segments) * Math.PI * 2;
@@ -769,15 +830,16 @@ function ringsGeometry(points, inner, outer, segments = 20) {
  * carries no CORS header, so the image can never become a WebGL texture. Prefer
  * the CDN host directly (which does send `access-control-allow-origin: *`).
  */
-function avatarCandidates(pr) {
+function avatarCandidates(pr: Pr): string[] {
   const raw = pr.avatarUrl;
   if (!raw) return []; // no avatar in the data -> initials disc
   const m = /^https?:\/\/(?:www\.)?github\.com\/([^/?#]+)\.png/i.exec(raw);
-  if (m) return [`https://avatars.githubusercontent.com/${encodeURIComponent(m[1])}?size=160`];
+  const login = m?.[1];
+  if (login) return [`https://avatars.githubusercontent.com/${encodeURIComponent(login)}?size=160`];
   return [raw];
 }
 
-async function loadFirstAvatar(urls, accentHex) {
+async function loadFirstAvatar(urls: string[], accentHex: number): Promise<THREE.CanvasTexture | null> {
   for (const url of urls) {
     const tex = await loadAvatarTexture(url, accentHex);
     if (tex) return tex;
@@ -785,7 +847,7 @@ async function loadFirstAvatar(urls, accentHex) {
   return null;
 }
 
-function initialsTexture(login, accentHex) {
+function initialsTexture(login: string, accentHex: number): THREE.CanvasTexture {
   const name = String(login || '?');
   const initials = name
     .replace(/[^a-zA-Z0-9]+/g, ' ')
@@ -798,7 +860,7 @@ function initialsTexture(login, accentHex) {
 
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = AVATAR_PX;
-  const ctx = canvas.getContext('2d');
+  const ctx = ctx2d(canvas);
   const r = AVATAR_PX / 2;
   const accent = '#' + accentHex.toString(16).padStart(6, '0');
 
@@ -828,7 +890,7 @@ function initialsTexture(login, accentHex) {
   return tex;
 }
 
-function loadAvatarTexture(url, accentHex) {
+function loadAvatarTexture(url: string, accentHex: number): Promise<THREE.CanvasTexture | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -836,7 +898,7 @@ function loadAvatarTexture(url, accentHex) {
       try {
         const canvas = document.createElement('canvas');
         canvas.width = canvas.height = AVATAR_PX;
-        const ctx = canvas.getContext('2d');
+        const ctx = ctx2d(canvas);
         const r = AVATAR_PX / 2;
         ctx.save();
         ctx.beginPath();
@@ -876,11 +938,10 @@ function loadAvatarTexture(url, accentHex) {
 
 /**
  * Orange wireframe scaffolding around each affected file plate (draft PRs).
- * @param {Array<object>} fileNodes
- * @returns {THREE.LineSegments|null} material opacity is pulsed by main.js
+ * @returns material opacity is pulsed by main.ts
  */
-export function buildScaffolding(fileNodes, color = PALETTE.orange) {
-  const positions = [];
+export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.orange): THREE.LineSegments | null {
+  const positions: number[] = [];
   for (const n of fileNodes) {
     if (!n.rect) continue;
     const r = n.rect;
@@ -889,15 +950,18 @@ export function buildScaffolding(fileNodes, color = PALETTE.orange) {
     const x1 = r.x + r.w + grow;
     const z0 = r.z - grow;
     const z1 = r.z + r.h + grow;
-    const y0 = plateTop(n.depth, true) - PLATE_THICKNESS - 1;
+    const y0 = plateTop(n.depth ?? 0, true) - PLATE_THICKNESS - 1;
     const y1 = y0 + Math.max(tallestBuilding(n) + 6, 14);
 
-    const c = [
+    const c: Array<[number, number]> = [
       [x0, z0], [x1, z0], [x1, z1], [x0, z1],
     ];
     for (let i = 0; i < 4; i++) {
-      const [ax, az] = c[i];
-      const [bx, bz] = c[(i + 1) % 4];
+      const a = c[i];
+      const b = c[(i + 1) % 4];
+      if (!a || !b) continue;
+      const [ax, az] = a;
+      const [bx, bz] = b;
       positions.push(ax, y0, az, bx, y0, bz); // bottom rail
       positions.push(ax, y1, az, bx, y1, bz); // top rail
       positions.push(ax, y0, az, ax, y1, az); // upright
@@ -923,7 +987,7 @@ export function buildScaffolding(fileNodes, color = PALETTE.orange) {
   return lines;
 }
 
-function tallestBuilding(fileNode) {
+function tallestBuilding(fileNode: VNode): number {
   let max = 0;
   if (fileNode.plots) {
     for (const p of fileNode.plots) max = Math.max(max, buildingHeight(p.mod.loc));
@@ -936,7 +1000,7 @@ function tallestBuilding(fileNode) {
 // ---------------------------------------------------------------------------
 
 /** Reusable glowing box outline used to mark the selected / hovered node. */
-export function makeSelectionBox(color = PALETTE.orange) {
+export function makeSelectionBox(color: number = PALETTE.orange): THREE.LineSegments {
   const geom = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
   const mat = new THREE.LineBasicMaterial({
     color,
@@ -954,14 +1018,14 @@ export function makeSelectionBox(color = PALETTE.orange) {
 }
 
 /** Position a selection box over a node's footprint. */
-export function frameNodeBox(box, node, height = 10) {
+export function frameNodeBox(box: THREE.LineSegments, node: VNode | null, height = 10): void {
   if (!node || !node.rect) {
     box.visible = false;
     return;
   }
   const r = node.rect;
   const isFile = node.type === 'file';
-  const top = plateTop(node.depth, isFile);
+  const top = plateTop(node.depth ?? 0, isFile);
   const h = Math.max(height, 6);
   box.position.set(r.x + r.w / 2, top + h / 2 - PLATE_THICKNESS, r.z + r.h / 2);
   box.scale.set(r.w + 1.5, h, r.h + 1.5);
@@ -972,7 +1036,7 @@ export function frameNodeBox(box, node, height = 10) {
 // Environment
 // ---------------------------------------------------------------------------
 
-export function buildEnvironment(size) {
+export function buildEnvironment(size: number): THREE.Group {
   const group = new THREE.Group();
   group.name = 'environment';
 
@@ -993,4 +1057,15 @@ export function buildEnvironment(size) {
   group.add(grid2);
 
   return group;
+}
+
+// ---------------------------------------------------------------------------
+// Utils
+// ---------------------------------------------------------------------------
+
+/** 2d drawing context; the hologram's textures cannot be built without one. */
+function ctx2d(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('2d canvas context unavailable');
+  return ctx;
 }

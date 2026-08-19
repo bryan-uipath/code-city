@@ -1,31 +1,98 @@
 /**
- * search.js — the command palette (⌘P files/modules · ⌘F file contents).
+ * search.ts — the command palette (⌘P files/modules · ⌘F file contents).
  *
  * One palette, two modes. Both drive the SAME city reaction: the host paints a
  * "search highlight" pass (matches glow white-cyan, everything else dims) while
  * the palette is open, and restores the active overlay when it closes.
  *
- * The host contract (see main.js):
+ * The host contract (see main.ts):
  *   getRoot()            -> the real tree root (search always spans the whole
  *                           repo, not the current focus scope)
  *   highlight(spec|null) -> spec = { paths: Map(path -> {w, mods:Set|null}),
  *                                    cursor: {path, mods:Set|null}|null }
  *   reveal(path, {module, line}) -> pop scope if needed, select + fly, true/false
  *   notice(msg)          -> transient HUD message
+ *   search(q)            -> content search results, or null when unavailable
  *
  * Everything data-derived (paths, module names, matched source lines, the echoed
  * query) is escaped before it reaches innerHTML.
  */
+import type { SearchMatch, SearchResponse } from '../../shared/types.js';
 import { escapeHtml } from './sidebar.js';
+import type { VNode } from './vtree.js';
 
 const MAX_RESULTS = 30;
 const CONTENT_DEBOUNCE = 250;
 const MIN_CONTENT_QUERY = 2;
 
-/** @param {{getRoot:Function, highlight:Function, reveal:Function, notice:Function}} host */
-export function createSearch(host) {
+/** Which files (and modules within them) the city should highlight. */
+export interface HighlightSpec {
+  paths: Map<string, { w: number; mods: Set<string> | null }>;
+  cursor: { path: string; mods: Set<string> | null } | null;
+}
+
+export interface SearchHost {
+  getRoot(): VNode;
+  highlight(spec: HighlightSpec | null): void;
+  reveal(path: string, opts?: { module?: string | null; line?: number }): boolean;
+  notice(msg: string): void;
+  search(q: string): Promise<SearchResponse | null>;
+}
+
+export interface SearchPalette {
+  isOpen(): boolean;
+  open(mode: string): void;
+  close(): void;
+}
+
+/** One file/module hit in ⌘P mode. */
+export interface FileResult {
+  path: string;
+  module: string | null;
+  label: string;
+  sub: string;
+  score: number;
+}
+
+/** All content matches for one file in ⌘F mode. */
+interface Group {
+  path: string;
+  matches: Array<{ line: number; text: string }>;
+}
+
+type Result = FileResult | Group;
+
+/** A keyboard-navigable row: a file/group header, or one matched line. */
+interface Row {
+  type: 'file' | 'line';
+  gi: number;
+  mi?: number;
+}
+
+/** A fuzzy-index entry: one file path, or one `path#module`. */
+interface Entry {
+  path: string;
+  module: string | null;
+  text: string;
+  boostFrom: number;
+}
+
+export function createSearch(host: SearchHost): SearchPalette {
   const el = buildDom();
-  const state = {
+  const state: {
+    open: boolean;
+    mode: 'file' | 'content';
+    query: string;
+    results: Result[];
+    rows: Row[];
+    cursor: number;
+    expanded: Set<number>;
+    status: string;
+    entries: Entry[] | null;
+    entryRoot: VNode | null;
+    reqToken: number;
+    debounce: ReturnType<typeof setTimeout> | undefined;
+  } = {
     open: false,
     mode: 'file',
     query: '',
@@ -39,7 +106,7 @@ export function createSearch(host) {
     entries: null,     // lazily built fuzzy index over the real tree
     entryRoot: null,
     reqToken: 0,
-    debounce: 0,
+    debounce: undefined,
   };
 
   window.addEventListener('keydown', onWindowKey);
@@ -49,8 +116,8 @@ export function createSearch(host) {
   });
   el.input.addEventListener('keydown', onInputKey);
   el.tabs.addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-mode]');
-    if (btn) setMode(btn.dataset.mode);
+    const btn = closest(e.target, 'button[data-mode]');
+    if (btn) setMode(btn.dataset.mode ?? 'file');
   });
   el.list.addEventListener('click', onListClick);
 
@@ -62,7 +129,7 @@ export function createSearch(host) {
 
   // --- open / close --------------------------------------------------------
 
-  function open(mode) {
+  function open(mode: string): void {
     const was = state.open;
     state.open = true;
     el.root.classList.add('on');
@@ -81,7 +148,7 @@ export function createSearch(host) {
     if (!was) render();
   }
 
-  function close() {
+  function close(): void {
     if (!state.open) return;
     state.open = false;
     state.reqToken++;
@@ -91,11 +158,11 @@ export function createSearch(host) {
     host.highlight(null);
   }
 
-  function setMode(mode, opts = {}) {
+  function setMode(mode: string, opts: { silent?: boolean } = {}): void {
     const next = mode === 'content' ? 'content' : 'file';
     const changed = next !== state.mode;
     state.mode = next;
-    for (const b of el.tabs.querySelectorAll('button[data-mode]')) {
+    for (const b of el.tabs.querySelectorAll<HTMLElement>('button[data-mode]')) {
       b.classList.toggle('active', b.dataset.mode === next);
     }
     el.input.placeholder = next === 'file' ? 'Find file or module…' : 'Find in file contents…';
@@ -109,7 +176,7 @@ export function createSearch(host) {
 
   // --- keys ----------------------------------------------------------------
 
-  function onWindowKey(e) {
+  function onWindowKey(e: KeyboardEvent): void {
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     const k = e.key.toLowerCase();
     if (k !== 'p' && k !== 'f') return;
@@ -118,7 +185,7 @@ export function createSearch(host) {
     open(k === 'p' ? 'file' : 'content');
   }
 
-  function onInputKey(e) {
+  function onInputKey(e: KeyboardEvent): void {
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -148,7 +215,7 @@ export function createSearch(host) {
     }
   }
 
-  function moveCursor(d) {
+  function moveCursor(d: number): void {
     if (!state.rows.length) return;
     state.cursor = (state.cursor + d + state.rows.length) % state.rows.length;
     render();
@@ -157,7 +224,7 @@ export function createSearch(host) {
 
   // --- querying ------------------------------------------------------------
 
-  function runQuery() {
+  function runQuery(): void {
     clearTimeout(state.debounce);
     state.reqToken++;
     const q = state.query.trim();
@@ -192,8 +259,8 @@ export function createSearch(host) {
     state.debounce = setTimeout(() => runContentQuery(q, token), CONTENT_DEBOUNCE);
   }
 
-  async function runContentQuery(q, token) {
-    const json = await fetchSearch(q);
+  async function runContentQuery(q: string, token: number): Promise<void> {
+    const json = await host.search(q);
     if (token !== state.reqToken || !state.open) return;
     if (!json) {
       state.results = [];
@@ -211,48 +278,64 @@ export function createSearch(host) {
   }
 
   /** The fuzzy index over the whole real tree (rebuilt if the root changes). */
-  function entries() {
+  function entries(): Entry[] {
     const root = host.getRoot();
     if (state.entries && state.entryRoot === root) return state.entries;
-    const list = [];
+    const list: Entry[] = [];
     collectEntries(root, list);
     state.entries = list;
     state.entryRoot = root;
     return list;
   }
 
+  /** The current results, seen as the type the active mode produces. */
+  function fileResults(): FileResult[] {
+    return state.mode === 'file' ? state.results.filter(isFileResult) : [];
+  }
+
+  function groupResults(): Group[] {
+    return state.mode === 'content' ? state.results.filter(isGroup) : [];
+  }
+
   // --- city highlight ------------------------------------------------------
 
-  function pushHighlight() {
+  function pushHighlight(): void {
     if (!state.open) return;
     // An empty query leaves the city as it was — only a real query dims it.
     if (!state.query.trim()) {
       host.highlight(null);
       return;
     }
-    const paths = new Map();
-    let cursor = null;
+    const paths = new Map<string, { w: number; mods: Set<string> | null }>();
+    let cursor: { path: string; mods: Set<string> | null } | null = null;
 
     if (state.mode === 'file') {
-      const n = state.results.length;
-      state.results.forEach((r, i) => {
+      const results = fileResults();
+      const n = results.length;
+      results.forEach((r, i) => {
         addPath(paths, r.path, 1 - (i / Math.max(n, 1)) * 0.6, r.module);
       });
       const row = state.rows[state.cursor];
-      const sel = row ? state.results[row.gi] : null;
+      const sel = row ? results[row.gi] : null;
       if (sel) cursor = { path: sel.path, mods: sel.module ? new Set([sel.module]) : null };
     } else {
+      const results = groupResults();
       let max = 1;
-      for (const g of state.results) max = Math.max(max, g.matches.length);
-      for (const g of state.results) addPath(paths, g.path, 0.35 + 0.65 * (g.matches.length / max), null);
+      for (const g of results) max = Math.max(max, g.matches.length);
+      for (const g of results) addPath(paths, g.path, 0.35 + 0.65 * (g.matches.length / max), null);
       const row = state.rows[state.cursor];
-      const g = row ? state.results[row.gi] : null;
+      const g = row ? results[row.gi] : null;
       if (g) cursor = { path: g.path, mods: null };
     }
     host.highlight({ paths, cursor });
   }
 
-  function addPath(map, path, w, module) {
+  function addPath(
+    map: Map<string, { w: number; mods: Set<string> | null }>,
+    path: string,
+    w: number,
+    module: string | null
+  ): void {
     const prev = map.get(path);
     if (!prev) {
       map.set(path, { w, mods: module ? new Set([module]) : null });
@@ -265,7 +348,7 @@ export function createSearch(host) {
 
   // --- rendering -----------------------------------------------------------
 
-  function render() {
+  function render(): void {
     el.status.textContent = state.status;
     state.rows = buildRows();
 
@@ -277,7 +360,8 @@ export function createSearch(host) {
     const html = state.rows.map((row, i) => {
       const active = i === state.cursor ? ' active' : '';
       if (state.mode === 'file') {
-        const r = state.results[row.gi];
+        const r = fileResults()[row.gi];
+        if (!r) return '';
         return (
           `<div class="pal-row${active}" data-i="${i}">` +
           `<span class="tag ${r.module ? 'mod' : 'file'}">${r.module ? 'MOD' : 'FILE'}</span>` +
@@ -286,7 +370,8 @@ export function createSearch(host) {
           `</div>`
         );
       }
-      const g = state.results[row.gi];
+      const g = groupResults()[row.gi];
+      if (!g) return '';
       if (row.type === 'file') {
         const open = state.expanded.has(row.gi);
         return (
@@ -298,7 +383,8 @@ export function createSearch(host) {
           `</div>`
         );
       }
-      const m = g.matches[row.mi];
+      const m = row.mi === undefined ? undefined : g.matches[row.mi];
+      if (!m) return '';
       return (
         `<div class="pal-row line${active}" data-i="${i}">` +
         `<span class="ln">${Number(m.line) || 0}</span>` +
@@ -311,13 +397,13 @@ export function createSearch(host) {
     if (active) active.scrollIntoView({ block: 'nearest' });
   }
 
-  function buildRows() {
-    const rows = [];
+  function buildRows(): Row[] {
+    const rows: Row[] = [];
     if (state.mode === 'file') {
       state.results.forEach((_, gi) => rows.push({ type: 'file', gi }));
       return rows;
     }
-    state.results.forEach((g, gi) => {
+    groupResults().forEach((g, gi) => {
       rows.push({ type: 'file', gi });
       if (state.expanded.has(gi)) g.matches.forEach((_, mi) => rows.push({ type: 'line', gi, mi }));
     });
@@ -326,8 +412,8 @@ export function createSearch(host) {
 
   // --- activation ----------------------------------------------------------
 
-  function onListClick(e) {
-    const rowEl = e.target.closest('.pal-row');
+  function onListClick(e: MouseEvent): void {
+    const rowEl = closest(e.target, '.pal-row');
     if (!rowEl) return;
     const i = Number(rowEl.dataset.i);
     if (!Number.isFinite(i)) return;
@@ -335,7 +421,7 @@ export function createSearch(host) {
     activate(i);
   }
 
-  function toggleExpand(gi, wantOpen) {
+  function toggleExpand(gi: number, wantOpen: boolean): void {
     const isOpen = state.expanded.has(gi);
     if (wantOpen === isOpen) return;
     if (isOpen) state.expanded.delete(gi);
@@ -343,16 +429,16 @@ export function createSearch(host) {
     render();
   }
 
-  function activate(i) {
+  function activate(i: number): void {
     const row = state.rows[i];
     if (!row) return;
     if (state.mode === 'file') {
-      const r = state.results[row.gi];
+      const r = fileResults()[row.gi];
       if (!r) return;
       if (host.reveal(r.path, { module: r.module })) close();
       return;
     }
-    const g = state.results[row.gi];
+    const g = groupResults()[row.gi];
     if (!g) return;
     if (row.type === 'file' && !state.expanded.has(row.gi) && g.matches.length > 1) {
       // First Enter on a collapsed group opens it; a second one navigates.
@@ -360,8 +446,9 @@ export function createSearch(host) {
       pushHighlight();
       return;
     }
-    const line = row.type === 'line' ? g.matches[row.mi].line : g.matches[0].line;
-    if (host.reveal(g.path, { line })) close();
+    const match = row.type === 'line' && row.mi !== undefined ? g.matches[row.mi] : g.matches[0];
+    if (!match) return;
+    if (host.reveal(g.path, { line: match.line })) close();
   }
 }
 
@@ -369,11 +456,11 @@ export function createSearch(host) {
 // File / module search
 // ---------------------------------------------------------------------------
 
-/** @returns {Array<{path,module,label,sub,score}>} best `MAX_RESULTS` matches. */
-export function searchFiles(query, entries) {
+/** @returns best `MAX_RESULTS` matches. */
+export function searchFiles(query: string, entries: Entry[]): FileResult[] {
   const q = query.toLowerCase().replace(/\s+/g, '');
   if (!q) return [];
-  const out = [];
+  const out: Array<{ e: Entry; score: number }> = [];
   for (const e of entries) {
     const score = scoreEntry(q, e);
     if (score > 0) out.push({ e, score });
@@ -388,7 +475,7 @@ export function searchFiles(query, entries) {
   }));
 }
 
-function scoreEntry(q, e) {
+function scoreEntry(q: string, e: Entry): number {
   let score = fuzzyScore(q, e.text, e.boostFrom);
   if (score <= 0) return 0;
   if (e.text.includes(q)) score += 14;
@@ -402,7 +489,7 @@ function scoreEntry(q, e) {
  * targets cost. Returns 0 when `q` is not a subsequence of `text`.
  * `boostFrom` is the index where the "interesting" part (basename) begins.
  */
-export function fuzzyScore(q, text, boostFrom = 0) {
+export function fuzzyScore(q: string, text: string, boostFrom = 0): number {
   const n = q.length;
   const m = text.length;
   if (!n || n > m) return 0;
@@ -411,7 +498,9 @@ export function fuzzyScore(q, text, boostFrom = 0) {
   let prev = -2;
   let run = 0;
   for (let qi = 0; qi < n; qi++) {
-    const at = text.indexOf(q[qi], from);
+    const ch = q[qi];
+    if (ch === undefined) return 0;
+    const at = text.indexOf(ch, from);
     if (at < 0) return 0;
     let s = 1;
     if (at === prev + 1) { run++; s += 3 + Math.min(run, 6); } else { run = 0; }
@@ -427,7 +516,7 @@ export function fuzzyScore(q, text, boostFrom = 0) {
 }
 
 /** Every file path and every `path#module` in the real tree. */
-function collectEntries(node, out) {
+function collectEntries(node: VNode | null | undefined, out: Entry[]): void {
   if (!node) return;
   if (node.type === 'file') {
     out.push(makeEntry(node.path, null));
@@ -437,7 +526,7 @@ function collectEntries(node, out) {
   for (const c of node.children || []) collectEntries(c, out);
 }
 
-function makeEntry(path, module) {
+function makeEntry(path: string, module: string | null): Entry {
   const text = (module ? `${path}#${module}` : path).toLowerCase();
   const cut = module ? text.lastIndexOf('#') + 1 : text.lastIndexOf('/') + 1;
   return { path, module, text, boostFrom: cut };
@@ -447,24 +536,8 @@ function makeEntry(path, module) {
 // Content search
 // ---------------------------------------------------------------------------
 
-/**
- * `GET /api/search` → parsed JSON, or null when the endpoint is absent (static
- * host answers with index.html, so only a JSON content-type is trusted).
- */
-async function fetchSearch(q) {
-  try {
-    const res = await fetch('/api/search?' + new URLSearchParams({ q }).toString(), { cache: 'no-cache' });
-    const type = res.headers.get('content-type') || '';
-    if (!res.ok || !type.includes('json')) return null;
-    const json = await res.json();
-    return json && Array.isArray(json.matches) ? json : null;
-  } catch {
-    return null;
-  }
-}
-
-function groupMatches(matches) {
-  const byPath = new Map();
+function groupMatches(matches: SearchMatch[]): Group[] {
+  const byPath = new Map<string, Group>();
   for (const m of matches) {
     if (!m || typeof m.path !== 'string') continue;
     let g = byPath.get(m.path);
@@ -474,11 +547,27 @@ function groupMatches(matches) {
   return [...byPath.values()].sort((a, b) => b.matches.length - a.matches.length || a.path.localeCompare(b.path));
 }
 
+function isFileResult(r: Result): r is FileResult {
+  return 'label' in r;
+}
+
+function isGroup(r: Result): r is Group {
+  return 'matches' in r;
+}
+
 // ---------------------------------------------------------------------------
 // DOM
 // ---------------------------------------------------------------------------
 
-function buildDom() {
+interface PaletteDom {
+  root: HTMLDivElement;
+  tabs: HTMLElement;
+  input: HTMLInputElement;
+  list: HTMLElement;
+  status: HTMLElement;
+}
+
+function buildDom(): PaletteDom {
   const root = document.createElement('div');
   root.id = 'palette';
   root.className = 'hud panel';
@@ -490,17 +579,16 @@ function buildDom() {
     `<input id="pal-input" type="text" spellcheck="false" autocomplete="off" placeholder="Find file or module…" />` +
     `<div id="pal-list"></div>`;
   document.body.appendChild(root);
-  return {
-    root,
-    tabs: root.querySelector('#pal-tabs'),
-    input: root.querySelector('#pal-input'),
-    list: root.querySelector('#pal-list'),
-    status: root.querySelector('#pal-status'),
-  };
+  const tabs = root.querySelector<HTMLElement>('#pal-tabs');
+  const input = root.querySelector<HTMLInputElement>('#pal-input');
+  const list = root.querySelector<HTMLElement>('#pal-list');
+  const status = root.querySelector<HTMLElement>('#pal-status');
+  if (!tabs || !input || !list || !status) throw new Error('palette markup missing');
+  return { root, tabs, input, list, status };
 }
 
 /** Escape `text`, wrapping every case-insensitive occurrence of `q` in <mark>. */
-function mark(text, q) {
+function mark(text: string, q: string): string {
   const s = String(text ?? '');
   const needle = String(q ?? '').trim().toLowerCase();
   if (!needle) return escapeHtml(s);
@@ -516,13 +604,18 @@ function mark(text, q) {
   return out + escapeHtml(s.slice(i));
 }
 
-function baseName(path) {
+function baseName(path: string): string {
   const s = String(path);
   return s.slice(s.lastIndexOf('/') + 1);
 }
 
-function dirName(path) {
+function dirName(path: string): string {
   const s = String(path);
   const i = s.lastIndexOf('/');
   return i < 0 ? '' : s.slice(0, i);
+}
+
+/** `Element.closest` from an event target that may not be an element at all. */
+function closest(target: EventTarget | null, selector: string): HTMLElement | null {
+  return target instanceof Element ? target.closest<HTMLElement>(selector) : null;
 }
