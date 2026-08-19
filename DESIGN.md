@@ -295,6 +295,15 @@ the 5–10 locations that carry the idea, emit the Tour JSON, hand the user
 
 ## Future ideas (recorded, not scheduled)
 
+- **VS Code extension** (deliberately deferred until the core UX and fit &
+  finish are nailed): the city as a webview panel — a `VsCodeHost` implements
+  `CityHost` over postMessage (strict CSP, no network), the analyzer runs on
+  the workspace with the incremental cache, the extension host mirrors the
+  vite dev-API semantics (same path containment/caps), `O` opens the selected
+  file at its line in the editor, reveal-active-file selects it in the city,
+  tours and the working-tree layer ride along. The `CityHost` seam already
+  exists for exactly this.
+
 - **Code coverage overlay** — ingest lcov/istanbul output; per-file and
   per-module coverage as a color ramp (uncovered = dark voids in the city).
 - **Test pass visualization** — map test results onto the buildings they

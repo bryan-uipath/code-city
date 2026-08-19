@@ -103,4 +103,4 @@ See [DESIGN.md](DESIGN.md) for the full metaphor, data contract, and style guide
 
 ## Status
 
-Early prototype, moving fast. Recently landed: a hierarchy-legibility pass (terraces, side-wall district signage, clickable labels, chained camera flights), the Working-tree layer, Strata mode and an incremental analyzer cache (re-analysis reuses the processed commit stream, keyed by repo root under `.codecity/`). In progress: a VS Code extension (the city as a webview, click a building to open the file).
+Early prototype, moving fast. Recently landed: a hierarchy-legibility pass (terraces, side-wall district signage, clickable labels, chained camera flights), the Working-tree layer, Strata mode, an incremental analyzer cache, guided tours, and markdown support. Current focus: core UX and fit & finish. Future: a VS Code extension over the existing `CityHost` seam (see DESIGN.md).
