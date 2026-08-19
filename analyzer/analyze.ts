@@ -14,11 +14,12 @@ import type {
 const execFileAsync = promisify(execFile);
 
 const SOURCE_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs']);
+const MARKDOWN_EXT = new Set(['.md', '.mdx']);
 const SKIP_DIRS = new Set([
   'node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.turbo', '.next',
-  'test-results', '__snapshots__', 'generated', '__generated__', 'gen',
+  'test-results', '__snapshots__', 'generated', '__generated__', 'gen', 'playwright-report',
 ]);
-const RESOLVE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '/index.ts', '/index.tsx', '/index.js', '/index.jsx'];
+const RESOLVE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '/index.ts', '/index.tsx', '/index.js', '/index.jsx', '.md', '/README.md', '/index.md'];
 const FIX_RE = /\b(fix|fixes|fixed|bug|bugfix|hotfix)\b/i;
 const HASH_RE = /^[0-9a-f]{7,40}$/;
 const DAY = 86400;
@@ -180,7 +181,7 @@ function discoverFiles(repoRoot: string, roots: string[]): string[] {
         walk(full);
       } else if (e.isFile()) {
         const ext = path.extname(e.name);
-        if (!SOURCE_EXT.has(ext)) continue;
+        if (!SOURCE_EXT.has(ext) && !MARKDOWN_EXT.has(ext)) continue;
         if (e.name.endsWith('.d.ts')) continue;
         found.push(toPosix(path.relative(repoRoot, full)));
       }
@@ -198,6 +199,7 @@ function parseFile(absPath: string, rel: string): ParsedFile {
   const modules: ModuleInfo[] = [];
   const imports: string[] = [];
   if (!text) return { loc, modules, imports };
+  if (MARKDOWN_EXT.has(path.extname(rel))) return parseMarkdown(text, loc);
 
   const sf = ts.createSourceFile(absPath, text, ts.ScriptTarget.Latest, true,
     jsx ? ts.ScriptKind.TSX : rel.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
@@ -267,6 +269,71 @@ function parseFile(absPath: string, rel: string): ParsedFile {
         modules.push({ name, kind, loc: spanLoc(decl), line: startLine(decl), exported });
       }
     }
+  }
+  return { loc, modules, imports };
+}
+
+/**
+ * Markdown: modules = headings (top depth found in the file), deeper headings
+ * become their children; edges = relative links and [[wikilinks]] (emitted as
+ * `wiki:<name>` specifiers, resolved against a basename map in buildEdges).
+ */
+function parseMarkdown(text: string, loc: number): ParsedFile {
+  const lines = text.split('\n');
+  const headings: Array<{ depth: number; title: string; line: number }> = [];
+  const imports: string[] = [];
+  let fenced = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    if (fenced) continue;
+    const h = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (h && h[1] && h[2]) headings.push({ depth: h[1].length, title: h[2], line: i + 1 });
+    for (const m of line.matchAll(/\[[^\]]*\]\(([^)#\s]+)[^)]*\)/g)) {
+      const target = m[1] ?? '';
+      if (target && !/^[a-z][a-z+.-]*:/i.test(target)) imports.push(target); // relative only
+    }
+    for (const m of line.matchAll(/\[\[([^\]|#]+)/g)) {
+      const name = (m[1] ?? '').trim();
+      if (name) imports.push('wiki:' + name);
+    }
+  }
+
+  const modules: ModuleInfo[] = [];
+  if (!headings.length) return { loc, modules, imports };
+  const first = headings[0];
+  let topDepth = first ? first.depth : 1;
+  for (const h of headings) topDepth = Math.min(topDepth, h.depth);
+
+  // Span of a heading: until the next heading at the same or a shallower depth.
+  const spanEnd = (idx: number): number => {
+    const at = headings[idx];
+    if (!at) return loc;
+    for (let j = idx + 1; j < headings.length; j++) {
+      const next = headings[j];
+      if (next && next.depth <= at.depth) return next.line - 1;
+    }
+    return loc;
+  };
+
+  for (let i = 0; i < headings.length; i++) {
+    const h = headings[i];
+    if (!h || h.depth !== topDepth) continue;
+    const children: ModuleMember[] = [];
+    for (let j = i + 1; j < headings.length; j++) {
+      const c = headings[j];
+      if (!c || c.depth <= topDepth) break;
+      children.push({ name: c.title, kind: 'member', loc: Math.max(spanEnd(j) - c.line + 1, 1), line: c.line });
+    }
+    modules.push({
+      name: h.title,
+      kind: 'section',
+      loc: Math.max(spanEnd(i) - h.line + 1, 1),
+      line: h.line,
+      exported: true,
+      ...(children.length ? { children } : {}),
+    });
   }
   return { loc, modules, imports };
 }
@@ -494,10 +561,20 @@ function isAncestor(repoRoot: string, older: string, newer: string): boolean {
 
 function buildEdges(repoRoot: string, roots: string[], parsed: Map<string, ParsedFile>, fileSet: Set<string>): Edge[] {
   const pkgDirs = scanWorkspacePackages(repoRoot, roots);
+  // [[wikilink]] targets resolve by normalized markdown basename (first match wins).
+  const wikiNorm = (s: string) => s.toLowerCase().replace(/\s+/g, '-');
+  const byBase = new Map<string, string>();
+  for (const p of fileSet) {
+    if (!p.endsWith('.md') && !p.endsWith('.mdx')) continue;
+    const base = wikiNorm(path.basename(p).replace(/\.mdx?$/, ''));
+    if (!byBase.has(base)) byBase.set(base, p);
+  }
   const counts = new Map<string, number>();
   for (const [rel, info] of parsed) {
     for (const spec of info.imports) {
-      const target = resolveSpecifier(repoRoot, rel, spec, pkgDirs, fileSet);
+      const target = spec.startsWith('wiki:')
+        ? byBase.get(wikiNorm(spec.slice(5))) ?? null
+        : resolveSpecifier(repoRoot, rel, spec, pkgDirs, fileSet);
       if (!target || target === rel || !fileSet.has(target)) continue;
       const key = rel + ' ' + target; // ordered pair: a imports b
       counts.set(key, (counts.get(key) || 0) + 1);

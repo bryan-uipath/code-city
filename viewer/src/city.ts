@@ -20,6 +20,7 @@ export const KIND_COLORS: Record<AnyKind, number> = {
   type: 0x64748b,
   enum: 0xfbbf24,
   const: 0x475569,
+  section: 0xd9b26b, // markdown heading — parchment gold
   // v2 module members (drill-down inside a building)
   method: 0x22d3ee,
   property: 0x38bdf8,
@@ -27,7 +28,7 @@ export const KIND_COLORS: Record<AnyKind, number> = {
   member: 0x8b5cf6,
 };
 
-export const KIND_ORDER = ['function', 'class', 'component', 'interface', 'type', 'enum', 'const'] as const;
+export const KIND_ORDER = ['function', 'class', 'component', 'interface', 'type', 'enum', 'const', 'section'] as const;
 export const MEMBER_ORDER = ['method', 'property', 'accessor', 'member'] as const;
 /** Every kind that can become a building instance bucket. */
 export const ALL_KINDS: AnyKind[] = [...KIND_ORDER, ...MEMBER_ORDER];
@@ -40,6 +41,7 @@ const KIND_OPACITY: Record<AnyKind, number> = {
   type: 0.92,
   enum: 0.92,
   const: 0.92,
+  section: 0.92,
   method: 0.92,
   property: 0.9,
   accessor: 0.92,

@@ -53,7 +53,8 @@ export interface FileNode extends NodeStats {
 }
 
 export type ModuleKind =
-  | 'function' | 'class' | 'component' | 'interface' | 'type' | 'enum' | 'const';
+  | 'function' | 'class' | 'component' | 'interface' | 'type' | 'enum' | 'const'
+  | 'section'; // markdown heading
 
 export type MemberKind = 'method' | 'property' | 'accessor' | 'member';
 
