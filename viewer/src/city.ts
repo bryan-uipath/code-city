@@ -694,18 +694,38 @@ export function buildPrMarker(
   const accent = pr.isDraft ? PALETTE.orange : PALETTE.cyan;
 
   // --- light beam (radius + glow scale with the PR's size)
+  // Drafts render extra transparent — work under construction, not landed.
+  const draftFade = pr.isDraft ? 0.4 : 1;
   const beamH = hover;
   const rTop = 0.8 + weight * 4.5;
   const beamGeom = new THREE.CylinderGeometry(rTop, rTop * 2.6, beamH, 12, 1, true);
   beamGeom.translate(0, beamH / 2, 0);
+  // Vertex-color fade (bright under the avatar, dissolving toward the ground)
+  // so the cone reads as volumetric light instead of a solid glowing shell.
+  const bpos = beamGeom.getAttribute('position');
+  if (bpos instanceof THREE.BufferAttribute) {
+    const bcols = new Float32Array(bpos.count * 3);
+    for (let i = 0; i < bpos.count; i++) {
+      const f = bpos.getY(i) / beamH; // 1 at the avatar, 0 at the ground
+      const v = 0.08 + 0.92 * f * f;
+      bcols[i * 3] = v;
+      bcols[i * 3 + 1] = v;
+      bcols[i * 3 + 2] = v;
+    }
+    beamGeom.setAttribute('color', new THREE.BufferAttribute(bcols, 3));
+  }
   const beamMat = new THREE.MeshBasicMaterial({
     color: accent,
+    vertexColors: true,
     transparent: true,
-    opacity: 0.1 + weight * 0.22,
+    opacity: (0.12 + weight * 0.22) * draftFade,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
-    side: THREE.DoubleSide,
+    // Far wall only: double-sided additive doubles the brightness and reads solid.
+    side: THREE.BackSide,
   });
+  beamMat.userData.base = beamMat.opacity;
+  beamMat.userData.hover = 0.42 * draftFade;
   const beam = new THREE.Mesh(beamGeom, beamMat);
   beam.position.set(anchor.x, anchor.y, anchor.z);
   beam.frustumCulled = false;
@@ -717,7 +737,7 @@ export function buildPrMarker(
     new THREE.MeshBasicMaterial({
       color: accent,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.5 * draftFade,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
@@ -742,7 +762,7 @@ export function buildPrMarker(
       new THREE.LineBasicMaterial({
         color: accent,
         transparent: true,
-        opacity: 0.2,
+        opacity: 0.2 * draftFade,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       })
@@ -796,8 +816,8 @@ export function buildPrMarker(
     beam,
     links,
     rings,
-    linkBase: 0.2,
-    ringBase: 0.35,
+    linkBase: 0.2 * draftFade,
+    ringBase: 0.35 * draftFade,
     baseY: anchor.y + beamH,
     phase: (pr.number % 100) * 0.37,
   };

@@ -1626,7 +1626,10 @@ function highlightPrLinks(): void {
     const on = hoveredPr && u.pr === hoveredPr;
     if (u.links) u.links.material.opacity = on ? 0.85 : u.linkBase;
     if (u.rings) u.rings.material.opacity = on ? 0.95 : u.ringBase;
-    if (u.beam) u.beam.material.opacity = on ? 0.42 : u.beam.material.userData?.base ?? u.beam.material.opacity;
+    if (u.beam) {
+      const mu = u.beam.material.userData ?? {};
+      u.beam.material.opacity = on ? (mu.hover ?? 0.42) : (mu.base ?? u.beam.material.opacity);
+    }
   }
 }
 
