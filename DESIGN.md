@@ -107,6 +107,28 @@ Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippe
 - Materials: emissive-heavy, slight transparency; additive-blended edge lines on focus; UnrealBloomPass for glow.
 - HUD: monospace/uppercase, thin 1px cyan (#22d3ee) borders on translucent dark panels, orange (#fa4616) for active states. CSS scanline + vignette overlay for the retro-CRT feel.
 
+## Strata buildings (planned — next major render mode)
+
+Make BOTH dimensions of a building semantic: **height = commit count** (each
+commit that touched the file is one fixed-height level) and **footprint area =
+LOC at that commit's point in time**. The base level is the most recent commit
+at current size; earlier strata stack upward — buildings grow from the bottom
+like a tree, so the silhouette tells the file's life story:
+
+- steady taper = grew gradually · straight tower = stable size, heavy churn
+- top-heavy = recently shrunk · tall & thin = tiny file endlessly touched
+- short & fat = big file nobody touches
+
+Implementation: `git log --numstat` in the analyzer → per-commit `[adds, dels]`
+aligned with the commit stream's `f` array; client reconstructs LOC-at-commit
+by walking back from current LOC. One instanced slab per (file × commit) level
+(~50–100k instances at flow-workbench scale). Per-level tint options: fix
+commits as red strata; age gradient. The history timeline gains **two handles**
+(start + current): only strata inside the range render, the current handle sets
+the base snapshot — dragging the start handle back literally grows the city.
+File-level only at first (per-function historical size needs per-commit
+parsing); ships as a "Strata" mode alongside the log-scale massing.
+
 ## Future ideas (recorded, not scheduled)
 
 - **Debug adapter integration** — attach via DAP and show *live values streaming
