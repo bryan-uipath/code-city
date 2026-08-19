@@ -45,6 +45,17 @@ export interface Labeler {
    * selected node). Empty = leader lines only when exactly two tiers are up.
    */
   setFocusKeys(keys: string[]): void;
+  /**
+   * Master fade, 0..1. The camera flight drives it to 0 on launch and back to 1
+   * on arrival, so a scope change never pops a whole label set in or out.
+   */
+  setDim(k: number): void;
+  /**
+   * Suspend re-selection. While the camera is flying the projected footprints
+   * change every frame, so an unfrozen labeler would churn through a dozen
+   * candidate sets nobody can read; it re-picks once, on arrival.
+   */
+  setFrozen(on: boolean): void;
   update(dt: number): void;
   /** Currently visible sprites, for the raycaster. */
   pickables(): THREE.Object3D[];
@@ -72,13 +83,15 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
   let candidates: LabelCandidate[] = [];
   let focusKeys: string[] = [];
   let acc = PICK_INTERVAL;
+  let dim = 1;
+  let frozen = false;
 
   const _v = new THREE.Vector3();
   const boxes: number[] = [];          // reused screen-space rejection boxes
   const leaders = makeLeaders();
   group.add(leaders.lines);
 
-  return { group, setCandidates, setFocusKeys, update, pickables, dispose };
+  return { group, setCandidates, setFocusKeys, setDim, setFrozen, update, pickables, dispose };
 
   /** Replace the candidate set (called on focus/selection rebuilds). */
   function setCandidates(list: LabelCandidate[]): void {
@@ -91,14 +104,27 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
     acc = PICK_INTERVAL;
   }
 
+  function setDim(k: number): void {
+    dim = Math.min(Math.max(k, 0), 1);
+  }
+
+  function setFrozen(on: boolean): void {
+    if (frozen === on) return;
+    frozen = on;
+    if (!on) acc = PICK_INTERVAL; // thawing re-picks on the next update
+  }
+
   function update(dt: number): void {
-    acc += dt;
-    if (acc >= PICK_INTERVAL) {
-      acc = 0;
-      pick();
+    if (!frozen) {
+      acc += dt;
+      if (acc >= PICK_INTERVAL) {
+        acc = 0;
+        pick();
+      }
     }
     fade(dt);
-    leaders.fade(dt);
+    leaders.fade(dt, dim);
+    group.visible = dim > 0.02;
   }
 
   function pickables(): THREE.Object3D[] {
@@ -200,7 +226,7 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
     const k = Math.min(dt * FADE_RATE, 1);
     for (const entry of cache.values()) {
       const s = entry.sprite;
-      const target = s.userData.target || 0;
+      const target = (s.userData.target || 0) * dim;
       const o = s.material.opacity + (target - s.material.opacity) * k;
       s.material.opacity = o;
       s.visible = o > 0.02;
@@ -241,7 +267,7 @@ interface Leaders {
   lines: THREE.LineSegments;
   /** Recompute the link set from the labels currently on screen. */
   rebuild(chosen: Map<string, LabelCandidate>, focusKeys: string[]): void;
-  fade(dt: number): void;
+  fade(dt: number, dim: number): void;
   dispose(): void;
 }
 
@@ -309,9 +335,9 @@ function makeLeaders(): Leaders {
     target = n ? LEADER_OPACITY : 0;
   }
 
-  function fade(dt: number): void {
+  function fade(dt: number, dim: number): void {
     const k = Math.min(dt * LEADER_FADE_RATE, 1);
-    material.opacity += (target - material.opacity) * k;
+    material.opacity += (target * dim - material.opacity) * k;
     lines.visible = material.opacity > 0.02;
   }
 

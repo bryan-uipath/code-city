@@ -39,6 +39,10 @@ export interface TerraceSigns {
   group: THREE.Group;
   /** Replace the signed folder set (called on every scope rebuild). */
   setNodes(nodes: VNode[]): void;
+  /** Master fade, 0..1 — the camera flight fades the signage with the labels. */
+  setDim(k: number): void;
+  /** Suspend the face re-pick while the camera is flying. */
+  setFrozen(on: boolean): void;
   update(dt: number): void;
   /** Visible sign meshes, for the raycaster. */
   pickables(): THREE.Object3D[];
@@ -89,11 +93,25 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
 
   let signs: Sign[] = [];
   let acc = PICK_INTERVAL;
+  let dim = 1;
+  let frozen = false;
   const visible: THREE.Object3D[] = [];
   const _v = new THREE.Vector3();
   const _sign = new THREE.Vector3();
+  /** Camera in the group's own space: the stage is not always at the origin. */
+  const _cam = new THREE.Vector3();
 
-  return { group, setNodes, update, pickables, dispose };
+  return { group, setNodes, setDim, setFrozen, update, pickables, dispose };
+
+  function setDim(k: number): void {
+    dim = Math.min(Math.max(k, 0), 1);
+  }
+
+  function setFrozen(on: boolean): void {
+    if (frozen === on) return;
+    frozen = on;
+    if (!on) acc = PICK_INTERVAL;
+  }
 
   function setNodes(nodes: VNode[]): void {
     dispose();
@@ -154,15 +172,17 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
   }
 
   function update(dt: number): void {
-    acc += dt;
-    if (acc >= PICK_INTERVAL) {
-      acc = 0;
-      place();
+    if (!frozen) {
+      acc += dt;
+      if (acc >= PICK_INTERVAL) {
+        acc = 0;
+        place();
+      }
     }
     const k = Math.min(dt * FADE_RATE, 1);
     visible.length = 0;
     for (const s of signs) {
-      const o = s.material.opacity + (s.target - s.material.opacity) * k;
+      const o = s.material.opacity + (s.target * dim - s.material.opacity) * k;
       s.material.opacity = o;
       s.mesh.visible = o > 0.03;
       if (s.mesh.visible) visible.push(s.mesh);
@@ -173,8 +193,10 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
   function place(): void {
     const tanHalf = Math.tan((camera.fov * Math.PI) / 360);
     const vh = window.innerHeight;
+    _cam.copy(camera.position);
+    group.worldToLocal(_cam);
     for (const s of signs) {
-      _v.set(camera.position.x - s.cx, 0, camera.position.z - s.cz);
+      _v.set(_cam.x - s.cx, 0, _cam.z - s.cz);
       let best = FALLBACK_FACE;
       let bestDot = -Infinity;
       for (const f of FACES) {
@@ -192,7 +214,7 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
       // Distance band: from far away the wall is a few pixels of screen, so
       // grow the letters until they hold TARGET_PX — the same apparent-size
       // idea the labeler uses, bounded so a close-up sign never balloons.
-      const dist = Math.max(camera.position.distanceTo(_sign.set(s.cx, s.y, s.cz)), 1);
+      const dist = Math.max(_cam.distanceTo(_sign.set(s.cx, s.y, s.cz)), 1);
       const perPx = (2 * dist * tanHalf) / vh;
       if (s.upscale) h = Math.min(Math.max(h, (TARGET_PX / INK_RATIO) * perPx), h * MAX_UPSCALE);
       let w = h * s.aspect;
@@ -215,7 +237,7 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
       s.mesh.scale.set(w, h, 1);
 
       const px = (h * INK_RATIO) / perPx;
-      _v.copy(s.mesh.position).project(camera);
+      s.mesh.getWorldPosition(_v).project(camera);
       const onScreen = _v.z < 1 && _v.x > -1.4 && _v.x < 1.4 && _v.y > -1.4 && _v.y < 1.4;
       s.target = onScreen
         ? Math.min(Math.max((px - MIN_PX) / (FULL_PX - MIN_PX), 0), 1)

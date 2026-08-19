@@ -41,8 +41,65 @@ import { asVNode, type AnyKind, type VMod, type VNode } from './vtree.js';
 
 const MAX_ARCS = 150;
 const DAY = 86400;
-/** Scope transition: contents unfold out of (or fold back into) the parent footprint. */
+/**
+ * Scope transition: contents unfold out of (or fold back into) the parent
+ * footprint. This is only the *fallback* length — a transition that rides a
+ * camera flight is stretched to that flight instead (`syncTransitionToFlight`).
+ */
 const TRANSITION_DUR = 0.42;
+
+// --- Motion tuning ---------------------------------------------------------
+/**
+ * Camera framings are computed at this FOV even while a dive is breathing, so
+ * a flight retargeted mid-breath still frames its destination correctly.
+ */
+const BASE_FOV = 46;
+/** Samples per framing-to-framing segment fed to the spline fit. */
+const FLIGHT_SAMPLES = 12;
+/** Stations the bearing / pitch / distance schedules are sampled at. */
+const SCHEDULE_STATIONS = 128;
+/** Resolution of the spline's arc-length table (see flyTo). */
+const ARC_DIVISIONS = 1200;
+/** Fraction of the flight the outgoing scope takes to fade away. */
+const GHOST_FADE = 0.85;
+/**
+ * Corner-cutting passes over the evenly-spaced route. The framings of a nest of
+ * folders zig-zag — each level's centre can sit on the far side of its parent's
+ * — and a curve dragged through all of them doubles back on itself inside a
+ * single frame. Enough passes to smooth over a whole segment's wavelength turns
+ * that zig-zag into the arc a crane would actually swing through.
+ */
+const CORNER_RELAX = 40;
+/** A stop must advance at least this much of the way to the destination. */
+const ROUTE_MIN_ADVANCE = 0.08;
+/** How far a stop may bow the route sideways, as a fraction of its length. */
+const ROUTE_MAX_BOW = 0.22;
+/** Control points on the fitted curve, evenly spaced along the route. */
+const CONTROL_POINTS = 64;
+/** Ease ramp fraction: half (a plain ease-in-out) for a hop, a third — with a
+ * constant-speed cruise between — for a multi-level jump. */
+const RAMP_SHORT = 0.5;
+const RAMP_LONG = 0.3;
+/** Degrees of FOV added at mid-flight on a long inward dive. */
+const FOV_BREATH = 2;
+/** Clearance the crane arc keeps over the tallest thing in the scope. */
+const FLIGHT_CLEARANCE = 1.16;
+/**
+ * The final approach: once the camera is within this multiple of the orbit
+ * distance it is heading for, it has arrived and may descend into the city.
+ */
+const APPROACH_RADIUS = 3;
+/**
+ * Crane exponents on the geometric close-in: >1 holds a dive high and brings it
+ * down late, <1 gets a climb its height early. Raised further, up to SKEW_MAX,
+ * when that is what it takes to clear the skyline — capped, because a target
+ * that ends up closer to its plate than the city is tall cannot be reached
+ * without descending through the skyline, and hovering to the last moment and
+ * then dropping is worse than starting down a little sooner.
+ */
+const SKEW_IN = 1.75;
+const SKEW_OUT = 0.6;
+const SKEW_MAX = 3.5;
 /** Above this many buildings, module labels are limited to the selected file. */
 const MODULE_LABEL_BUDGET = 800;
 
@@ -100,7 +157,7 @@ const state: {
   mode: 'recent',
   coupling: false,
   people: true,
-  fx: true,
+  fx: false,
   worktree: false,
   /** Node whose subtree is currently rendered (real folder/file or synthetic module). */
   focus: null,
@@ -215,23 +272,109 @@ interface Framing {
 }
 
 /**
- * Camera flight along a chain of framings. A single-level move is a two-point
- * path interpolated *around the pivot* (target lerps, the offset slerps and its
- * length blends geometrically) so the view swings rather than re-centring; a
- * multi-level jump appends the framing of every level it passes through, and
- * one global ease carries the camera through all of them without a stop.
+ * Camera flight as ONE move, in the camera's own coordinates.
+ *
+ * The orbit TARGET follows a smooth spline through the centres of every level
+ * the jump passes; the camera is hung off that target by a bearing, a pitch and
+ * a distance, and each of those three makes exactly one monotone move from the
+ * pose the camera is in to the pose the destination framing asks for. Threading
+ * the camera itself through the intermediate framings is what made a dive wobble
+ * and tilt — a nest of treemap cells puts consecutive centres on alternating
+ * sides, and a curve dragged through their bearings zig-zags.
+ *
+ * The derived path is then walked by *arc length* under a single global ease, so
+ * apparent speed is even from end to end.
  */
-const flight: { active: boolean; t: number; dur: number; from: Framing; points: Framing[] } = {
+const flight: {
+  active: boolean;
+  t: number;
+  /** Eased progress along the path, 0..1 — the unfold rides this too. */
+  e: number;
+  dur: number;
+  ramp: number;
+  /** Normalized initial ease slope — non-zero only when retargeting mid-flight. */
+  v0: number;
+  /** The path the orbit TARGET travels; the camera is hung off it. */
+  path: THREE.CatmullRomCurve3 | null;
+  /** Monotone bearing / pitch / distance schedules, sampled per station. */
+  azim: Float64Array;
+  polar: Float64Array;
+  dist: Float64Array;
+  /** Height of the target's path at each station, for the clearance solve. */
+  groundY: Float64Array;
+  /** Cumulative APPARENT length of the derived camera path, per station. */
+  arc: Float64Array;
+  /** The same path in world units — only the retarget speed match needs it. */
+  worldLength: number;
+  /** Extra degrees of FOV at mid-flight; a long dive breathes, a short hop does not. */
+  breath: number;
+  /** Camera speed measured last frame, in world units per second. */
+  speed: number;
+  /** Waypoints after the start pose — kept for a same-frame retarget (see flyTo). */
+  route: Framing[];
+} = {
   active: false,
   t: 0,
+  e: 0,
   dur: 1.1,
-  from: { pos: new THREE.Vector3(), target: new THREE.Vector3() },
-  points: [],
+  ramp: 0.5,
+  v0: 0,
+  path: null,
+  azim: new Float64Array(SCHEDULE_STATIONS + 1),
+  polar: new Float64Array(SCHEDULE_STATIONS + 1),
+  dist: new Float64Array(SCHEDULE_STATIONS + 1),
+  groundY: new Float64Array(SCHEDULE_STATIONS + 1),
+  arc: new Float64Array(SCHEDULE_STATIONS + 1),
+  worldLength: 0,
+  breath: 0,
+  speed: 0,
+  route: [],
 };
-/** Scope transition: the new scene starts mapped onto the old footprint and unfolds. */
-const transition: { t: number; k0: number; p0: THREE.Vector3; mats: Array<{ m: THREE.Material; base: number }> } = {
-  t: 1, k0: 1, p0: new THREE.Vector3(), mats: [],
+const _sphA = new THREE.Spherical();
+const _sphB = new THREE.Spherical();
+const _flightA = new THREE.Vector3();
+const _flightB = new THREE.Vector3();
+const _flightT = new THREE.Vector3();
+const _flightP = new THREE.Vector3();
+
+/**
+ * Scope transition: the new scene starts mapped onto the old footprint and
+ * unfolds. `delay` and `dur` are re-scheduled against every flight so the
+ * unfold lands just before the camera settles (see `syncTransitionToFlight`).
+ */
+const transition: {
+  t: number;
+  dur: number;
+  delay: number;
+  k0: number;
+  /** Stage-local point that stays pinned, and the world point it is pinned to. */
+  anchor: THREE.Vector3;
+  pin: THREE.Vector3;
+  /**
+   * 'flight' ties the unfold to the camera's own eased progress — one gesture,
+   * one velocity curve. 'clock' runs it on its own timer (no flight, or the
+   * user grabbed the camera and the unfold has to finish by itself).
+   */
+  drive: 'clock' | 'flight';
+  /** Window of the flight's progress the unfold occupies, when flight-driven. */
+  from: number;
+  to: number;
+  mats: Array<{ m: THREE.Material; base: number }>;
+} = {
+  t: 1, dur: TRANSITION_DUR, delay: 0, k0: 1,
+  anchor: new THREE.Vector3(), pin: new THREE.Vector3(),
+  drive: 'clock', from: 0, to: 1, mats: [],
 };
+/**
+ * Translation applied to the current scope's layout so that it stands where it
+ * stood before the rebuild (see `startTransition`). Every world position
+ * derived from a layout rect — camera framings, labels, callouts — carries it.
+ */
+const stageHome = new THREE.Vector3();
+/** The previous scope, standing and fading while the new one opens (retireCity). */
+let ghost: { group: THREE.Group; mats: Array<{ m: THREE.Material; base: number }>; t: number } | null = null;
+/** Transit dressing: labels, signage and callouts fade out on launch, in on arrival. */
+const dressing = { v: 1, frozen: false };
 /**
  * Strata render mode. The index is built once, on first use; the mesh is rebuilt
  * per scope and only *refilled* (throttled) while either timeline handle moves.
@@ -544,7 +687,7 @@ function initScene(): void {
   scene.background = new THREE.Color(PALETTE.bg);
   scene.fog = new THREE.FogExp2(PALETTE.bg, 0.00045);
 
-  camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 1, 8000);
+  camera = new THREE.PerspectiveCamera(BASE_FOV, window.innerWidth / window.innerHeight, 1, 8000);
   camera.position.set(0, 520, 640);
 
   controls = new OrbitControls(camera, renderer.domElement);
@@ -568,6 +711,10 @@ function initScene(): void {
   composer.addPass(new RenderPass(scene, camera));
   bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.55, 0.6);
   composer.addPass(bloom);
+  // FX defaults off; the toggle enables bloom + the CRT overlay together.
+  bloom.enabled = state.fx;
+  const crtInit = document.getElementById('crt');
+  if (crtInit) crtInit.style.display = state.fx ? 'block' : 'none';
   composer.addPass(new OutputPass());
   composer.setSize(window.innerWidth, window.innerHeight);
 }
@@ -601,7 +748,9 @@ function buildStaticScene(): void {
 
   selectionBox = makeSelectionBox(PALETTE.orange);
   hoverBox = makeSelectionBox(PALETTE.cyan);
-  scene.add(selectionBox, hoverBox);
+  // On the stage, not in the scene: both are placed from layout rects, which
+  // are stage-local, and they must follow the stage's home offset.
+  stage.add(selectionBox, hoverBox);
 
   dom.repoName.textContent = '// ' + (state.data?.repo?.name || 'repo');
 }
@@ -624,10 +773,17 @@ function rebuildScene(
 ): void {
   const focus = state.focus;
   if (!focus) return;
+  // Captured against the layout that is about to be replaced, so it carries
+  // that layout's home offset: this is the WORLD spot the anchor stands on.
   const from = opts.anchor ? footprintOf(opts.anchor, scope.root) : null;
+  if (from) {
+    from.cx += stageHome.x;
+    from.cy += stageHome.y;
+    from.cz += stageHome.z;
+  }
   clearCallout();
   if (city) {
-    disposeObject(city.group);
+    retireCity(city.group);
     city = null;
   }
   clearArcs();
@@ -666,11 +822,76 @@ function rebuildScene(
   renderLegend();
 
   startTransition(from, opts.anchor ? footprintOf(opts.anchor, root) : null);
+  if (probe && from) probe.markRebuild(from);
   // Zooming out, the levels we pass through only exist in the layout that was
   // just built, so their framings are collected here rather than by the caller.
   const upFrom = opts.viaUpFrom;
   const via = upFrom ? chainFramings(upFrom, focus, { descend: false }) : opts.via;
   flyTo(root, { instant: opts.instant, via });
+  syncTransitionToFlight();
+}
+
+/**
+ * Make the unfold and the flight one gesture. Drilling in, the scene grows for
+ * most of the trip and finishes just before the camera settles, so you arrive
+ * *as* the block finishes opening rather than onto a scene that opened without
+ * you. Zooming out is the opposite errand — the parent city reassembles first,
+ * and the camera then pulls back off a city that is already whole.
+ */
+function syncTransitionToFlight(): void {
+  if (transition.t >= 1) return;
+  if (!flight.active) {
+    transition.dur = TRANSITION_DUR;
+    transition.delay = 0;
+    return;
+  }
+  transition.drive = 'flight';
+  if (transition.k0 < 1) {
+    // Drilling in: the section keeps opening for most of the trip and is done
+    // just before the camera settles, so you arrive *as* it finishes.
+    transition.from = 0.04;
+    transition.to = 0.86;
+  } else {
+    // Backing out: the parent city reassembles first, and the camera then pulls
+    // back off something that is already whole.
+    transition.from = 0;
+    transition.to = 0.55;
+  }
+}
+
+/**
+ * The city you were just looking at does not vanish the instant you drill into
+ * it. It is parked, at the world position it already had, and faded out over the
+ * first part of the flight — so the block you picked grows out of a city that is
+ * still standing around it instead of out of an empty grid.
+ */
+function retireCity(group: THREE.Object3D): void {
+  if (ghost) disposeGhost();
+  const holder = new THREE.Group();
+  holder.name = 'ghost';
+  // The old layout belongs to the old home; the stage is about to move to a new
+  // one, so the ghost keeps its own copy of where the world used to be.
+  holder.position.copy(stageHome);
+  stage.remove(group);
+  holder.add(group);
+  scene.add(holder);
+
+  const mats: Array<{ m: THREE.Material; base: number }> = [];
+  holder.traverse((o) => {
+    const mat = 'material' in o ? o.material : null;
+    if (!(mat instanceof THREE.Material)) return;
+    mats.push({ m: mat, base: mat.transparent ? mat.opacity : 1 });
+    mat.transparent = true;
+    mat.depthWrite = false;
+  });
+  ghost = { group: holder, mats, t: 0 };
+}
+
+function disposeGhost(): void {
+  if (!ghost) return;
+  scene.remove(ghost.group);
+  disposeObject(ghost.group);
+  ghost = null;
 }
 
 /**
@@ -693,9 +914,13 @@ function footprintOf(node: VNode, root: VNode | null): Footprint | null {
 }
 
 /**
- * Start the scene at the transform that maps its new layout onto the footprint
- * the anchor occupied a moment ago, then relax to identity — so drilling in
- * reads as the block unfolding, and drilling out as the scene folding back.
+ * Every scope is laid out around the origin, so a naive rebuild would teleport
+ * the section under the camera and the flight would have to absorb the jump.
+ * Instead the stage is *homed*: the new layout is translated so the anchor —
+ * the node being drilled into, or the child being backed out of — lands exactly
+ * on the world position it already occupied, and then only the SCALE animates.
+ * The section grows (or folds) about the spot it already stood on; nothing in
+ * the world slides sideways, and the camera is left with a modest dolly.
  */
 function startTransition(from: Footprint | null, to: Footprint | null): void {
   transition.mats = [];
@@ -703,18 +928,60 @@ function startTransition(from: Footprint | null, to: Footprint | null): void {
     const mat = 'material' in o ? o.material : null;
     if (mat instanceof THREE.Material && mat.transparent) transition.mats.push({ m: mat, base: mat.opacity });
   });
+  transition.dur = TRANSITION_DUR;
+  transition.delay = 0;
+  transition.drive = 'clock';
   if (!from || !to || !to.size || !from.size) {
     transition.t = 1;
+    transition.k0 = 1;
+    transition.anchor.set(0, 0, 0);
+    stageHome.set(0, 0, 0);
     stage.scale.setScalar(1);
     stage.position.set(0, 0, 0);
+    envGroup.position.set(0, 0, 0);
     return;
   }
   const k = Math.min(Math.max(from.size / to.size, 0.01), 60);
   transition.k0 = k;
-  transition.p0.set(from.cx - k * to.cx, from.cy - k * to.cy, from.cz - k * to.cz);
+  // Local point that must stay pinned, and the world point it is pinned to.
+  transition.anchor.set(to.cx, to.cy, to.cz);
+  transition.pin.set(from.cx, from.cy, from.cz);
+  stageHome.copy(transition.pin).sub(transition.anchor);
   transition.t = 0;
-  stage.scale.setScalar(k);
-  stage.position.copy(transition.p0);
+  applyStageTransform(k);
+  envGroup.position.copy(stageHome);
+}
+
+/** Place the stage at scale `s` with the anchor still pinned to its old spot. */
+function applyStageTransform(s: number): void {
+  stage.scale.setScalar(s);
+  stage.position.set(
+    transition.pin.x - s * transition.anchor.x,
+    transition.pin.y - s * transition.anchor.y,
+    transition.pin.z - s * transition.anchor.z
+  );
+}
+
+/**
+ * Homing accumulates a small drift away from the origin every time the scope
+ * changes. Once everything has settled, shift the whole world — stage, camera
+ * and orbit target together — back to the origin. Camera-relative, so nothing
+ * moves on screen; only the derived world positions have to be rebuilt.
+ */
+function rehomeStage(): void {
+  if (stageHome.lengthSq() < 1) return;
+  camera.position.sub(stageHome);
+  controls.target.sub(stageHome);
+  stageHome.set(0, 0, 0);
+  transition.pin.set(0, 0, 0);
+  transition.anchor.set(0, 0, 0);
+  stage.position.set(0, 0, 0);
+  stage.scale.setScalar(1);
+  envGroup.position.set(0, 0, 0);
+  controls.update();
+  clearCallout();
+  updateLabelCandidates();
+  refreshSelectionBox();
 }
 
 /**
@@ -1847,9 +2114,12 @@ function isDescendantOf(node: VNode, ancestor: VNode): boolean {
 function framingFor(node: VNode): Framing | null {
   const r = node.rect;
   if (!r) return null;
-  const target = new THREE.Vector3(r.x + r.w / 2, plateTop(node.tier ?? node.depth ?? 0, node.type === 'file'), r.z + r.h / 2);
+  const target = new THREE.Vector3(r.x + r.w / 2, plateTop(node.tier ?? node.depth ?? 0, node.type === 'file'), r.z + r.h / 2)
+    .add(stageHome);
   const extent = Math.max(r.w, r.h, 12);
-  const vFov = (camera.fov * Math.PI) / 180;
+  // Framings are computed at the base FOV: a flight that is mid-breath must
+  // still aim at where the destination will sit once the breath is over.
+  const vFov = (BASE_FOV * Math.PI) / 180;
   const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
 
   // The HUD eats both edges of the viewport, so fit the footprint to the free
@@ -1888,30 +2158,404 @@ function flyTo(node: VNode, opts: { instant?: boolean; via?: Framing[] } = {}): 
   if (!to) return;
 
   if (opts.instant) {
+    endFlight();
     camera.position.copy(to.pos);
     controls.target.copy(to.target);
     controls.update();
-    flight.active = false;
     return;
   }
 
-  flight.from.pos.copy(camera.position);
-  flight.from.target.copy(controls.target);
-  // Drop waypoints the camera is effectively already at — a zero-length segment
-  // would eat a slice of the eased parameter and stall the move.
-  const points: Framing[] = [];
-  let prev = flight.from;
-  for (const f of opts.via ?? []) {
-    if (f.pos.distanceTo(prev.pos) + f.target.distanceTo(prev.target) < 6) continue;
-    points.push(f);
+  // A transition still riding the *previous* flight cannot follow this one's
+  // progress backwards; hand it to the clock unless the caller re-syncs it.
+  if (transition.drive === 'flight' && transition.t < 1) {
+    transition.drive = 'clock';
+    transition.delay = 0;
+    transition.dur = 0.25;
+  }
+
+  const from: Framing = { pos: camera.position.clone(), target: controls.target.clone() };
+  // A reveal that has to pop the scope out and then drill back in re-targets the
+  // flight several times in one frame. Nothing has moved yet, so the route the
+  // previous call laid out is still ahead of us and still on the way down.
+  const carry = flight.active && flight.t === 0 ? flight.route : [];
+
+  // Waypoints the camera is effectively already at, or that sit a hair from
+  // their neighbour on a long route, are dropped.
+  const route = [...carry, ...(opts.via ?? [])];
+  let span = from.target.distanceTo(to.target);
+  for (const f of route) span = Math.max(span, from.target.distanceTo(f.target));
+  const minStep = Math.max(6, span * 0.05);
+  const waypoints: Framing[] = [from];
+  let prev = from;
+  for (const f of route) {
+    if (f.target.distanceTo(prev.target) < minStep) continue;
+    waypoints.push(f);
     prev = f;
   }
-  points.push(to);
+  if (to.target.distanceTo(prev.target) < minStep && waypoints.length > 1) waypoints.pop();
+  waypoints.push(to);
+  straightenRoute(waypoints);
+  const segments = waypoints.length - 1;
+  flight.route = waypoints.slice(1);
 
-  flight.points = points;
+  // --- 1. the target's path -------------------------------------------------
+  // The levels passed through steer what the camera LOOKS AT, and nothing else.
+  // Their framings' own bearings are deliberately ignored: threading the camera
+  // itself through them is what used to make a dive wobble and tilt, because a
+  // nest of treemap cells puts consecutive centres on alternating sides.
+  const tgtPts: THREE.Vector3[] = [];
+  for (let s = 0; s < segments; s++) {
+    const a = waypoints[s];
+    const b = waypoints[s + 1];
+    if (!a || !b) continue;
+    for (let j = s === 0 ? 0 : 1; j <= FLIGHT_SAMPLES; j++) {
+      tgtPts.push(a.target.clone().lerp(b.target, j / FLIGHT_SAMPLES));
+    }
+  }
+  if (tgtPts.length < 2) return;
+  const even = resampleUniform(tgtPts, CONTROL_POINTS);
+  relax(even, CORNER_RELAX);
+  const path = new THREE.CatmullRomCurve3(even, false, 'centripetal');
+  path.arcLengthDivisions = ARC_DIVISIONS;
+  flight.path = path;
+
+  // --- 2. the camera's bearing ---------------------------------------------
+  // One monotone move each: the bearing swings once, the pitch tips once, the
+  // distance closes once. No intermediate framing gets to reverse any of them.
+  _sphA.setFromVector3(_v3.subVectors(from.pos, from.target));
+  _sphB.setFromVector3(_v3.subVectors(to.pos, to.target));
+  const a0 = _sphA.theta;
+  const p0 = clampPolar(_sphA.phi);
+  const r0 = Math.max(_sphA.radius, 1);
+  const da = wrapAngle(_sphB.theta - a0);
+  const p1 = clampPolar(_sphB.phi);
+  const r1 = Math.max(_sphB.radius, 1);
+  const inward = r1 < r0;
+  // Crane shaping lives entirely in the distance schedule: skewing the geometric
+  // close-in later keeps a dive high over the towers and brings it down at the
+  // end, and skewing it earlier lets a climb get its height up front.
+  let skew = inward ? SKEW_IN : SKEW_OUT;
+
+  const K = SCHEDULE_STATIONS;
+  const azim = flight.azim;
+  const polar = flight.polar;
+  const dist = flight.dist;
+  const groundY = flight.groundY;
+  for (let k = 0; k <= K; k++) {
+    const u = k / K;
+    azim[k] = a0 + da * u;
+    polar[k] = p0 + (p1 - p0) * u;
+    path.getPoint(u, _v3);
+    groundY[k] = _v3.y;
+  }
+
+  // --- 3. clearance --------------------------------------------------------
+  // The camera must stay over the skyline until it is on final approach. Rather
+  // than clamp the distance schedule — which puts a corner in the path exactly
+  // where the crane starts coming down — solve for the gentlest crane exponent
+  // that clears it. The schedule stays one smooth analytic curve, and a curve
+  // with no corner has no kink for the eye to catch.
+  const floor = Math.min(scopeCeiling() * FLIGHT_CLEARANCE, Math.max(from.pos.y, to.pos.y));
+  const fits = (k: number): boolean => {
+    const r = craneDist(r0, r1, k / K, skew);
+    // Inside the final approach the camera is allowed — expected — to come down
+    // among the buildings it flew here to look at.
+    if (r <= r1 * APPROACH_RADIUS) return true;
+    const cosP = Math.max(Math.cos(polar[k] ?? 0), 0.05);
+    return r >= (floor - (groundY[k] ?? 0)) / cosP;
+  };
+  let lo = inward ? SKEW_IN : SKEW_OUT;
+  let hi = inward ? SKEW_MAX : 1;
+  const clears = (candidate: number): boolean => {
+    skew = candidate;
+    for (let k = 1; k < K; k++) if (!fits(k)) return false;
+    return true;
+  };
+  if (!clears(lo)) {
+    // Monotone in the exponent: a later close-in (or an earlier climb) can only
+    // hold the camera higher, so the smallest correction is a binary search.
+    for (let i = 0; i < 10; i++) {
+      const mid = (lo + hi) / 2;
+      if (clears(mid)) hi = mid;
+      else lo = mid;
+    }
+    skew = hi;
+  }
+  for (let k = 0; k <= K; k++) dist[k] = craneDist(r0, r1, k / K, skew);
+  const length = buildArcTable();
+
+  // --- 4. timing ------------------------------------------------------------
+  const far = Math.min(length / 1.1, 2.4) * 0.28;
+  let dur = 0.55 + 0.26 * (segments - 1) + far;
+  if (!inward) dur *= 0.86; // coming back up is a retreat, not an approach
+  flight.dur = Math.min(Math.max(dur, 0.5), 2.2);
+  flight.ramp = segments > 1 ? RAMP_LONG : RAMP_SHORT;
+  // Retargeting mid-flight: carry the speed the camera already has into the new
+  // ease instead of stalling to zero and accelerating again.
+  flight.v0 = flight.active && flight.worldLength > 1
+    ? Math.min((flight.speed * flight.dur) / flight.worldLength, 2)
+    : 0;
+  flight.breath = inward && segments >= 3 ? FOV_BREATH : 0;
   flight.t = 0;
-  flight.dur = Math.min(0.75 + 0.28 * (points.length - 1), 1.7);
+  flight.e = 0;
   flight.active = true;
+  // Nothing anchored to the old view survives the trip.
+  clearCallout();
+}
+
+/**
+ * Force the route to make monotone progress toward where it is going.
+ *
+ * Treemap centres are not laid out along the way: drilling three levels down
+ * can easily pass a folder whose centre sits *behind* the destination, and a
+ * path told to visit them all doubles back on itself — the camera swings out
+ * and returns, which is the wobble you feel even when every curve is smooth.
+ * Each stop is projected onto the straight line to the destination; the ones
+ * that do not advance along it are dropped, and the sideways part of the rest
+ * is capped, so what survives is a bowed route rather than a zig-zag.
+ */
+function straightenRoute(waypoints: Framing[]): void {
+  const first = waypoints[0];
+  const last = waypoints[waypoints.length - 1];
+  if (waypoints.length < 3 || !first || !last) return;
+  _routeDir.subVectors(last.target, first.target);
+  const span = _routeDir.length();
+  if (span < 1e-3) {
+    waypoints.splice(1, waypoints.length - 2);
+    return;
+  }
+  _routeDir.divideScalar(span);
+
+  let lastAt = 0;
+  for (let i = 1; i < waypoints.length - 1; i++) {
+    const w = waypoints[i];
+    if (!w) continue;
+    _routeOff.subVectors(w.target, first.target);
+    const at = _routeOff.dot(_routeDir) / span;
+    if (at < lastAt + ROUTE_MIN_ADVANCE || at > 1 - ROUTE_MIN_ADVANCE) {
+      waypoints.splice(i, 1);
+      i--;
+      continue;
+    }
+    // Sideways component, capped: a stop may bow the route, not detour it.
+    _routeOff.addScaledVector(_routeDir, -at * span);
+    const lateral = _routeOff.length();
+    const cap = span * ROUTE_MAX_BOW;
+    if (lateral > cap) _routeOff.multiplyScalar(cap / lateral);
+    w.target.copy(first.target).addScaledVector(_routeDir, at * span).add(_routeOff);
+    lastAt = at;
+  }
+}
+
+const _routeDir = new THREE.Vector3();
+const _routeOff = new THREE.Vector3();
+
+/**
+ * Fill the arc-length table and return the path's total length — measured in
+ * APPARENT motion, not world units. A dive crosses two orders of magnitude of
+ * scale, and a hundred units covered from a thousand away is a crawl while the
+ * same hundred covered from fifty away is a blur; dividing by the distance to
+ * what you are looking at makes the eased progress mean "how much the view
+ * changed", which is what the eye is actually judging the speed by.
+ */
+function buildArcTable(): number {
+  const K = SCHEDULE_STATIONS;
+  const arc = flight.arc;
+  arc[0] = 0;
+  let world = 0;
+  let prevR = flight.dist[0] ?? 1;
+  for (let k = 0; k <= K; k++) {
+    schedulePoint(k / K, _flightB);
+    if (k > 0) {
+      const r = Math.max(((flight.dist[k] ?? 1) + prevR) / 2, 1);
+      const dPos = _flightB.distanceTo(_flightA);
+      const dTgt = _flightT.distanceTo(_flightP);
+      world += dPos;
+      arc[k] = (arc[k - 1] ?? 0) + (dPos + dTgt) / r;
+    }
+    prevR = flight.dist[k] ?? 1;
+    _flightA.copy(_flightB);
+    _flightP.copy(_flightT);
+  }
+  flight.worldLength = world;
+  return arc[K] ?? 0;
+}
+
+/** Camera pose at schedule position `u`, written into `out` (target into _flightT). */
+function schedulePoint(u: number, out: THREE.Vector3): void {
+  const path = flight.path;
+  if (!path) return;
+  path.getPoint(Math.min(Math.max(u, 0), 1), _flightT);
+  const K = SCHEDULE_STATIONS;
+  const x = Math.min(Math.max(u, 0), 1) * K;
+  const i = Math.min(Math.floor(x), K - 1);
+  const f = x - i;
+  const a = lerp(flight.azim[i] ?? 0, flight.azim[i + 1] ?? 0, f);
+  const p = lerp(flight.polar[i] ?? 0, flight.polar[i + 1] ?? 0, f);
+  const r = lerp(flight.dist[i] ?? 0, flight.dist[i + 1] ?? 0, f);
+  const sinP = Math.sin(p);
+  out.set(
+    _flightT.x + r * sinP * Math.sin(a),
+    _flightT.y + r * Math.cos(p),
+    _flightT.z + r * sinP * Math.cos(a)
+  );
+}
+
+/** Schedule position that sits `e` of the way along the path by arc length. */
+function scheduleAt(e: number): number {
+  const K = SCHEDULE_STATIONS;
+  const arc = flight.arc;
+  const total = arc[K] ?? 0;
+  if (total <= 1e-6) return e;
+  const want = e * total;
+  let lo = 0;
+  let hi = K;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((arc[mid] ?? 0) < want) lo = mid + 1;
+    else hi = mid;
+  }
+  const k = Math.max(lo, 1);
+  const c0 = arc[k - 1] ?? 0;
+  const c1 = arc[k] ?? c0;
+  const f = c1 - c0 > 1e-9 ? (want - c0) / (c1 - c0) : 0;
+  return (k - 1 + f) / K;
+}
+
+function lerp(a: number, b: number, f: number): number {
+  return a + (b - a) * f;
+}
+
+/** Geometric close-in from `r0` to `r1`, skewed late (or early) by `skew`. */
+function craneDist(r0: number, r1: number, u: number, skew: number): number {
+  return r0 * Math.pow(r1 / r0, Math.pow(u, skew));
+}
+
+/** Shortest signed way round to the same bearing. */
+function wrapAngle(a: number): number {
+  let x = a;
+  while (x > Math.PI) x -= Math.PI * 2;
+  while (x < -Math.PI) x += Math.PI * 2;
+  return x;
+}
+
+/** Keep the pitch inside what OrbitControls itself allows, so it never clamps. */
+function clampPolar(phi: number): number {
+  return Math.min(Math.max(phi, 0.08), Math.PI * 0.49);
+}
+
+/** Stop the flight and hand the camera back, with the FOV where it started. */
+function endFlight(): void {
+  flight.active = false;
+  flight.path = null;
+  flight.speed = 0;
+  // An unfold riding this flight has to finish under its own steam now.
+  if (transition.drive === 'flight' && transition.t < 1) {
+    transition.drive = 'clock';
+    transition.delay = 0;
+    transition.dur = 0.2;
+  }
+  if (camera.fov !== BASE_FOV) {
+    camera.fov = BASE_FOV;
+    camera.updateProjectionMatrix();
+  }
+}
+
+/**
+ * Any hand on the camera cancels the flight from wherever it is — no snap back
+ * to the destination — and lets the unfold finish immediately behind it, so the
+ * scene is pickable again the moment the user takes over.
+ */
+function onUserCamera(): void {
+  if (flight.active) endFlight();
+  if (transition.t < 1) {
+    transition.drive = 'clock';
+    transition.delay = 0;
+    transition.dur = Math.max(0.15 / Math.max(1 - transition.t, 1e-3), 0.05);
+  }
+}
+
+/** Y of the tallest thing standing in the current scope. */
+function scopeCeiling(): number {
+  const build = strata.build;
+  let top = 0;
+  for (const n of scope.fileNodes) {
+    const base = n.top ?? 0;
+    top = Math.max(top, base + (build ? build.heightOf(n) : tallest(n)));
+  }
+  return top;
+}
+
+/** Re-space a polyline evenly along its own length. */
+function resampleUniform(path: THREE.Vector3[], count: number): THREE.Vector3[] {
+  const n = path.length;
+  const cum: number[] = [0];
+  for (let i = 1; i < n; i++) {
+    const a = path[i - 1];
+    const b = path[i];
+    cum.push((cum[i - 1] ?? 0) + (a && b ? a.distanceTo(b) : 0));
+  }
+  const total = cum[n - 1] ?? 0;
+  if (total <= 1e-6) return path;
+
+  const out: THREE.Vector3[] = [];
+  let seg = 1;
+  for (let k = 0; k < count; k++) {
+    const want = (total * k) / (count - 1);
+    while (seg < n - 1 && (cum[seg] ?? 0) < want) seg++;
+    const c0 = cum[seg - 1] ?? 0;
+    const c1 = cum[seg] ?? c0;
+    const f = c1 - c0 > 1e-9 ? (want - c0) / (c1 - c0) : 0;
+    const pa = path[seg - 1];
+    const pb = path[seg];
+    if (!pa || !pb) continue;
+    out.push(pa.clone().lerp(pb, f));
+  }
+  return out;
+}
+
+/**
+ * Corner-cutting passes over a polyline, endpoints pinned. Each pass replaces a
+ * point with the [1/4, 1/2, 1/4] blend of its neighbourhood, which is a discrete
+ * diffusion: sharp corners open out, straight runs are untouched.
+ */
+function relax(points: THREE.Vector3[], passes: number): void {
+  const n = points.length;
+  if (n < 3) return;
+  for (let pass = 0; pass < passes; pass++) {
+    _relaxPrev.copy(points[0] ?? _relaxPrev);
+    for (let i = 1; i < n - 1; i++) {
+      const p = points[i];
+      const next = points[i + 1];
+      if (!p || !next) continue;
+      _relaxTmp.copy(p);
+      p.multiplyScalar(0.5).addScaledVector(_relaxPrev, 0.25).addScaledVector(next, 0.25);
+      _relaxPrev.copy(_relaxTmp);
+    }
+  }
+}
+
+const _relaxPrev = new THREE.Vector3();
+const _relaxTmp = new THREE.Vector3();
+
+function smoothstep(a: number, b: number, x: number): number {
+  const t = Math.min(Math.max((x - a) / (b - a || 1e-6), 0), 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The global flight ease. Normally a trapezoid: a sine ramp up, a constant-speed
+ * cruise, a sine ramp down — C1 everywhere, and the cruise is what keeps a long
+ * dive from reading as a lunge. A flight that started while the camera was
+ * already moving swaps it for the cubic Hermite that begins at that speed.
+ */
+function flightEase(x: number, ramp: number, v0: number): number {
+  if (v0 > 0.05) return (v0 - 2) * x * x * x + (3 - 2 * v0) * x * x + v0 * x;
+  const r = Math.min(Math.max(ramp, 0.02), 0.5);
+  const v = 1 / (1 - r);
+  if (x < r) return 0.5 * v * (x - (r / Math.PI) * Math.sin((Math.PI * x) / r));
+  if (x > 1 - r) return 1 - flightEase(1 - x, ramp, 0);
+  return 0.5 * v * r + v * (x - r);
 }
 
 /**
@@ -1933,39 +2577,6 @@ function chainFramings(from: VNode, to: VNode, opts: { descend: boolean }): Fram
     if (f) out.push(f);
   }
   return out;
-}
-
-const _oa = new THREE.Vector3();
-const _ob = new THREE.Vector3();
-const _da = new THREE.Vector3();
-const _db = new THREE.Vector3();
-const _dir = new THREE.Vector3();
-
-/**
- * Interpolate between two framings around their (moving) pivot: the target
- * lerps, the camera offset slerps in direction and blends geometrically in
- * length. A straight positional lerp would dive through the city and make the
- * view snap to a new centre; this reads as one continuous orbit + dolly.
- */
-function interpFraming(a: Framing, b: Framing, f: number, outPos: THREE.Vector3, outTarget: THREE.Vector3): void {
-  outTarget.lerpVectors(a.target, b.target, f);
-  _oa.subVectors(a.pos, a.target);
-  _ob.subVectors(b.pos, b.target);
-  const da = Math.max(_oa.length(), 1e-3);
-  const db = Math.max(_ob.length(), 1e-3);
-  _da.copy(_oa).divideScalar(da);
-  _db.copy(_ob).divideScalar(db);
-
-  const dot = Math.min(Math.max(_da.dot(_db), -1), 1);
-  const ang = Math.acos(dot);
-  if (ang < 1e-3) {
-    _dir.copy(_db);
-  } else {
-    const s = Math.sin(ang);
-    _dir.copy(_da).multiplyScalar(Math.sin((1 - f) * ang) / s).addScaledVector(_db, Math.sin(f * ang) / s);
-    _dir.normalize();
-  }
-  outPos.copy(outTarget).addScaledVector(_dir, da * Math.pow(db / da, f));
 }
 
 // ---------------------------------------------------------------------------
@@ -2075,7 +2686,7 @@ function updateLabelCandidates(): void {
         n.rect.x + n.rect.w / 2,
         plateTop(n.tier ?? n.depth ?? 0, isFile) + (isFile ? 5 : 9 + (n.depth ?? 0)),
         n.rect.z + n.rect.h / 2
-      ),
+      ).add(stageHome),
       size,
       node: n,
       rec: null,
@@ -2093,7 +2704,7 @@ function updateLabelCandidates(): void {
       key: rec.file.path + '#' + rec.mod.name,
       text: String(rec.mod.name),
       tier: 'module',
-      pos: new THREE.Vector3(rec.center.x, (rec.file.top ?? 0) + rec.height + 2.5, rec.center.z),
+      pos: new THREE.Vector3(rec.center.x, (rec.file.top ?? 0) + rec.height + 2.5, rec.center.z).add(stageHome),
       size: Math.max(rec.height, 3),
       node: rec.file,
       rec,
@@ -2123,6 +2734,9 @@ function updateLeaderFocus(): void {
 
 function bindEvents(): void {
   const el = renderer.domElement;
+
+  // A hand on the camera always outranks whatever the camera was doing.
+  controls.addEventListener('start', onUserCamera);
 
   el.addEventListener('pointermove', (e) => {
     pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
@@ -2311,12 +2925,12 @@ function showCallout(hit: NodeTarget, name: string): void {
   if (hit.type === 'module' && hit.rec) {
     hit.rec.mesh.getMatrixAt(hit.rec.instanceId, _m4);
     _m4.decompose(_v3, _q, _scale);
-    callout.anchor.set(_v3.x, _v3.y + _scale.y, _v3.z);
+    callout.anchor.set(_v3.x, _v3.y + _scale.y, _v3.z).add(stageHome);
   } else {
     const r = hit.node.rect;
     if (!r) return;
     const top = plateTop(hit.node.tier ?? hit.node.depth ?? 0, hit.node.type === 'file');
-    callout.anchor.set(r.x + r.w / 2, top + boxHeightFor(hit.node), r.z + r.h / 2);
+    callout.anchor.set(r.x + r.w / 2, top + boxHeightFor(hit.node), r.z + r.h / 2).add(stageHome);
   }
   const sprite = makeLabelSprite(name, { color: '#eafcff', worldHeight: 10 });
   callout.aspect = sprite.scale.y > 0 ? sprite.scale.x / sprite.scale.y : 1;
@@ -2422,24 +3036,23 @@ function animate(): void {
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
 
-  if (flight.active) {
-    flight.t = Math.min(flight.t + dt / flight.dur, 1);
-    const n = flight.points.length;
-    const x = easeInOutCubic(flight.t) * n;
-    const i = Math.min(Math.floor(x), n - 1);
-    const a = i === 0 ? flight.from : flight.points[i - 1];
-    const b = flight.points[i];
-    if (a && b) interpFraming(a, b, x - i, camera.position, controls.target);
-    if (flight.t >= 1) flight.active = false;
-  }
+  if (flight.active) tickFlight(dt);
 
   if (transition.t < 1) {
-    transition.t = Math.min(transition.t + dt / TRANSITION_DUR, 1);
-    const e = easeInOutCubic(transition.t);
-    const s = transition.k0 + (1 - transition.k0) * e;
-    stage.scale.setScalar(s);
-    stage.position.set(transition.p0.x * (1 - e), transition.p0.y * (1 - e), transition.p0.z * (1 - e));
+    if (transition.drive === 'flight' && flight.active) {
+      // Smoothstep over the window, so the unfold starts and stops with zero
+      // velocity inside a flight that is itself still moving: no kick either end.
+      transition.t = smoothstep(transition.from, transition.to, flight.e);
+    } else if (transition.delay > 0) {
+      transition.delay = Math.max(transition.delay - dt, 0);
+    } else {
+      transition.t = Math.min(transition.t + dt / transition.dur, 1);
+    }
+    const e = transition.drive === 'flight' ? transition.t : easeInOutCubic(transition.t);
+    applyStageTransform(transition.k0 + (1 - transition.k0) * e);
     for (const { m, base } of transition.mats) m.opacity = base * (0.45 + 0.55 * e);
+  } else if (!flight.active) {
+    rehomeStage();
   }
 
   if (timeline.enabled) {
@@ -2461,6 +3074,15 @@ function animate(): void {
     }
   }
 
+  if (ghost) {
+    ghost.t = Math.min(ghost.t + dt / (flight.active ? flight.dur * GHOST_FADE : TRANSITION_DUR), 1);
+    const k = 1 - easeInOutCubic(ghost.t);
+    for (const { m, base } of ghost.mats) m.opacity = base * k;
+    if (ghost.t >= 1) disposeGhost();
+  }
+
+  if (probe) probe.record(dt);
+
   if (tour) tour.tick(dt);
   // The orbit treatment must not fight a camera flight, which writes the
   // position directly a few lines above.
@@ -2468,15 +3090,23 @@ function animate(): void {
   controls.autoRotateSpeed = 0.35;
 
   controls.update();
-  // Mid-transition the stage is still folded, so world-space picking, labels
-  // and highlight boxes would all point at the wrong place.
-  const settled = transition.t >= 1;
-  labeler.group.visible = settled;
-  terraceSigns.group.visible = settled;
+  // Mid-transition the stage is still folded and mid-flight the view is moving,
+  // so world-space picking, labels and highlight boxes would all be pointing at
+  // something the user cannot act on. The dressing fades rather than blinks.
+  const settled = transition.t >= 1 && !flight.active;
+  const flying = !settled;
+  dressing.v += ((flying ? 0 : 1) - dressing.v) * Math.min(dt * (flying ? 9 : 5.5), 1);
+  if (dressing.frozen !== flying) {
+    dressing.frozen = flying;
+    labeler.setFrozen(flying);
+    terraceSigns.setFrozen(flying);
+  }
+  labeler.setDim(dressing.v);
+  terraceSigns.setDim(dressing.v);
+  labeler.update(dt);
+  terraceSigns.update(dt);
   if (settled) {
     updateHover();
-    labeler.update(dt);
-    terraceSigns.update(dt);
   } else {
     hoverBox.visible = false;
     selectionBox.visible = false;
@@ -2520,8 +3150,168 @@ function updatePeople(t: number): void {
   }
 }
 
+/** Walk the derived camera path by arc length under the global ease. */
+function tickFlight(dt: number): void {
+  if (!flight.path) {
+    endFlight();
+    return;
+  }
+  _flightPrev.copy(camera.position);
+  flight.t = Math.min(flight.t + dt / flight.dur, 1);
+  const e = Math.min(Math.max(flightEase(flight.t, flight.ramp, flight.v0), 0), 1);
+  flight.e = e;
+  schedulePoint(scheduleAt(e), camera.position);
+  controls.target.copy(_flightT);
+
+  if (flight.breath > 0) {
+    // One slow breath out and back, peaking mid-dive: the city opens up a touch
+    // on the way down and closes again as the destination fills the frame.
+    const fov = BASE_FOV + flight.breath * Math.sin(Math.PI * e) ** 1.5;
+    if (fov !== camera.fov) {
+      camera.fov = fov;
+      camera.updateProjectionMatrix();
+    }
+  }
+  flight.speed = dt > 0 ? camera.position.distanceTo(_flightPrev) / dt : 0;
+  if (flight.t >= 1) endFlight();
+}
+
+const _flightPrev = new THREE.Vector3();
+
 function easeInOutCubic(x: number): number {
   return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+}
+
+// ---------------------------------------------------------------------------
+// Motion probe (dev only, behind ?probe=1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-frame camera trace for the motion tests: is the eased spline actually
+ * C1 (no frame-to-frame speed step), and does the crane arc really clear the
+ * skyline? Off unless `?probe=1`, and it writes into one preallocated buffer so
+ * even switched on it allocates nothing per frame.
+ */
+interface MotionProbe {
+  record(dt: number): void;
+  /**
+   * The scope was just replaced: project where the anchor stood in the layout
+   * that went away, and where the new layout puts it, through the SAME camera.
+   * The two must land on the same pixel — that is the world-continuity
+   * assertion, isolated from the camera's own motion.
+   */
+  markRebuild(world: { cx: number; cy: number; cz: number }): void;
+  reset(): void;
+  /** [flightId, t, e, px, py, pz, tx, ty, tz, anchorNdcX, anchorNdcY, mark] per frame. */
+  frames(): number[][];
+  flights(): Array<{ id: number; dur: number; ceiling: number; planY: number }>;
+  focusPath(path: string): boolean;
+  reveal(path: string): boolean;
+  up(): boolean;
+  /** Eased progress of the flight in the air right now, 0..1. */
+  progress(): number;
+  state(): { flying: boolean; focus: string; transition: number };
+}
+
+const STRIDE = 12;
+const PROBE_CAP = 8192;
+
+const probe: MotionProbe | null = createProbe();
+
+/** Lowest camera height the flight schedule plans on, before its final fifth. */
+function planMinY(): number {
+  const path = flight.path;
+  if (!path) return 0;
+  const K = SCHEDULE_STATIONS;
+  const total = flight.arc[K] ?? 1;
+  let min = Infinity;
+  for (let k = 0; k <= K; k++) {
+    if ((flight.arc[k] ?? 0) / total > 0.8) break;
+    path.getPoint(k / K, _v3);
+    min = Math.min(min, _v3.y + (flight.dist[k] ?? 0) * Math.cos(flight.polar[k] ?? 0));
+  }
+  return min;
+}
+
+function createProbe(): MotionProbe | null {
+  if (typeof window === 'undefined') return null;
+  if (!new URLSearchParams(window.location.search).has('probe')) return null;
+  const buf = new Float64Array(PROBE_CAP * STRIDE);
+  const meta: Array<{ id: number; dur: number; ceiling: number; planY: number }> = [];
+  const _probe = new THREE.Vector3();
+  let n = 0;
+  let id = 0;
+  let last = -1;
+
+  const write = (
+    fid: number, t: number, e: number,
+    pos: THREE.Vector3, target: THREE.Vector3,
+    ax: number, ay: number, mark: number
+  ): void => {
+    if (n >= PROBE_CAP) return;
+    const i = n * STRIDE;
+    buf[i] = fid;
+    buf[i + 1] = t;
+    buf[i + 2] = e;
+    buf[i + 3] = pos.x; buf[i + 4] = pos.y; buf[i + 5] = pos.z;
+    buf[i + 6] = target.x; buf[i + 7] = target.y; buf[i + 8] = target.z;
+    buf[i + 9] = ax; buf[i + 10] = ay; buf[i + 11] = mark;
+    n++;
+  };
+
+  const api: MotionProbe = {
+    record() {
+      const t = flight.active ? flight.t : 1;
+      // A new flight is a t that went backwards.
+      if (flight.active && (t < last || last < 0)) {
+        id++;
+        meta.push({ id, dur: flight.dur, ceiling: scopeCeiling(), planY: planMinY() });
+      }
+      last = flight.active ? t : -1;
+      // Stage transform is a uniform scale plus a translation, so the anchor's
+      // world position is one multiply-add — and unlike matrixWorld it is the
+      // value this frame will actually render with.
+      _probe.copy(transition.anchor).multiplyScalar(stage.scale.x).add(stage.position).project(camera);
+      write(flight.active ? id : 0, t, flight.active ? flight.e : 1,
+        camera.position, controls.target, _probe.x, _probe.y, 0);
+    },
+    markRebuild(world) {
+      _probe.set(world.cx, world.cy, world.cz).project(camera);
+      write(0, 1, 1, camera.position, controls.target, _probe.x, _probe.y, 1);
+      _probe.copy(transition.anchor).multiplyScalar(stage.scale.x).add(stage.position).project(camera);
+      write(0, 1, 1, camera.position, controls.target, _probe.x, _probe.y, 2);
+    },
+    reset() { n = 0; id = 0; last = -1; meta.length = 0; },
+    frames() {
+      const out: number[][] = [];
+      for (let k = 0; k < n; k++) out.push([...buf.slice(k * STRIDE, k * STRIDE + STRIDE)]);
+      return out;
+    },
+    flights() { return meta.map((m) => ({ ...m })); },
+    focusPath(path) {
+      const node = index.nodesByPath.get(path);
+      if (!node) return false;
+      focusNode(node);
+      return true;
+    },
+    reveal(path) { return revealPath(path); },
+    up() {
+      const parent = state.focus?.parent;
+      if (!parent) return false;
+      focusNode(parent);
+      return true;
+    },
+    progress() { return flight.active ? flight.e : 1; },
+    state() {
+      return {
+        flying: flight.active,
+        focus: state.focus?.path ?? '',
+        transition: transition.t,
+      };
+    },
+  };
+  Reflect.set(window, '__motionProbe', api);
+  return api;
 }
 
 // ---------------------------------------------------------------------------

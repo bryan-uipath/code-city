@@ -238,18 +238,86 @@ it. The fixes, layered:
   labeler links a parent label to its visible children, shown only when that
   parent is hovered/selected or when exactly two label tiers are on screen, and
   cross-faded like the labels themselves.
-- **Smooth hierarchical zoom** — the camera flies along a *chain of framings*
-  under one global ease. A single-level move interpolates around the pivot
-  (target lerps, the camera offset slerps and blends its length geometrically),
-  so the view swings instead of re-centring; a multi-level jump inserts the
-  framing of every level it passes through — captured before the rebuild when
-  drilling in, after it when zooming out, since that is when those rects exist.
-  The unfold/fold stage transition is unchanged.
+- **Smooth hierarchical zoom** — see *Camera motion* below.
 - Sidebar: condensed one-line PR rows (`#3123 · title… · draft · @author · 2h ·
   +adds −dels`, click for full title + file count) and commit rows (hash ·
   subject · author · age, five then "+N more"); identifiers render in true case
   (only panel titles stay uppercase). Same rule in 3D — folder names are
   uppercase city signage, file and module names are identifiers.
+
+## Camera motion
+
+Every zoom in the city is one gesture: one move of the camera, one unfold of the
+scene, one continuous world underneath both. The rules, in the order they matter:
+
+- **The world never teleports.** Each scope is laid out around the origin, so a
+  rebuild would drop the new section at a different place than the old one stood
+  and the camera would have to absorb the jump. Instead the stage is *homed*
+  (`startTransition`): the new layout is translated so the anchor — the node
+  being drilled into, or the child being backed out of — lands exactly on the
+  world position it already occupied, and only the SCALE animates from there.
+  The section grows (or folds) about the spot it already stood on. Everything
+  derived from a layout rect carries `stageHome`: framings, labels, callouts;
+  the selection boxes just ride the stage. Once everything settles, `rehomeStage`
+  shifts stage, camera and orbit target back to the origin together — invisible,
+  and it keeps the drift bounded.
+- **The camera moves in its own coordinates, not in Cartesian space.** The orbit
+  TARGET follows a smooth centripetal Catmull-Rom through the centres of the
+  levels the jump passes; the camera hangs off that target by a bearing, a pitch
+  and a distance, and each of those makes exactly ONE monotone move from the
+  pose it is in to the pose the destination framing asks for. Splining the
+  camera itself through the intermediate framings is what used to make a dive
+  wobble and tilt — a nest of treemap cells puts consecutive centres on
+  alternating sides, and a curve dragged through their bearings zig-zags.
+- **The route is straightened before it is flown** (`straightenRoute`). A stop
+  that does not advance toward the destination is dropped, and the sideways part
+  of the rest is capped at 22% of the route: a level is a place the flight
+  *passes*, not a gate it has to hit. What survives is a bow, never a hairpin.
+- **Even APPARENT speed.** The path is walked by arc length, but the arc is
+  measured in apparent motion — world distance divided by the distance to what
+  you are looking at — so a hundred units covered from a thousand away and the
+  same hundred covered from fifty away are not counted the same. Under one
+  global trapezoid ease (sine ramp up, constant cruise, sine ramp down; a plain
+  ease-in-out for a single-level hop) this is what keeps a four-level dive from
+  reading as a lunge.
+- **Crane shaping, solved rather than clamped.** The distance schedule closes in
+  geometrically with an exponent: >1 holds a dive high and brings it down late,
+  <1 gets a climb its height up front. When that is not enough to clear the
+  skyline, the exponent is *raised* until it is (bisection, capped at 3.5) —
+  never clamped, because a clamp puts a corner in the path exactly where the
+  crane starts coming down. A destination whose orbit distance is smaller than
+  the city is tall cannot be reached without descending through the skyline;
+  there the cap is the deliberate compromise.
+- **The unfold rides the flight.** While a flight is in the air the stage
+  transition is not on its own clock: `transition.t` is a smoothstep over a
+  window of the flight's own eased progress — `[0.04, 0.86]` drilling in, so the
+  section is still opening as you arrive, `[0, 0.55]` backing out, so the parent
+  city is whole again before the camera pulls off it. Zero velocity at both ends
+  of the window means neither start nor finish kicks.
+- **The old scope stays up.** Drilling in does not dispose the city you were
+  looking at: it is parked at the world position it already had and faded out
+  over the first ~85% of the flight (`retireCity`), so the block you picked grows
+  out of a city that is still standing around it rather than out of an empty grid.
+- **Transit dressing.** Labels and terrace signs freeze their re-pick and fade to
+  nothing at launch, re-pick once on arrival and fade back in; hover, callouts
+  and the highlight boxes are suppressed while the camera is moving. Nothing
+  churns mid-flight and nothing pops.
+- **Durations** are `0.55s + 0.26s per level + up to 0.67s for apparent
+  distance`, capped at 2.2s, and 0.86× coming back out — a retreat, not an
+  approach. A long inward dive also breathes +2° of FOV at mid-flight; framings
+  are always computed at the base FOV so a flight retargeted mid-breath still
+  aims correctly.
+- **Anything the user does outranks it.** The OrbitControls `start` event cancels
+  the flight from wherever it is (no snap) and hands the unfold to a 0.15s
+  finish; a new dblclick / breadcrumb / Esc retargets from the current camera
+  pose, carrying the speed the camera already has into the new ease (a cubic
+  Hermite with a matching initial slope) so a rapid Esc-Esc-Esc chain never
+  stalls between levels.
+- **`?probe=1`** exposes `window.__motionProbe`: a per-frame camera trace into a
+  preallocated buffer plus scripted `focusPath` / `reveal` / `up` drivers, for
+  asserting frame-to-frame speed continuity, monotone pitch and bearing,
+  skyline clearance, and screen-space continuity of the drilled node across the
+  rebuild frame. Off — and free — without the flag.
 
 ## Markdown support (planned)
 
