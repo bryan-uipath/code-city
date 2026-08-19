@@ -129,6 +129,12 @@ the base snapshot — dragging the start handle back literally grows the city.
 File-level only at first (per-function historical size needs per-commit
 parsing); ships as a "Strata" mode alongside the log-scale massing.
 
+Direction: strata becomes the SHARED building massing across all modes —
+churn/recent/structure reduce to recolor passes over the same stacked
+geometry (module-level buildings appear on file isolate). Level colors encode
+conventional-commit type: feat cyan · fix red · refactor violet · chore slate ·
+docs green · test amber · perf pink · ci gray · unknown = age gradient.
+
 ## Analyzer cache & static export (planned)
 
 - **Incremental analysis cache** — git history is append-only: persist the
