@@ -232,6 +232,18 @@ async function compose(page) {
   await dispatch(page, 'dblclick', plate);
   await page.waitForTimeout(2400); // camera flight + scope unfold
 
+  // Since the shared-massing change, folder scopes render strata stacks, not
+  // module buildings — so drill one level further, into the scope's largest
+  // FILE plate, where module buildings live.
+  const fileHits = (await sweep(page)).filter((h) => isPlate(h) && /\.(ts|tsx|js|jsx|mjs|md)$/.test(h.name));
+  const filePlate = fileHits.length ? centroidPick(byBiggest(fileHits)) : null;
+  if (filePlate) {
+    console.log(`hero: isolating ${filePlate.path}`);
+    await aim(page, filePlate);
+    await dispatch(page, 'dblclick', filePlate);
+    await page.waitForTimeout(2400);
+  }
+
   // Pin a module in the new scope: the one covering the most screen area, which
   // is both the easiest to hit reliably and the most worth showing source for.
   const building = pickBuilding(await sweep(page));
