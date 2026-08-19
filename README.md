@@ -14,6 +14,7 @@ The thesis: as more code is written by agents, we read less of it line-by-line. 
 
 - **City hierarchy** — repo → folder districts → file blocks → module buildings → (double-click) class members. Double-click isolates and breaks down any level; Esc / breadcrumb zooms back out.
 - **Overlays** — structure (kind colors), churn (12-month commit heat), fix hotspots (bug-fix commits), recent focus (touched in the last 30 days — the default).
+- **Strata mode** — buildings become one slab per commit: height = commits, footprint = the file's size at that commit, each level colored by its conventional-commit type (feat cyan, fix red, refactor violet…). A second timeline handle sets the range, so dragging it back grows the city out of its own history.
 - **People / PR layer** — open PRs as author avatars on light beams over the files they touch. Beam thickness scales with diff size, altitude with activity recency. Draft PRs render as orange scaffolding; files touched by 2+ PRs get red conflict cages.
 - **Coupling arcs** — directional import edges (animated flow importer → imported), aggregated per package when nothing is selected.
 - **History timeline** — scrub or play through the commit stream and watch activity flow across the city.
@@ -51,7 +52,7 @@ Requirements: Node 20+, git; optionally the [`gh` CLI](https://cli.github.com/) 
 
 ## How it works
 
-- `analyzer/analyze.ts` — walks the repo, extracts top-level modules (and class/interface/enum members) with the TypeScript compiler API, mines churn/fix/recency and the full commit stream from a single `git log` pass, resolves import edges (including monorepo workspace packages), and pulls open PRs via `gh`. Output is one JSON file; schema in [DESIGN.md](DESIGN.md).
+- `analyzer/analyze.ts` — walks the repo, extracts top-level modules (and class/interface/enum members) with the TypeScript compiler API, mines churn/fix/recency and the full commit stream (with per-file `[adds, dels]`) from a single `git log --numstat` pass — cached incrementally, so re-runs only read `<cachedHead>..HEAD` — resolves import edges (including monorepo workspace packages), and pulls open PRs via `gh`. Output is one JSON file; schema in [DESIGN.md](DESIGN.md).
 - `viewer/` — Vite + Three.js. Squarified-treemap layout, instanced meshes (tested at ~17k buildings / 60fps+), UnrealBloom postprocessing, and a small dev-server API that serves source snippets and diffs from the analyzed repo (path-contained, localhost only).
 
 ## Development
@@ -75,4 +76,4 @@ See [DESIGN.md](DESIGN.md) for the full metaphor, data contract, and style guide
 
 ## Status
 
-Early prototype, moving fast. In progress: a "Strata" building mode (height = commits, footprint = size over time), and a VS Code extension (the city as a webview, click a building to open the file).
+Early prototype, moving fast. Recently landed: Strata mode and an incremental analyzer cache (re-analysis reuses the processed commit stream, keyed by repo root under `.codecity/`). In progress: a VS Code extension (the city as a webview, click a building to open the file).

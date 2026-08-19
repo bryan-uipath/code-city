@@ -27,6 +27,10 @@ import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
 import { createSidebar, escapeHtml, type Descriptor, type Sidebar } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
 import { createSearch, type HighlightSpec, type SearchPalette } from './search.js';
+import {
+  buildStrataIndex, createStrata, COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
+  type StrataBuild, type StrataIndex, type StrataRecord,
+} from './strata.js';
 import { asVNode, type VMod, type VNode } from './vtree.js';
 
 const MAX_ARCS = 150;
@@ -46,13 +50,16 @@ let CITY_SIZE = 900;
 // State
 // ---------------------------------------------------------------------------
 
-type Mode = 'structure' | 'churn' | 'fix' | 'recent';
+/** `strata` is a render mode: it replaces buildings, the rest recolor them. */
+type Mode = 'structure' | 'churn' | 'fix' | 'recent' | 'strata';
 
 /** A node (or building) the pointer / selection is on. */
 interface NodeTarget {
   type: 'folder' | 'file' | 'module';
   node: VNode;
   rec: ModuleRecord | null;
+  /** The strata level under the pointer, when the hit came from that layer. */
+  level?: StrataRecord | null;
 }
 
 /** A PR avatar. */
@@ -112,6 +119,7 @@ const dom = {
   repoName: requireEl('repo-name'),
   statFiles: requireEl('stat-files'),
   statModules: requireEl('stat-modules'),
+  statModulesLabel: requireEl('stat-modules-label'),
   statLoc: requireEl('stat-loc'),
   statFps: requireEl('stat-fps'),
   legend: requireEl('legend-body'),
@@ -184,6 +192,18 @@ const flight = { active: false, t: 0, dur: 1.1, fromPos: new THREE.Vector3(), to
 const transition: { t: number; k0: number; p0: THREE.Vector3; mats: Array<{ m: THREE.Material; base: number }> } = {
   t: 1, k0: 1, p0: new THREE.Vector3(), mats: [],
 };
+/**
+ * Strata render mode. The index is built once, on first use; the mesh is rebuilt
+ * per scope and only *refilled* (throttled) while either timeline handle moves.
+ */
+const strata: {
+  index: StrataIndex | null;
+  build: StrataBuild | null;
+  dirty: boolean;
+  acc: number;
+} = {
+  index: null, build: null, dirty: false, acc: 0,
+};
 /** Per-scope-file recency, recomputed (throttled) while scrubbing history. */
 const recency: { map: Map<VNode, { count: number; flash: number }>; dirty: boolean; acc: number } = {
   map: new Map(), dirty: false, acc: 0,
@@ -230,7 +250,10 @@ async function main(): Promise<void> {
 
   initScene();
 
-  timeline = createTimeline(data, { onChange: onTimeCursor });
+  timeline = createTimeline(data, {
+    onChange: onTimeCursor,
+    onRange: () => { strata.dirty = true; },
+  });
   sidebar = createSidebar({ host, timeline, githubUrl: data.repo?.githubUrl });
   labeler = createLabeler(scene, camera);
   search = createSearch({
@@ -557,6 +580,7 @@ function rebuildScene(opts: { instant?: boolean; anchor?: VNode | null } = {}): 
   stage.add(city.group);
 
   indexScope();
+  applyStrataMode();
   buildPeopleLayer();
   applySearchLayerMute();
 
@@ -570,7 +594,10 @@ function rebuildScene(opts: { instant?: boolean; anchor?: VNode | null } = {}): 
   refreshPickables();
 
   dom.statFiles.textContent = fmt(scope.fileNodes.length);
-  dom.statModules.textContent = fmt(city.moduleRecords.length);
+  if (!strata.build) {
+    dom.statModulesLabel.textContent = 'MODULES';
+    dom.statModules.textContent = fmt(city.moduleRecords.length);
+  }
   dom.statLoc.textContent = fmt(root.loc);
   renderBreadcrumb();
   renderLegend();
@@ -662,7 +689,9 @@ function clearGroup(group: THREE.Group): void {
 
 function refreshPickables(): void {
   if (!city) return;
-  pickables = city.pickables.slice();
+  // Hidden building meshes (Strata mode) must not answer the raycaster.
+  pickables = city.pickables.filter((o) => o.visible);
+  if (strata.build) pickables.push(strata.build.mesh);
   if (state.people && peopleGroup.visible) {
     for (const g of peopleGroup.children) if (g.userData.sprite) pickables.push(g.userData.sprite);
   }
@@ -682,8 +711,16 @@ function buildHud(): void {
     if (!isMode(mode)) return;
     state.mode = mode;
     for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) b.classList.toggle('active', b === btn);
+    if (mode === 'strata' && !timeline.enabled) showNotice('Strata needs a commit stream — re-run the analyzer');
+    applyStrataMode();
+    if (mode === 'strata' && !strataActive() && timeline.enabled) {
+      showNotice('Strata is a city-level mode — Esc back out of this isolate');
+    }
     applyOverlay();
     renderLegend();
+    refreshPickables();
+    updateLabelCandidates();
+    refreshSelectionBox();
   });
 
   dom.toggles.addEventListener('click', (e) => {
@@ -708,7 +745,8 @@ function buildHud(): void {
 }
 
 function isMode(value: string | undefined): value is Mode {
-  return value === 'structure' || value === 'churn' || value === 'fix' || value === 'recent';
+  return value === 'structure' || value === 'churn' || value === 'fix'
+    || value === 'recent' || value === 'strata';
 }
 
 function renderLegend(): void {
@@ -723,6 +761,18 @@ function renderLegend(): void {
     rows.push(
       `<div class="row"><i class="sw" style="background:#4ade80;box-shadow:0 0 8px #4ade80"></i><span>touched &lt; 30d</span></div>`,
       `<div class="row"><i class="sw" style="background:#1b2432"></i><span>dormant</span></div>`
+    );
+  } else if (state.mode === 'strata') {
+    // One level per commit, hue = the kind of change that commit was.
+    for (const type of COMMIT_TYPE_ORDER) {
+      const hex = '#' + (COMMIT_TYPE_COLORS[type] ?? PALETTE.cyan).toString(16).padStart(6, '0');
+      rows.push(`<div class="row"><i class="sw" style="background:${hex};box-shadow:0 0 8px ${hex}"></i><span>${type}</span></div>`);
+    }
+    rows.push(
+      `<div id="strata-ramp"></div>`,
+      `<div class="ramp-labels"><span>oldest</span><span>untyped · age</span><span>newest</span></div>`,
+      `<div class="row"><i class="sw" style="background:#1b2432"></i><span>untouched in range</span></div>`,
+      `<div class="row"><span>level = commit · area = loc</span></div>`
     );
   } else {
     const label = state.mode === 'churn' ? 'commits / 12mo' : 'fix commits / 12mo';
@@ -809,7 +859,7 @@ function applyOverlay(): void {
   const green = new THREE.Color(PALETTE.green);
 
   for (const rec of city.moduleRecords) {
-    if (mode === 'structure') {
+    if (mode === 'structure' || mode === 'strata') {
       _color.copy(rec.baseColor);
     } else if (mode === 'recent') {
       const r = recentValue(rec.file);
@@ -825,7 +875,7 @@ function applyOverlay(): void {
   const filePlates = city.filePlates;
   if (filePlates) {
     for (const rec of city.fileRecords) {
-      if (mode === 'structure') {
+      if (mode === 'structure' || mode === 'strata') {
         _color.copy(rec.baseColor);
       } else if (mode === 'recent') {
         const r = recentValue(rec.node);
@@ -842,11 +892,64 @@ function applyOverlay(): void {
   const folderPlates = city.folderPlates;
   if (folderPlates) {
     for (const rec of city.folderRecords) {
-      _dim.copy(rec.baseColor).multiplyScalar(mode === 'structure' ? 1 : 0.7);
+      _dim.copy(rec.baseColor).multiplyScalar(mode === 'structure' || mode === 'strata' ? 1 : 0.7);
       folderPlates.setColorAt(rec.instanceId, _dim);
     }
     if (folderPlates.instanceColor) folderPlates.instanceColor.needsUpdate = true;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Strata render mode
+// ---------------------------------------------------------------------------
+
+/**
+ * Strata replaces the module buildings with per-commit slabs, so it only makes
+ * sense where files are the unit of rendering: inside a file or module isolate
+ * (a synthetic scope) the city falls back to normal module massing.
+ */
+function strataActive(): boolean {
+  return state.mode === 'strata' && timeline.enabled && !!scope.root && !scope.root.synth;
+}
+
+/** Build (or tear down) the strata layer for the current scope. */
+function applyStrataMode(): void {
+  if (!city) return;
+  const on = strataActive();
+  timeline.setRangeMode(on); // the second handle belongs to this mode alone
+  for (const mesh of city.buildingMeshes) mesh.visible = !on;
+  if (strata.build) {
+    disposeObject(strata.build.group);
+    strata.build = null;
+  }
+  if (!on) {
+    dom.statModulesLabel.textContent = 'MODULES';
+    dom.statModules.textContent = fmt(city.moduleRecords.length);
+    return;
+  }
+
+  const data = state.data;
+  if (!strata.index && data) strata.index = buildStrataIndex(data);
+  const index = strata.index;
+  if (!index) return;
+  strata.build = createStrata(
+    scope.fileNodes,
+    index,
+    (node) => realFileOf(node)?.path ?? null,
+    { min: timeline.min, max: timeline.max }
+  );
+  if (!strata.build) return;
+  stage.add(strata.build.group);
+  updateStrata();
+}
+
+/** Refill the existing slabs for the current [start, cursor] range. */
+function updateStrata(): void {
+  const build = strata.build;
+  if (!build) return;
+  build.update({ start: timeline.start, cursor: state.timeCursor });
+  dom.statModulesLabel.textContent = 'LEVELS';
+  dom.statModules.textContent = fmt(build.records.length);
 }
 
 // ---------------------------------------------------------------------------
@@ -987,7 +1090,9 @@ function revealPath(path: string, opts: { module?: string | null; line?: number 
 /** Scrubbing the timeline implies the Recent Focus overlay. */
 function onTimeCursor(t: number | null): void {
   state.timeCursor = t;
-  if (t !== null && state.mode !== 'recent') {
+  strata.dirty = true;
+  // Strata reads the cursor as its base snapshot, so it keeps its own overlay.
+  if (t !== null && state.mode !== 'recent' && state.mode !== 'strata') {
     state.mode = 'recent';
     for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) b.classList.toggle('active', b.dataset.mode === 'recent');
     renderLegend();
@@ -1303,6 +1408,8 @@ function boxAroundInstance(box: THREE.LineSegments, rec: ModuleRecord): void {
 }
 
 function boxHeightFor(node: VNode): number {
+  const build = strata.build;
+  if (build && node.type === 'file') return Math.max(build.heightOf(node) + 4, 10);
   if (node.type === 'file') return Math.max(tallest(node) + 4, 10);
   const r = node.rect;
   if (!r) return 18;
@@ -1408,11 +1515,14 @@ function describe(target: Target | null): Descriptor | null {
     : node.type === 'file' ? 'file'
     : `folder · ${(node.children || []).length} children`;
 
+  // A strata level stands for one commit on that file — say which one.
+  const level = target.level?.commit;
   return {
     name: mod ? mod.name : node.name,
     kind,
     kindColor: mod ? KIND_COLORS[mod.kind] ?? PALETTE.cyan : PALETTE.cyan,
     path: node.path,
+    note: level ? `${level.h} · ${level.s}` : undefined,
     loc: mod ? mod.loc : node.loc,
     churn: node.churn,
     fixChurn: node.fixChurn,
@@ -1454,8 +1564,10 @@ function updateLabelCandidates(): void {
     });
   });
 
-  const many = city.moduleRecords.length > MODULE_LABEL_BUDGET;
-  const selNode = state.selection && state.selection.type !== 'pr' ? realFileOf(state.selection.node) : null;
+  // Strata hides the buildings those labels would point at.
+  const many = strata.build !== null || city.moduleRecords.length > MODULE_LABEL_BUDGET;
+  const selNode = strata.build || !state.selection || state.selection.type === 'pr'
+    ? null : realFileOf(state.selection.node);
   for (const rec of city.moduleRecords) {
     if (many && (!selNode || realFileOf(rec.file) !== selNode)) continue;
     list.push({
@@ -1574,6 +1686,11 @@ function resolveHit(hit: THREE.Intersection): Target | null {
   if (!city) return null;
   const o = hit.object;
   const id = hit.instanceId;
+  const build = strata.build;
+  if (build && o === build.mesh) {
+    const level = id === undefined ? undefined : build.records[id];
+    return level ? { type: 'file', node: level.file, rec: null, level } : null;
+  }
   const meta: ModuleRecord[] | null = Array.isArray(o.userData.meta) ? o.userData.meta : null;
   if (meta) {
     const rec = id === undefined ? undefined : meta[id];
@@ -1597,7 +1714,7 @@ function setHover(hit: Target | null): void {
     hit && prev && hit.type === prev.type &&
     (hit.type === 'pr' ? prev.type === 'pr' && hit.pr === prev.pr
       : hit.type === 'module' ? prev.type !== 'pr' && hit.rec === prev.rec
-      : prev.type !== 'pr' && hit.node === prev.node);
+      : prev.type !== 'pr' && hit.node === prev.node && hit.level === prev.level);
   if (same) return;
   if (!hit && !prev) return;
 
@@ -1665,6 +1782,14 @@ function animate(): void {
 
   if (timeline.enabled) {
     timeline.tick(dt);
+    if (strata.dirty && strata.build) {
+      strata.acc += dt;
+      if (strata.acc > 0.1) {
+        strata.acc = 0;
+        strata.dirty = false;
+        updateStrata();
+      }
+    }
     recency.acc += dt;
     if (recency.dirty && recency.acc > 0.12) {
       recency.acc = 0;

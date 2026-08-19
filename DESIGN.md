@@ -38,7 +38,9 @@ zoom-out), like unfolding a hologram.
 - Orbit / zoom / pan (OrbitControls).
 - Hover → HUD tooltip (name, kind, loc, churn, fix count, PRs touching it).
 - Double-click → camera fly-to + focus that node (breadcrumb updates). Esc / breadcrumb → back up.
-- Mode buttons (HUD): Structure · Churn · Fix hotspots · Recent focus. Toggles: Coupling arcs · People/PRs.
+- Mode buttons (HUD): Structure · Churn · Fix hotspots · Recent focus · Strata
+  (the first four recolor the module buildings; Strata replaces them). Toggles:
+  Coupling arcs · People/PRs.
 
 ## Data contract — `viewer/public/data.json`
 
@@ -76,11 +78,14 @@ Notes:
 {
   "files": ["packages/a/x.ts", ...],          // index table, positions referenced by commits
   "commits": [                                 // newest-first, last 12 months
-    { "h": "abc1234", "ts": 1723939200, "a": "author", "s": "subject (≤100 chars)", "f": [0, 5, 9] }
+    { "h": "abc1234", "ts": 1723939200, "a": "author", "s": "subject (≤100 chars)",
+      "f": [0, 5, 9], "d": [[12, 3], [0, 40], [5, 5]] }   // d = [adds, dels] per f entry
   ]
 }
 ```
   Only files present in the tree appear in `f`. Commits touching zero tree files are dropped.
+  `d` comes from `git log --numstat`: binary files (`-`) are skipped entirely and
+  renames (`old => new`, `dir/{a => b}/x.ts`) resolve to the new path.
 
 ## Dev API (vite plugin, dev-server only)
 
@@ -107,7 +112,7 @@ Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippe
 - Materials: emissive-heavy, slight transparency; additive-blended edge lines on focus; UnrealBloomPass for glow.
 - HUD: monospace/uppercase, thin 1px cyan (#22d3ee) borders on translucent dark panels, orange (#fa4616) for active states. CSS scanline + vignette overlay for the retro-CRT feel.
 
-## Strata buildings (planned — next major render mode)
+## Strata buildings (implemented — the "Strata" render mode)
 
 Make BOTH dimensions of a building semantic: **height = commit count** (each
 commit that touched the file is one fixed-height level) and **footprint area =
@@ -119,15 +124,32 @@ like a tree, so the silhouette tells the file's life story:
 - top-heavy = recently shrunk · tall & thin = tiny file endlessly touched
 - short & fat = big file nobody touches
 
-Implementation: `git log --numstat` in the analyzer → per-commit `[adds, dels]`
-aligned with the commit stream's `f` array; client reconstructs LOC-at-commit
-by walking back from current LOC. One instanced slab per (file × commit) level
-(~50–100k instances at flow-workbench scale). Per-level tint options: fix
-commits as red strata; age gradient. The history timeline gains **two handles**
-(start + current): only strata inside the range render, the current handle sets
-the base snapshot — dragging the start handle back literally grows the city.
-File-level only at first (per-function historical size needs per-commit
-parsing); ships as a "Strata" mode alongside the log-scale massing.
+Shipped as an exclusive render mode (`viewer/src/strata.ts`), file-level only:
+
+- The analyzer's `git log --numstat` pass emits per-commit `[adds, dels]` aligned
+  with the stream's `f` array; the viewer reconstructs LOC-at-commit by walking a
+  file's commits newest → oldest, subtracting `adds − dels` from today's LOC
+  (floor 1). Slab area = `locAtCommit / baseLoc`, clamped to [0.06, 1], so the
+  side scales by its square root; level height is fixed at 1.6 world units.
+- One `InstancedMesh` with per-instance colors for the whole city — ~17.5k levels
+  over 3.7k files at flow-workbench scale, 60fps. The buffer is allocated for the
+  widest possible range, so dragging a handle only rewrites matrices and colors.
+  Files are capped at **120 levels** (a handful of hot files have 150+ commits);
+  a file with no commit in range gets one thin plinth so it still reads.
+- **Level color = the kind of change**: conventional-commit type
+  (`/^(\w+)(\(.*?\))?!?:/`) → hue — feat cyan, fix red, refactor violet, perf
+  pink, test amber, docs green, chore slate, ci/build gray — with brightness
+  rising toward the newest level. Subjects with no type fall back to the plain
+  age gradient (dim violet → bright cyan). Geometry and color are separate
+  passes (`update()` vs `recolor(paint)`), which is the seam the eventual
+  "strata as the universal massing, overlays as pure recolors" step needs.
+- **Two timeline handles**: the start handle (cyan, Strata mode only) sets the
+  oldest level rendered; the existing cursor sets the base snapshot — LOC is
+  rewound past every commit newer than it. Dragging start left grows the city.
+- Hover/select resolves a level to its file and shows that level's commit
+  (hash · subject) in the inspector. Isolating a file from Strata falls back to
+  normal module massing inside the file scope (per-function history would need
+  per-commit parsing).
 
 Direction: strata becomes the SHARED building massing across all modes —
 churn/recent/structure reduce to recolor passes over the same stacked
@@ -135,13 +157,21 @@ geometry (module-level buildings appear on file isolate). Level colors encode
 conventional-commit type: feat cyan · fix red · refactor violet · chore slate ·
 docs green · test amber · perf pink · ci gray · unknown = age gradient.
 
-## Analyzer cache & static export (planned)
+## Analyzer cache & static export
 
-- **Incremental analysis cache** — git history is append-only: persist the
-  processed commit stream + numstat deltas in `.codecity/cache.json` keyed by
-  the last-processed commit hash; subsequent runs only walk
-  `git log <cached>..HEAD` and merge. Module extraction cached per file keyed
-  by git blob SHA (`git ls-files -s`). Target: near-instant re-analysis.
+- **Incremental analysis cache** (implemented) — git history is append-only, so
+  the processed stream (with its numstat deltas) is persisted under **this**
+  project at `.codecity/<sha1 of the analyzed repo root>.json`, never inside the
+  analyzed repo. A run hits the cache when the cached HEAD is still an ancestor
+  of today's HEAD (`git merge-base --is-ancestor`) and today's file set is a
+  subset of the cached one; it then walks `git log <cachedHead>..HEAD --numstat`
+  only, prepends those commits, drops anything past the 12-month cutoff, and
+  rewrites the cache. Anything that does not line up — parse error, moved HEAD,
+  new files, changed roots — silently falls back to the full pass. Churn is
+  always recomputed from the merged stream, so cached and full runs produce
+  byte-identical output. flow-workbench: 3.8s → 0.1s for the history pass
+  (6.9s → 2.1s end to end; the remainder is TypeScript parsing, which is not
+  cached yet — per-blob module caching is the obvious next step).
 - **Static export** — `npm run export`: vite-build the viewer with the current
   `data.json` baked into `dist/` as a self-contained static visualization
   (API-dependent panes already hide themselves). Use cases: GitHub Pages,
@@ -248,5 +278,6 @@ viewer/src/main.ts        # scene, interaction, overlays
 viewer/src/vtree.ts       # the viewer's augmented node type (layout, synthetic scopes)
 viewer/src/layout.ts      # squarified treemap layout
 viewer/src/city.ts        # geometry/instancing builders
+viewer/src/strata.ts      # Strata mode: per-commit slab stacks + their paints
 viewer/public/data.json   # generated (gitignored)
 ```

@@ -1,4 +1,5 @@
 node_modules/
 viewer/public/data.json
+.codecity/
 dist/
 .playwright-mcp/

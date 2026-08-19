@@ -175,6 +175,9 @@
   #legend .row { display: flex; align-items: center; gap: 8px; padding: 2.5px 0; color: var(--foreground-muted); }
   #legend .sw { width: 11px; height: 11px; flex: none; border: 1px solid rgba(255,255,255,0.18); }
   #legend .row span { text-transform: uppercase; font-size: 10px; letter-spacing: 0.14em; }
+  #strata-ramp { height: 8px; margin: 6px 0 4px;
+    background: linear-gradient(90deg, #4c1d95, #7c3aed, #22d3ee);
+    border: 1px solid var(--border); }
   #ramp { height: 8px; margin: 6px 0 4px;
     background: linear-gradient(90deg, #3b4658, #fbbf24, #fa4616, #ef4444);
     border: 1px solid var(--border); }
@@ -233,6 +236,7 @@
   .sb-name { color: var(--foreground); font-size: 12.5px; letter-spacing: 0.1em; text-transform: uppercase; word-break: break-all; }
   .sb-kind { font-size: 9.5px; letter-spacing: 0.24em; text-transform: uppercase; margin-top: 2px; }
   .sb-path { color: var(--foreground-muted); font-size: 9.5px; margin-top: 5px; word-break: break-all; letter-spacing: 0.02em; }
+  .sb-note { color: var(--accent-muted); font-size: 9.5px; margin-top: 4px; word-break: break-word; letter-spacing: 0.04em; }
   .sb-grid {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 8px;
     margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-subtle);
@@ -303,6 +307,26 @@
     box-shadow: 0 0 10px var(--orange); border: 0; border-radius: 0;
   }
   #tl-range::-moz-range-thumb { width: 3px; height: 30px; background: var(--orange); border: 0; border-radius: 0; }
+
+  /* Range start handle — Strata mode only. It sits over #tl-range, so the track
+     stays inert and only the thumb takes the pointer; clicks anywhere else on
+     the bar still move the cursor handle underneath. */
+  #tl-start { display: none; }
+  #timeline.ranged #tl-start {
+    display: block;
+    position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+    appearance: none; background: transparent; pointer-events: none;
+  }
+  #tl-start::-webkit-slider-runnable-track { height: 30px; background: transparent; }
+  #tl-start::-webkit-slider-thumb {
+    appearance: none; width: 7px; height: 30px; background: var(--accent-muted);
+    box-shadow: 0 0 10px var(--accent-muted); border: 0; border-radius: 0;
+    pointer-events: auto; cursor: ew-resize;
+  }
+  #tl-start::-moz-range-thumb {
+    width: 7px; height: 30px; background: var(--accent-muted); border: 0; border-radius: 0;
+    pointer-events: auto; cursor: ew-resize;
+  }
 
   /* --- command palette (⌘P / ⌘F) */
   #palette {
@@ -393,7 +417,7 @@
     <nav id="breadcrumb" class="panel"></nav>
     <div id="stats" class="panel">
       <div>FILES <b id="stat-files">0</b></div>
-      <div>MODULES <b id="stat-modules">0</b></div>
+      <div><span id="stat-modules-label">MODULES</span> <b id="stat-modules">0</b></div>
       <div>LOC <b id="stat-loc">0</b></div>
       <div>FPS <b id="stat-fps">—</b></div>
     </div>
@@ -408,6 +432,7 @@
         <button class="mode" data-mode="churn">Churn</button>
         <button class="mode" data-mode="fix">Fix hotspots</button>
         <button class="mode active" data-mode="recent">Recent focus</button>
+        <button class="mode" data-mode="strata">Strata</button>
       </div>
     </div>
 
@@ -452,6 +477,8 @@
     <div id="tl-track">
       <canvas id="tl-spark"></canvas>
       <input id="tl-range" type="range" min="0" max="1000" value="1000" step="1" />
+      <!-- range start: only Strata mode reveals it (see #timeline.ranged) -->
+      <input id="tl-start" type="range" min="0" max="1000" value="0" step="1" />
     </div>
   </div>
 

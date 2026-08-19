@@ -30,6 +30,11 @@ export interface Timeline {
   enabled: boolean;
   /** Time cursor in epoch seconds, or null when live ("now"). */
   cursor: number | null;
+  /**
+   * Start of the visible range in epoch seconds — only the second handle moves
+   * it, and only Strata mode shows that handle. Every other mode reads `min`.
+   */
+  start: number;
   playing: boolean;
   min: number;
   max: number;
@@ -40,6 +45,8 @@ export interface Timeline {
   lastTouchBefore(path: string, t: number): number;
   commitsNear(t: number, path?: string | null, limit?: number): TimelineCommit[];
   tick(dt: number): void;
+  /** Reveal (or hide) the range start handle. */
+  setRangeMode(on: boolean): void;
 }
 
 /**
@@ -49,11 +56,16 @@ export interface Timeline {
  */
 export function createTimeline(
   data: CityData,
-  handlers: { onChange?: (cursor: number | null) => void } = {}
+  handlers: {
+    onChange?: (cursor: number | null) => void;
+    /** Range start moved (Strata mode). */
+    onRange?: (start: number) => void;
+  } = {}
 ): Timeline {
   const commits = normalizeCommits(data);
   const bar = document.getElementById('timeline');
   const range = element('tl-range', HTMLInputElement);
+  const startRange = element('tl-start', HTMLInputElement);
   const play = element('tl-play', HTMLElement);
   const date = element('tl-date', HTMLElement);
   const meta = element('tl-meta', HTMLElement);
@@ -65,6 +77,7 @@ export function createTimeline(
   const tl: Timeline = {
     enabled: commits.length > 0,
     cursor: null,
+    start: 0,
     playing: false,
     min: 0,
     max: 0,
@@ -75,14 +88,15 @@ export function createTimeline(
     lastTouchBefore,
     commitsNear,
     tick,
+    setRangeMode,
   };
 
-  if (!tl.enabled || !first || !last || !bar || !range || !play || !date || !meta || !spark) {
+  if (!tl.enabled || !first || !last || !bar || !range || !play || !date || !meta || !spark || !startRange) {
     tl.enabled = false;
     if (bar) bar.classList.remove('on');
     return tl;
   }
-  const dom = { bar, range, play, date, meta, spark };
+  const dom = { bar, range, startRange, play, date, meta, spark };
 
   for (const c of commits) {
     for (const p of c.paths) {
@@ -96,6 +110,7 @@ export function createTimeline(
   tl.min = first.ts;
   tl.max = last.ts;
   if (tl.max <= tl.min) tl.max = tl.min + WEEK;
+  tl.start = tl.min;
 
   dom.bar.classList.add('on');
   drawSparkline(dom.spark, commits, tl.min, tl.max);
@@ -105,6 +120,15 @@ export function createTimeline(
   dom.range.addEventListener('input', () => {
     const f = Number(dom.range.value) / 1000;
     setCursor(f >= 0.999 ? null : tl.min + f * (tl.max - tl.min));
+  });
+  dom.startRange.addEventListener('input', () => {
+    const f = Number(dom.startRange.value) / 1000;
+    const at = tl.min + f * (tl.max - tl.min);
+    // The start handle can never pass the cursor: the range would be empty.
+    const ceiling = (tl.cursor ?? tl.max) - DAY;
+    tl.start = Math.min(at, Math.max(ceiling, tl.min));
+    renderRangeReadout();
+    handlers.onRange?.(tl.start);
   });
   dom.play.addEventListener('click', () => {
     tl.playing = !tl.playing;
@@ -186,7 +210,26 @@ export function createTimeline(
       dom.range.value = String(t === null ? 1000 : Math.round(((t - tl.min) / (tl.max - tl.min)) * 1000));
     }
     renderReadout();
+    renderRangeReadout();
     handlers.onChange?.(tl.cursor);
+  }
+
+  /** Strata mode owns the second handle; every other mode hides it. */
+  function setRangeMode(on: boolean): void {
+    if (!tl.enabled) return;
+    dom.bar.classList.toggle('ranged', on);
+    if (on) dom.startRange.value = String(Math.round(((tl.start - tl.min) / (tl.max - tl.min)) * 1000));
+    renderRangeReadout();
+  }
+
+  function renderRangeReadout(): void {
+    if (!dom.bar.classList.contains('ranged')) {
+      dom.meta.textContent = `${commits.length} COMMITS · 12MO`;
+      return;
+    }
+    const from = new Date(tl.start * 1000).toISOString().slice(0, 10).toUpperCase();
+    const to = tl.cursor === null ? 'NOW' : new Date(tl.cursor * 1000).toISOString().slice(0, 10).toUpperCase();
+    dom.meta.textContent = `RANGE ${from} → ${to}`;
   }
 
   function renderReadout(): void {
