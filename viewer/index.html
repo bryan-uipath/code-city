@@ -177,6 +177,26 @@
   #legend .row { display: flex; align-items: center; gap: 8px; padding: 2.5px 0; color: var(--foreground-muted); }
   #legend .sw { width: 11px; height: 11px; flex: none; border: 1px solid rgba(255,255,255,0.18); }
   #legend .row span { text-transform: uppercase; font-size: 10px; letter-spacing: 0.14em; }
+  /* Interactive rows: the commit-type swatches double as the strata filter. */
+  #legend .row.f { cursor: pointer; padding: 2.5px 4px; margin: 0 -4px; border: 1px solid transparent; }
+  #legend .row.f:hover { background: var(--surface-hover); border-color: var(--brand); color: var(--foreground); }
+  #legend .row.f.on {
+    border-color: var(--orange); color: #ffd9cd;
+    background: linear-gradient(90deg, rgba(250,70,22,0.26), rgba(250,70,22,0.04));
+  }
+  #legend .row.f.off { opacity: 0.4; }
+  #legend .fctl { display: flex; gap: 5px; margin: 7px 0 3px; }
+  #legend .fbtn {
+    appearance: none; flex: 1; cursor: pointer;
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--foreground-muted); background: rgba(39, 39, 42, 0.72);
+    border: 1px solid var(--border); padding: 4px 5px; transition: 120ms;
+  }
+  #legend .fbtn:hover { border-color: var(--brand); color: var(--foreground); background: var(--surface-hover); }
+  #legend .fbtn.on {
+    border-color: var(--orange); color: #ffd9cd;
+    background: linear-gradient(90deg, rgba(250,70,22,0.28), rgba(250,70,22,0.06));
+  }
   #strata-ramp { height: 8px; margin: 6px 0 4px;
     background: linear-gradient(90deg, #4c1d95, #7c3aed, #22d3ee);
     border: 1px solid var(--border); }
@@ -240,6 +260,7 @@
   .sb-kind { font-size: 9.5px; letter-spacing: 0.24em; text-transform: uppercase; margin-top: 2px; }
   .sb-path { color: var(--foreground-muted); font-size: 9.5px; margin-top: 5px; word-break: break-all; letter-spacing: 0.02em; }
   .sb-note { color: var(--accent-muted); font-size: 9.5px; margin-top: 4px; word-break: break-word; letter-spacing: 0.04em; }
+  .sb-note.filter { color: #ffd9cd; text-transform: uppercase; letter-spacing: 0.12em; font-size: 9px; }
   .sb-grid {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 8px;
     margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-subtle);
@@ -560,6 +581,7 @@
     <div><kbd>CLICK</kbd> select &nbsp; <kbd>DBL</kbd> isolate</div>
     <div><kbd>ESC</kbd> up one level &nbsp; <kbd>C</kbd> copy path</div>
     <div><kbd>&#8984;P</kbd> find file &nbsp; <kbd>&#8984;F</kbd> find in files</div>
+    <div><kbd>LEGEND</kbd> click a commit type to filter the strata</div>
   </div>
 
   <!-- right sidebar -->

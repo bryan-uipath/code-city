@@ -34,8 +34,10 @@ import { createSearch, type HighlightSpec, type SearchPalette, type SearchResult
 import type { TourTarget } from '../../shared/tour.js';
 import { createTour, type TourPlayer } from './tour.js';
 import {
-  buildStrataIndex, createStrata, commitTypePaint, COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
-  type StrataBuild, type StrataIndex, type StrataPaint, type StrataRecord,
+  buildStrataIndex, createStrata, commitTypePaint, commitTypeKey,
+  COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
+  type StrataBuild, type StrataCommit, type StrataIndex, type StrataPaint, type StrataRecord,
+  type LevelFilter,
 } from './strata.js';
 import { asVNode, type AnyKind, type VMod, type VNode } from './vtree.js';
 
@@ -384,8 +386,15 @@ const strata: {
   build: StrataBuild | null;
   dirty: boolean;
   acc: number;
+  /**
+   * The legend filter. `types` are commit-type swatch keys (see `commitTypeKey`);
+   * empty = no filter. `collapse` promotes the same set from a highlight (others
+   * ghost) to a massing predicate (others are not built at all).
+   */
+  filter: { types: Set<string>; collapse: boolean };
 } = {
   index: null, build: null, dirty: false, acc: 0,
+  filter: { types: new Set(), collapse: false },
 };
 /** Per-scope-file recency, recomputed (throttled) while scrubbing history. */
 const recency: { map: Map<VNode, { count: number; flash: number }>; dirty: boolean; acc: number } = {
@@ -1041,10 +1050,28 @@ function buildHud(): void {
   dom.modes.addEventListener('click', (e) => {
     const btn = closest(e.target, 'button.mode');
     if (!btn) return;
-    const mode = btn.dataset.mode;
-    if (!isMode(mode)) return;
+    const clicked = btn.dataset.mode;
+    if (!isMode(clicked)) return;
+    // "Fix hotspots" is a shortcut, not a paint: wherever there are stacks to
+    // filter it lands you in Strata with the fix swatch selected, which says the
+    // same thing per commit instead of per file. The old flat heat ramp is only
+    // the fallback for a city with no stacks (v1 data, or inside an isolate).
+    const asFixFilter = clicked === 'fix' && strata.build !== null;
+    const mode = asFixFilter ? 'strata' : clicked;
     state.mode = mode;
-    for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) b.classList.toggle('active', b === btn);
+    for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) {
+      b.classList.toggle('active', b.dataset.mode === mode);
+    }
+    if (asFixFilter) {
+      strata.filter.types.clear();
+      strata.filter.types.add('fix');
+      const wasCollapse = strata.filter.collapse;
+      strata.filter.collapse = false;
+      applyOverlay();
+      applyStrataFilter(wasCollapse);
+      showNotice('Fix hotspots · strata filtered to fix commits — "only" compresses to fix mass');
+      return;
+    }
     if (mode === 'strata' && !timeline.enabled) showNotice('Strata needs a commit stream — re-run the analyzer');
     if (mode === 'strata' && !strataActive() && timeline.enabled) {
       showNotice('Per-commit levels are city-level massing — Esc back out of this isolate');
@@ -1052,6 +1079,17 @@ function buildHud(): void {
     // The massing is shared, so switching mode is a recolor and nothing else.
     applyOverlay();
     renderLegend();
+  });
+
+  dom.legend.addEventListener('click', (e) => {
+    const ctl = closest(e.target, 'button.fbtn');
+    if (ctl) {
+      if (ctl.dataset.filter === 'clear') clearStrataFilter();
+      else if (ctl.dataset.filter === 'collapse') toggleFilterCollapse();
+      return;
+    }
+    const type = closest(e.target, '.row.f')?.dataset.type;
+    if (type) toggleFilterType(type);
   });
 
   dom.toggles.addEventListener('click', (e) => {
@@ -1102,11 +1140,19 @@ function renderLegend(): void {
       `<div class="row"><i class="sw" style="background:#1b2432"></i><span>dormant</span></div>`
     );
   } else if (state.mode === 'strata') {
-    // One level per commit, hue = the kind of change that commit was.
+    // One level per commit, hue = the kind of change that commit was — and each
+    // swatch is also the filter for that kind (see `toggleFilterType`).
+    const on = filterActive();
     for (const type of COMMIT_TYPE_ORDER) {
       const hex = '#' + (COMMIT_TYPE_COLORS[type] ?? PALETTE.cyan).toString(16).padStart(6, '0');
-      rows.push(`<div class="row"><i class="sw" style="background:${hex};box-shadow:0 0 8px ${hex}"></i><span>${type}</span></div>`);
+      const sel = strata.filter.types.has(type);
+      const cls = 'row f' + (sel ? ' on' : on ? ' off' : '');
+      rows.push(
+        `<div class="${cls}" data-type="${type}" title="Filter the stacks to ${type} commits">` +
+        `<i class="sw" style="background:${hex};box-shadow:0 0 8px ${hex}"></i><span>${type}</span></div>`
+      );
     }
+    rows.push(filterControlsHtml());
     rows.push(
       `<div id="strata-ramp"></div>`,
       `<div class="ramp-labels"><span>oldest</span><span>untyped · age</span><span>newest</span></div>`,
@@ -1120,13 +1166,36 @@ function renderLegend(): void {
       `<div id="ramp"></div>`,
       `<div class="ramp-labels"><span>0</span><span>${label}</span><span>${max}</span></div>`
     );
+    // Fix hotspots is a shortcut into the filtered strata everywhere it can be;
+    // this flat heat ramp is what is left when there are no stacks to filter.
+    if (state.mode === 'fix' && !stacked) {
+      rows.push(`<div class="row"><span>no stacks here — heat fallback</span></div>`);
+    }
   }
   // Strata mode names the massing in its own block; every other mode gets the
   // same footnote, because the shape on screen is the same shape.
   if (stacked && state.mode !== 'strata') {
     rows.push(`<div class="row"><span>level = commit · area = loc</span></div>`);
+    // The filter outlives the mode it was set in, so every mode can undo it.
+    if (filterActive()) {
+      rows.push(`<div class="row"><span>filter · ${[...strata.filter.types].join(' ')}</span></div>`);
+      rows.push(filterControlsHtml());
+    }
   }
   dom.legend.innerHTML = rows.join('');
+}
+
+/** The "only" / "clear" pair — present exactly while a filter is. */
+function filterControlsHtml(): string {
+  if (!filterActive()) return '';
+  const collapse = strata.filter.collapse;
+  return (
+    `<div class="fctl">` +
+    `<button type="button" class="fbtn${collapse ? ' on' : ''}" data-filter="collapse"` +
+    ` title="Drop every other level and recompress the stacks from the base">&#8676;&#8677; only</button>` +
+    `<button type="button" class="fbtn" data-filter="clear" title="Clear the filter (Esc)">clear</button>` +
+    `</div>`
+  );
 }
 
 function renderBreadcrumb(): void {
@@ -1281,6 +1350,10 @@ function applyStrataMode(): void {
     strata.build = null;
   }
   if (!on) {
+    // The filter is a query on the stacks; with no stacks it has nothing to say,
+    // and leaving it armed would surprise you on the way back out.
+    strata.filter.types.clear();
+    strata.filter.collapse = false;
     dom.statModulesLabel.textContent = 'MODULES';
     dom.statModules.textContent = fmt(city.moduleRecords.length);
     return;
@@ -1301,14 +1374,128 @@ function applyStrataMode(): void {
   updateStrata();
 }
 
-/** Refill the existing slabs for the current [start, cursor] range. */
+/** Refill the existing slabs for the current [start, cursor] range and filter. */
 function updateStrata(): void {
   const build = strata.build;
   if (!build) return;
-  build.update({ start: timeline.start, cursor: state.timeCursor });
+  build.update({ start: timeline.start, cursor: state.timeCursor }, collapsePredicate());
   dom.statModulesLabel.textContent = 'LEVELS';
-  dom.statModules.textContent = fmt(build.records.length);
+  dom.statModules.textContent = fmt(visibleLevels(build));
   paintStrata();
+}
+
+// ---------------------------------------------------------------------------
+// Strata filter — the legend's commit-type swatches, as a live query
+// ---------------------------------------------------------------------------
+
+/**
+ * How dark a level goes when the filter passes it over: enough that the color
+ * is gone, not so much that the silhouette is. The skyline must stay readable
+ * — the point of the highlight state is *where* the selected work sits inside
+ * the whole history, which needs the rest of the history to still be there.
+ */
+const FILTER_GHOST = 0.1;
+
+function filterActive(): boolean {
+  return strata.filter.types.size > 0;
+}
+
+/** Does this commit belong to one of the selected swatches? */
+function matchesFilter(commit: StrataCommit): boolean {
+  const key = commitTypeKey(commit);
+  return key !== null && strata.filter.types.has(key);
+}
+
+/** The massing predicate — non-null only while the filter is in COLLAPSE. */
+function collapsePredicate(): LevelFilter | null {
+  return strata.filter.collapse && filterActive() ? matchesFilter : null;
+}
+
+/** Levels the eye actually counts: matching ones while a filter is up. */
+function visibleLevels(build: StrataBuild): number {
+  if (!filterActive()) return build.records.length;
+  let n = 0;
+  for (const rec of build.records) if (rec.commit && matchesFilter(rec.commit)) n++;
+  return n;
+}
+
+/** A file's own share of the filter, for the inspector. */
+function filterMatchCount(node: VNode): { matched: number; total: number } | null {
+  const build = strata.build;
+  if (!build || !filterActive()) return null;
+  const path = realFileOf(node)?.path;
+  const history = path && strata.index ? strata.index.get(path) : null;
+  if (!history) return null;
+  const startTs = timeline.start;
+  const cursorTs = state.timeCursor ?? Infinity;
+  let matched = 0;
+  let total = 0;
+  for (const c of history) {
+    if (c.ts > cursorTs || c.ts < startTs) continue;
+    total++;
+    if (matchesFilter(c)) matched++;
+  }
+  return { matched, total };
+}
+
+/**
+ * Wrap a paint so unselected levels ghost out. This rides *on top of* whatever
+ * the mode paints, which is what keeps the filter orthogonal to the overlay:
+ * "fix levels, colored by churn" is a sentence the seam can already say.
+ */
+function ghostedPaint(paint: StrataPaint): StrataPaint {
+  return (record, age, target) => {
+    paint(record, age, target);
+    const commit = record.commit;
+    if (!commit || !matchesFilter(commit)) target.multiplyScalar(FILTER_GHOST);
+    return target;
+  };
+}
+
+/**
+ * Re-run the filter. A highlight is a pure recolor; a collapse is an
+ * `update()`-side rebuild, because it changes which levels exist at all — the
+ * same path a range drag takes, with one more predicate on it.
+ */
+function applyStrataFilter(rebuild: boolean): void {
+  const build = strata.build;
+  if (build) {
+    if (rebuild) updateStrata();
+    else {
+      dom.statModules.textContent = fmt(visibleLevels(build));
+      paintStrata();
+    }
+  }
+  renderLegend();
+  // The SELECTED block carries the per-file "N of M match" line, so it restates.
+  if (state.selection) sidebar.setSelection(describe(state.selection));
+}
+
+function toggleFilterType(type: string): void {
+  if (!strata.build) {
+    showNotice('The commit-type filter needs the strata massing — Esc back out to a folder');
+    return;
+  }
+  const types = strata.filter.types;
+  const wasCollapse = strata.filter.collapse;
+  if (types.has(type)) types.delete(type);
+  else types.add(type);
+  if (!types.size) strata.filter.collapse = false;
+  applyStrataFilter(wasCollapse || strata.filter.collapse);
+}
+
+function toggleFilterCollapse(): void {
+  if (!filterActive()) return;
+  strata.filter.collapse = !strata.filter.collapse;
+  applyStrataFilter(true);
+}
+
+function clearStrataFilter(): void {
+  if (!filterActive()) return;
+  const wasCollapse = strata.filter.collapse;
+  strata.filter.types.clear();
+  strata.filter.collapse = false;
+  applyStrataFilter(wasCollapse);
 }
 
 /** Dormant / untouched massing — the same tone the legend calls "dormant". */
@@ -1329,7 +1516,8 @@ function paintStrata(): void {
     return;
   }
   searchPaint.pulseStrata.length = 0;
-  build.recolor(state.mode === 'strata' ? commitTypePaint : metricStrataPaint());
+  const base = state.mode === 'strata' ? commitTypePaint : metricStrataPaint();
+  build.recolor(filterActive() ? ghostedPaint(base) : base);
 }
 
 /**
@@ -2609,12 +2797,16 @@ function describe(target: Target | null): Descriptor | null {
 
   // A strata level stands for one commit on that file — say which one.
   const level = target.level?.commit;
+  const match = filterMatchCount(node);
   return {
     name: mod ? mod.name : node.name,
     kind,
     kindColor: mod ? KIND_COLORS[mod.kind] ?? PALETTE.cyan : PALETTE.cyan,
     path: node.path,
     note: level ? `${level.h} · ${level.s}` : undefined,
+    filterNote: match
+      ? `${fmt(match.matched)} of ${fmt(match.total)} commits match filter (${[...strata.filter.types].join(' ')})`
+      : undefined,
     loc: mod ? mod.loc : node.loc,
     churn: node.churn,
     fixChurn: node.fixChurn,
@@ -2799,6 +2991,12 @@ function bindEvents(): void {
       // starts popping the focus stack.
       if (sidebar.hasSearch()) {
         setSearchResults(null);
+        return;
+      }
+      // A filter is a query laid over the current scope, so it comes off before
+      // the scope itself does — same rule as the search results above it.
+      if (filterActive()) {
+        clearStrataFilter();
         return;
       }
       const up = state.focus?.parent;

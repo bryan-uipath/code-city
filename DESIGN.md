@@ -42,6 +42,8 @@ zoom-out), like unfolding a hologram.
   **The mode never changes the massing** — at folder scope all five stand on the
   same strata stacks and only repaint them (see "Strata as the shared massing").
   Toggles: Coupling arcs · People/PRs.
+- Legend swatches (Strata): click a commit type to filter the stacks; "only"
+  compresses them to the matching commits (see "Strata filter").
 
 ## Data contract — `viewer/public/data.json`
 
@@ -142,6 +144,44 @@ recent work" is comparing two paints of one shape.
 - Cost: one `InstancedMesh` for the whole city, allocated for the widest range.
   flow-workbench (3.7k files / 17.7k levels) holds 60fps at org level, including
   timeline playback, which rewrites every matrix ~8×/s.
+
+## Strata filter — the legend as a query (implemented)
+
+The Strata legend's commit-type swatches are **controls**, not captions: click
+one and the city answers "where does this kind of work live". A filter is a
+second predicate on levels, sitting next to the time range, and the two compose
+— *"only fix strata in Q1"* is a sentence the seam can already say.
+
+- **Two states, one selection.** A selected set of types is a **highlight** by
+  default: matching levels keep the mode's paint, everything else drops to ~10%
+  brightness. The silhouette survives on purpose — the question is *where the
+  fix work sits inside the whole history*, which needs the whole history to
+  still be standing. The **"only"** toggle promotes the same set to a
+  **collapse**: non-matching levels are not built at all, stacks recompress from
+  the base, and height becomes "matching commits only" — a skyline of pure fix
+  mass. Multi-select accumulates (feat + fix).
+- **The split is the existing geometry/color split.** Highlight is `recolor()`
+  with the mode's paint wrapped in a ghosting pass (`ghostedPaint`); collapse is
+  a `LevelFilter` handed to `update()`, the same call a range drag makes, with
+  one more predicate on it. So a filter change is either a repaint or a refill —
+  never a rebuild, never a relayout. The LOC walk still steps through the
+  rejected commits, so a surviving slab keeps its true size at that moment.
+- **Fix hotspots is now a shortcut into this.** Wherever there are stacks to
+  filter, the mode button lands you in Strata with `fix` selected — per commit
+  instead of per file. The flat heat ramp remains only as the fallback for a
+  city with no stacks (v1 data, or inside a file isolate), and the legend says
+  so.
+- **Scope of a filter.** It outlives the overlay mode (every mode's legend can
+  clear it, and shows which types are armed), because the massing it changes is
+  shared. It does **not** outlive the massing: isolating into a file drops the
+  stacks, so the filter clears with them rather than lying in wait.
+- **Esc precedence**: palette > tour > search results > filter > scope pop. A
+  filter is a query laid over the current scope, so it comes off before the
+  scope does.
+- Stats and inspector follow: the LEVELS counter reports *visible* levels, and a
+  selected file gets `N of M commits match filter`. Hovering a ghosted level
+  still resolves and inspects normally. The search / tour highlight still
+  outranks the filter's ghosting — it replaces the paint outright.
 
 ## Strata buildings (implemented — the "Strata" render mode)
 

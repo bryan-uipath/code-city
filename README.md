@@ -15,6 +15,7 @@ The thesis: as more code is written by agents, we read less of it line-by-line. 
 - **City hierarchy** — repo → folder districts → file blocks → module buildings → (double-click) class members. Folder plates are **stepped terraces**: top-level districts sit visibly raised, and every nesting level is a shallower step on top of its parent. Double-click isolates and breaks down any level; Esc / breadcrumb chains the camera back out through each level it passes.
 - **Strata massing** — at city level a file *is* its history: one slab per commit, so height = commits and footprint = the file's size at that commit. Every mode stands on the same stacks and only repaints them, so switching overlays never reshuffles the skyline. A second timeline handle sets the range, so dragging it back grows the city out of its own history. Module buildings return the moment you isolate a file.
 - **Overlays** — structure (the file's dominant module kind; the kinds themselves resolve inside a file), churn (12-month commit heat), fix hotspots (bug-fix commits), recent focus (touched in the last 30 days — the default), and strata (each level colored by its conventional-commit type: feat cyan, fix red, refactor violet…).
+- **Strata filter** — in Strata the legend's type swatches are the controls: click `fix` and every fix level stays vivid while the rest ghost to silhouettes; hit **only** and the stacks recompress to their fix commits alone, turning the skyline into pure bug-fix mass. Multi-select accumulates, it composes with the timeline range ("only fix strata in Q1"), the stats and inspector report the filtered counts, and Esc clears the filter before it backs out a level. "Fix hotspots" is now a shortcut into it.
 - **People / PR layer** — open PRs as author avatars on light beams over the files they touch. Beam thickness scales with diff size, altitude with activity recency. Draft PRs render as orange scaffolding; files touched by 2+ PRs get red conflict cages.
 - **Coupling arcs** — directional import edges (animated flow importer → imported), aggregated per package when nothing is selected.
 - **History timeline** — scrub or play through the commit stream and watch activity flow across the city.
@@ -50,7 +51,8 @@ Requirements: Node 20+, git; optionally the [`gh` CLI](https://cli.github.com/) 
 | Hover | Inspect in sidebar (a hovered node links to its children's labels) |
 | Click | Select (pin details, coupling arcs) — plates, buildings, labels and terrace signs all pick |
 | Double-click | Isolate + break down that node |
-| Esc / breadcrumb | Back up a level |
+| Esc / breadcrumb | Clear an active strata filter, else back up a level |
+| Legend swatch (Strata) | Filter the stacks to that commit type; **only** collapses them to it |
 | `⌘P` / `⌘F` | Find a file or module / find in file contents |
 | `C` | Copy the selected node's repo-relative path |
 | `←` / `→` / `Esc` | Tour only: previous step / next step / exit the tour |
@@ -105,4 +107,4 @@ See [DESIGN.md](DESIGN.md) for the full metaphor, data contract, and style guide
 
 ## Status
 
-Early prototype, moving fast. Recently landed: a hierarchy-legibility pass (terraces, side-wall district signage, clickable labels, chained camera flights), the Working-tree layer, Strata as the shared massing across every mode, an incremental analyzer cache, guided tours, and markdown support. Current focus: core UX and fit & finish. Future: a VS Code extension over the existing `CityHost` seam (see DESIGN.md).
+Early prototype, moving fast. Recently landed: the interactive Strata filter (legend swatches as a live query, with collapse-to-matching massing), a hierarchy-legibility pass (terraces, side-wall district signage, clickable labels, chained camera flights), the Working-tree layer, Strata as the shared massing across every mode, an incremental analyzer cache, guided tours, and markdown support. Current focus: core UX and fit & finish. Future: a VS Code extension over the existing `CityHost` seam (see DESIGN.md).

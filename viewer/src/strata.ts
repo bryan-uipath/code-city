@@ -61,9 +61,28 @@ export const COMMIT_TYPE_COLORS: Record<string, number> = {
 /** Legend order — the types worth naming, deduped by color. */
 export const COMMIT_TYPE_ORDER = ['feat', 'fix', 'refactor', 'perf', 'test', 'docs', 'chore', 'ci'] as const;
 
+/** Types that share another type's swatch, so a filter on one catches both. */
+const TYPE_ALIAS: Record<string, string> = { bug: 'fix', bugfix: 'fix', hotfix: 'fix', build: 'ci' };
+const LEGEND_TYPES = new Set<string>(COMMIT_TYPE_ORDER);
+
 const TYPE_COLORS = new Map<string, THREE.Color>(
   Object.entries(COMMIT_TYPE_COLORS).map(([type, hex]) => [type, new THREE.Color(hex)])
 );
+
+/**
+ * Which legend swatch a commit belongs to — the key the legend filter works in.
+ * Aliases collapse onto the swatch they share a color with, and a fix-shaped
+ * subject with no type prefix still counts as `fix`, exactly as the paint does.
+ * `null` = no named type: the level keeps the age gradient and no swatch owns it.
+ */
+export function commitTypeKey(commit: StrataCommit): string | null {
+  const type = commit.type;
+  if (type !== null) {
+    const key = TYPE_ALIAS[type] ?? type;
+    if (LEGEND_TYPES.has(key)) return key;
+  }
+  return commit.fix ? 'fix' : null;
+}
 
 /** One commit as a file sees it: when, what it said, and how much it moved. */
 export interface StrataCommit {
@@ -100,13 +119,21 @@ export interface StrataRecord {
  */
 export type StrataPaint = (record: StrataRecord, age: number, target: THREE.Color) => THREE.Color;
 
+/**
+ * A predicate on levels, applied alongside the time range: commits it rejects
+ * are not built at all, so the stack recompresses from the base and its height
+ * becomes "matching commits only". The LOC walk still steps through the rejected
+ * commits, so the surviving slabs keep their true size-at-that-moment.
+ */
+export type LevelFilter = (commit: StrataCommit) => boolean;
+
 export interface StrataBuild {
   group: THREE.Group;
   mesh: THREE.InstancedMesh;
   /** Indexed by instance id; length tracks the live instance count. */
   records: StrataRecord[];
   /** Rebuild the stacks for a time range; cheap enough to call while dragging. */
-  update(range: { start: number; cursor: number | null }): void;
+  update(range: { start: number; cursor: number | null }, keep?: LevelFilter | null): void;
   /** Repaint the existing levels; omit `paint` to reapply the current one. */
   recolor(paint?: StrataPaint): void;
   /** Tallest stack in world units — used to frame selections. */
@@ -226,7 +253,7 @@ export function createStrata(
   update({ start: -Infinity, cursor: null });
   return build;
 
-  function update(range: { start: number; cursor: number | null }): void {
+  function update(range: { start: number; cursor: number | null }, keep?: LevelFilter | null): void {
     const cursorTs = range.cursor ?? Infinity;
     const startTs = Number.isFinite(range.start) ? range.start : bounds.min;
     // Age is normalized over the visible range, so the gradient always uses its
@@ -264,16 +291,20 @@ export function createStrata(
         const c = history[i];
         if (!c) break;
         if (c.ts < startTs) break; // history is newest-first: everything past here is older
-        const ratio = Math.min(Math.max(loc / baseLoc, MIN_AREA), 1);
-        const k = Math.sqrt(ratio); // ratio is an area, the slab scales by its side
-        pos.set(cx, top + level * LEVEL_HEIGHT, cz);
-        scale.set(baseW * k, SLAB_HEIGHT, baseH * k);
-        m.compose(pos, q, scale);
-        mesh.setMatrixAt(n, m);
-        ages[n] = Math.min(Math.max((c.ts - startTs) / span, 0), 1);
-        records[n] = { file: node, commit: c, level };
-        n++;
-        level++;
+        // A filtered-out commit still moved the file, so it still moves the LOC
+        // walk — it just gets no slab, and the stack closes over the gap.
+        if (!keep || keep(c)) {
+          const ratio = Math.min(Math.max(loc / baseLoc, MIN_AREA), 1);
+          const k = Math.sqrt(ratio); // ratio is an area, the slab scales by its side
+          pos.set(cx, top + level * LEVEL_HEIGHT, cz);
+          scale.set(baseW * k, SLAB_HEIGHT, baseH * k);
+          m.compose(pos, q, scale);
+          mesh.setMatrixAt(n, m);
+          ages[n] = Math.min(Math.max((c.ts - startTs) / span, 0), 1);
+          records[n] = { file: node, commit: c, level };
+          n++;
+          level++;
+        }
         loc = Math.max(loc - (c.adds - c.dels), 1);
       }
 

@@ -94,6 +94,8 @@ export interface Descriptor {
   recentChurn?: number;
   /** One extra line under the path — e.g. the commit a strata level stands for. */
   note?: string;
+  /** How this file sits inside the active strata filter — `3 of 41 commits match filter`. */
+  filterNote?: string;
   /** Replaces the default LOC/CHURN/FIX/RECENT grid (PR descriptors). */
   grid?: Array<[string, string | number]>;
   prs: Pr[];
@@ -336,6 +338,7 @@ export function createSidebar(
       `<div class="sb-kind" style="color:${cssColor(d.kindColor)}">${escapeHtml(d.kind || '')}</div>` +
       `<div class="sb-path">${escapeHtml(d.path || '—')}</div>` +
       (d.note ? `<div class="sb-note">${escapeHtml(d.note)}</div>` : '') +
+      (d.filterNote ? `<div class="sb-note filter">${escapeHtml(d.filterNote)}</div>` : '') +
       `<div class="sb-grid">${grid}</div>` +
       coupling
     );
