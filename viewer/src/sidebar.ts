@@ -10,6 +10,26 @@ import type { LogCommit, Pr, SourceResponse } from '../../shared/types.js';
 import { relTime, type Timeline } from './timeline.js';
 
 const MAX_COMMITS = 8;
+/** Commit rows shown before the "+N more" expander. */
+const COMMIT_PEEK = 5;
+const PR_PEEK = 6;
+
+/** How a working-tree path differs from HEAD. */
+export type WorkKind = 'modified' | 'untracked' | 'deleted';
+
+export interface WorkChange {
+  path: string;
+  kind: WorkKind;
+  /** False when the path has no plate in the city (new file, ignored root…). */
+  inCity: boolean;
+}
+
+/** The Working-tree layer's sidebar section; null hides it. */
+export interface WorkingTree {
+  changes: WorkChange[];
+  onSelect(path: string): void;
+  onRefresh(): void;
+}
 
 /** What main.ts hands over for one hovered / selected thing. */
 export interface Descriptor {
@@ -42,6 +62,8 @@ export interface Sidebar {
   setSelection(desc: Descriptor | null): void;
   /** Time cursor (epoch seconds or null) — re-renders the commit list. */
   setCursor(t: number | null): void;
+  /** Working-tree change list; null removes the section. */
+  setWorkingTree(view: WorkingTree | null): void;
 }
 
 export function createSidebar(
@@ -53,8 +75,9 @@ export function createSidebar(
 
   const secInspect = section('inspect');
   const secSelected = section('selected');
+  const secWork = section('worktree');
   const secCode = section('code');
-  body.append(secInspect, secSelected, secCode);
+  body.append(secInspect, secSelected, secWork, secCode);
 
   const state: {
     hover: Descriptor | null;
@@ -63,6 +86,10 @@ export function createSidebar(
     wide: boolean;
     codeToken: number;
     cursor: number | null;
+    /** PR numbers expanded to their full title in the SELECTED section. */
+    openPrs: Set<number>;
+    allCommits: boolean;
+    work: WorkingTree | null;
   } = {
     hover: null,
     selected: null,
@@ -71,6 +98,9 @@ export function createSidebar(
     wide: false,
     codeToken: 0,
     cursor: null,
+    openPrs: new Set(),
+    allCommits: false,
+    work: null,
   };
 
   widthBtn.addEventListener('click', () => {
@@ -78,8 +108,37 @@ export function createSidebar(
     applyWidth();
   });
 
+  // Compact rows expand in place rather than opening anything.
+  secSelected.addEventListener('click', (e) => {
+    const pr = closest(e.target, '.sb-pr[data-pr]');
+    if (pr) {
+      const n = Number(pr.dataset.pr);
+      if (state.openPrs.has(n)) state.openPrs.delete(n);
+      else state.openPrs.add(n);
+      renderSelected();
+      return;
+    }
+    if (closest(e.target, '.sb-more')) {
+      state.allCommits = !state.allCommits;
+      renderSelected();
+    }
+  });
+
+  secWork.addEventListener('click', (e) => {
+    const work = state.work;
+    if (!work) return;
+    if (closest(e.target, '#sb-work-refresh')) {
+      work.onRefresh();
+      return;
+    }
+    const row = closest(e.target, '.sb-work[data-path]');
+    const path = row?.dataset.path;
+    if (path) work.onSelect(path);
+  });
+
   renderInspect();
   renderSelected();
+  renderWork();
   secCode.style.display = 'none';
 
   return {
@@ -89,6 +148,8 @@ export function createSidebar(
     },
     setSelection(desc) {
       state.selected = desc;
+      state.openPrs.clear();
+      state.allCommits = false;
       renderSelected();
       loadCode(desc);
       applyWidth();
@@ -96,6 +157,10 @@ export function createSidebar(
     setCursor(t) {
       state.cursor = t;
       renderSelected();
+    },
+    setWorkingTree(view) {
+      state.work = view;
+      renderWork();
     },
   };
 
@@ -141,23 +206,32 @@ export function createSidebar(
     );
   }
 
+  /** One line per PR — `#3088 · title · @author · 3d` — full detail on click. */
   function prsHtml(prs: Pr[]): string {
     if (!prs.length) return '';
-    const rows = prs.slice(0, 6).map((pr) => {
+    const rows = prs.slice(0, PR_PEEK).map((pr) => {
+      const num = Number(pr.number) || 0;
+      const open = state.openPrs.has(num);
       const stats =
         Number.isFinite(pr.additions) || Number.isFinite(pr.deletions)
-          ? ` <span class="add">+${fmt(pr.additions || 0)}</span> <span class="del">&minus;${fmt(pr.deletions || 0)}</span>`
+          ? ` <span class="add">+${fmt(pr.additions || 0)}</span><span class="del">&minus;${fmt(pr.deletions || 0)}</span>`
           : '';
       const age = prAge(pr);
-      return (
-        `<div class="sb-pr"><span class="num">#${Number(pr.number) || 0}</span> ` +
-        `${escapeHtml(pr.title || '')}${pr.isDraft ? ' <span class="draft">DRAFT</span>' : ''}<br>` +
-        `<span class="who">@${escapeHtml(pr.author || '?')}</span>${stats}` +
-        (age ? ` <span class="age">· updated ${escapeHtml(age)}</span>` : '') +
-        `</div>`
-      );
+      const draft = pr.isDraft ? `<span class="draft">D</span>` : '';
+      const head =
+        `<span class="num">#${num}</span>` +
+        `<span class="ttl">${escapeHtml(open ? pr.title || '' : truncate(pr.title || '', 34))}</span>` +
+        draft +
+        `<span class="who">@${escapeHtml(pr.author || '?')}</span>` +
+        (age ? `<span class="age">${escapeHtml(shortAge(age))}</span>` : '') +
+        stats;
+      const detail = open
+        ? `<div class="det">${fmt(pr.files.length)} file${pr.files.length === 1 ? '' : 's'}` +
+          (age ? ` · updated ${escapeHtml(age)}` : '') + `</div>`
+        : '';
+      return `<div class="sb-pr${open ? ' open' : ''}" data-pr="${num}"><div class="ln">${head}</div>${detail}</div>`;
     });
-    const more = prs.length > 6 ? `<div class="sb-pr who">+${prs.length - 6} more</div>` : '';
+    const more = prs.length > PR_PEEK ? `<div class="sb-pr who">+${prs.length - PR_PEEK} more</div>` : '';
     return `<div class="sb-sub">${prs.length} open PR${prs.length > 1 ? 's' : ''}</div>` + rows.join('') + more;
   }
 
@@ -166,9 +240,10 @@ export function createSidebar(
     if (!list.length) return '';
     const t = state.cursor;
     const title = t === null ? 'Recent commits' : 'Commits near cursor';
-    const rows = list.slice(0, MAX_COMMITS).map((c) => {
+    const shown = state.allCommits ? list.slice(0, MAX_COMMITS) : list.slice(0, COMMIT_PEEK);
+    const rows = shown.map((c) => {
       const near = t !== null && Math.abs(c.ts - t) < 2 * 86400;
-      const when = t === null ? relTime(c.ts) : new Date(c.ts * 1000).toISOString().slice(0, 10);
+      const when = t === null ? shortAge(relTime(c.ts)) : new Date(c.ts * 1000).toISOString().slice(5, 10);
       const shortHash = String(c.h || '').slice(0, 7).replace(/[^0-9a-f]/gi, '');
       const github = opts.githubUrl;
       const hashHtml = github && /^https:\/\/github\.com\//.test(github)
@@ -176,12 +251,51 @@ export function createSidebar(
         : `<span class="h">${shortHash}</span>`;
       return (
         `<div class="sb-commit${near ? ' near' : ''}">` +
-        `${hashHtml} ` +
-        `<span class="when">${escapeHtml(when)}</span> · ${escapeHtml(truncate(c.s || '', 96))} ` +
-        `<span class="who">${escapeHtml(c.a || '')}</span></div>`
+        `${hashHtml}<span class="msg">${escapeHtml(truncate(c.s || '', 44))}</span>` +
+        `<span class="who">${escapeHtml(c.a || '')}</span>` +
+        `<span class="when">${escapeHtml(when)}</span></div>`
       );
     });
-    return `<div class="sb-sub">${title}</div>` + rows.join('');
+    const hidden = Math.min(list.length, MAX_COMMITS) - shown.length;
+    const more = hidden > 0 || state.allCommits
+      ? `<div class="sb-more">${state.allCommits ? '− less' : `+${hidden} more`}</div>`
+      : '';
+    return `<div class="sb-sub">${title}</div>` + rows.join('') + more;
+  }
+
+  // --- working tree --------------------------------------------------------
+
+  function renderWork(): void {
+    const work = state.work;
+    if (!work) {
+      secWork.style.display = 'none';
+      secWork.innerHTML = '';
+      return;
+    }
+    secWork.style.display = '';
+    const head =
+      `<div class="h"><span>Working tree</span>` +
+      `<button id="sb-work-refresh" type="button" title="Re-read git status">&#8635;</button></div>`;
+    if (!work.changes.length) {
+      secWork.innerHTML = head + `<div class="sb-hint">Clean</div>`;
+      return;
+    }
+    const order: WorkKind[] = ['modified', 'untracked', 'deleted'];
+    const parts: string[] = [];
+    for (const kind of order) {
+      const rows = work.changes.filter((c) => c.kind === kind);
+      if (!rows.length) continue;
+      parts.push(`<div class="sb-sub">${kind} · ${rows.length}</div>`);
+      for (const c of rows.slice(0, 60)) {
+        parts.push(
+          `<div class="sb-work ${kind}${c.inCity ? '' : ' ghost'}" data-path="${escapeHtml(c.path)}">` +
+          `<span class="nm">${escapeHtml(baseName(c.path))}</span>` +
+          `<span class="dir">${escapeHtml(dirName(c.path))}</span></div>`
+        );
+      }
+      if (rows.length > 60) parts.push(`<div class="sb-hint">+${rows.length - 60} more</div>`);
+    }
+    secWork.innerHTML = head + parts.join('');
   }
 
   function commitsFor(d: Descriptor): LogCommit[] {
@@ -331,6 +445,21 @@ function requireEl(id: string): HTMLElement {
 
 function baseName(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);
+}
+
+function dirName(path: string): string {
+  const i = path.lastIndexOf('/');
+  return i < 0 ? '' : path.slice(0, i);
+}
+
+/** "3d ago" -> "3d", so a compact row survives on one line. */
+function shortAge(rel: string): string {
+  return rel.replace(/\s*ago$/, '');
+}
+
+/** `Element.closest` from an event target that may not be an element at all. */
+function closest(target: EventTarget | null, selector: string): HTMLElement | null {
+  return target instanceof Element ? target.closest<HTMLElement>(selector) : null;
 }
 
 export function escapeHtml(s: string): string {

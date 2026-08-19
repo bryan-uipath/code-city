@@ -135,6 +135,18 @@ export interface DiffResponse {
   diff: string;
 }
 
+/** One `git status --porcelain` entry: `x` = index status, `y` = worktree. */
+export interface StatusChange {
+  path: string;
+  x: string;
+  y: string;
+  untracked: boolean;
+}
+
+export interface StatusResponse {
+  changes: StatusChange[];
+}
+
 export interface SearchMatch {
   path: string;
   line: number;

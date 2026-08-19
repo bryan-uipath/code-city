@@ -24,7 +24,11 @@ import {
   type Arc, type ArcFlow, type CityBuild, type ModuleRecord,
 } from './city.js';
 import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
-import { createSidebar, escapeHtml, type Descriptor, type Sidebar } from './sidebar.js';
+import { createTerraceSigns, type TerraceSigns } from './terrace.js';
+import {
+  createSidebar, escapeHtml,
+  type Descriptor, type Sidebar, type WorkChange, type WorkKind,
+} from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
 import { createSearch, type HighlightSpec, type SearchPalette } from './search.js';
 import {
@@ -77,6 +81,7 @@ const state: {
   coupling: boolean;
   people: boolean;
   fx: boolean;
+  worktree: boolean;
   focus: VNode | null;
   selection: Target | null;
   hover: Target | null;
@@ -89,6 +94,7 @@ const state: {
   coupling: false,
   people: true,
   fx: true,
+  worktree: false,
   /** Node whose subtree is currently rendered (real folder/file or synthetic module). */
   focus: null,
   /** { node, rec|null } pinned by click. */
@@ -125,6 +131,7 @@ const dom = {
   legend: requireEl('legend-body'),
   modes: requireEl('modes'),
   toggles: requireEl('toggles'),
+  worktreeBtn: requireEl('toggle-worktree'),
 };
 
 // Index structures (built once, over the real tree)
@@ -162,8 +169,10 @@ let city: CityBuild | null = null;
 let envGroup: THREE.Group;
 let peopleGroup: THREE.Group;
 let scaffoldGroup: THREE.Group;
+let worktreeGroup: THREE.Group;
 let stage: THREE.Group;
 let labeler: Labeler;
+let terraceSigns: TerraceSigns;
 let sidebar: Sidebar;
 let timeline: Timeline;
 let search: SearchPalette | null = null;
@@ -178,6 +187,8 @@ const pointer = new THREE.Vector2();
 let pointerDirty = false;
 let pointerInside = false;
 let pickables: THREE.Object3D[] = [];
+/** Labels and terrace signs — rebuilt every pick, they come and go on their own. */
+const overlayPickables: THREE.Object3D[] = [];
 
 // Scratch objects — never allocate inside the render loop.
 const _m4 = new THREE.Matrix4();
@@ -187,7 +198,26 @@ const _scale = new THREE.Vector3();
 const _color = new THREE.Color();
 const _dim = new THREE.Color();
 
-const flight = { active: false, t: 0, dur: 1.1, fromPos: new THREE.Vector3(), toPos: new THREE.Vector3(), fromTarget: new THREE.Vector3(), toTarget: new THREE.Vector3() };
+/** One camera pose: where it sits and what it orbits. */
+interface Framing {
+  pos: THREE.Vector3;
+  target: THREE.Vector3;
+}
+
+/**
+ * Camera flight along a chain of framings. A single-level move is a two-point
+ * path interpolated *around the pivot* (target lerps, the offset slerps and its
+ * length blends geometrically) so the view swings rather than re-centring; a
+ * multi-level jump appends the framing of every level it passes through, and
+ * one global ease carries the camera through all of them without a stop.
+ */
+const flight: { active: boolean; t: number; dur: number; from: Framing; points: Framing[] } = {
+  active: false,
+  t: 0,
+  dur: 1.1,
+  from: { pos: new THREE.Vector3(), target: new THREE.Vector3() },
+  points: [],
+};
 /** Scope transition: the new scene starts mapped onto the old footprint and unfolds. */
 const transition: { t: number; k0: number; p0: THREE.Vector3; mats: Array<{ m: THREE.Material; base: number }> } = {
   t: 1, k0: 1, p0: new THREE.Vector3(), mats: [],
@@ -273,6 +303,12 @@ async function main(): Promise<void> {
 
   requestAnimationFrame(() => dom.boot.classList.add('hide'));
   if (state.usingFake) showNotice('No data.json — showing synthetic demo city');
+
+  // The Working-tree layer needs a live git; on a static export there is none,
+  // so the toggle only appears once the endpoint has answered.
+  void host.getStatus().then((res) => {
+    if (res) dom.worktreeBtn.style.display = '';
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +577,14 @@ function buildStaticScene(): void {
   scaffoldGroup.name = 'scaffolding';
   stage.add(scaffoldGroup);
 
+  worktreeGroup = new THREE.Group();
+  worktreeGroup.name = 'worktree';
+  worktreeGroup.visible = false;
+  stage.add(worktreeGroup);
+
+  terraceSigns = createTerraceSigns(camera);
+  stage.add(terraceSigns.group);
+
   selectionBox = makeSelectionBox(PALETTE.orange);
   hoverBox = makeSelectionBox(PALETTE.cyan);
   scene.add(selectionBox, hoverBox);
@@ -561,7 +605,9 @@ interface Footprint {
  * Rects are recomputed on every transition, so no level keeps stale world
  * coordinates from another level's layout.
  */
-function rebuildScene(opts: { instant?: boolean; anchor?: VNode | null } = {}): void {
+function rebuildScene(
+  opts: { instant?: boolean; anchor?: VNode | null; via?: Framing[]; viaUpFrom?: VNode | null } = {}
+): void {
   const focus = state.focus;
   if (!focus) return;
   const from = opts.anchor ? footprintOf(opts.anchor, scope.root) : null;
@@ -582,6 +628,8 @@ function rebuildScene(opts: { instant?: boolean; anchor?: VNode | null } = {}): 
   indexScope();
   applyStrataMode();
   buildPeopleLayer();
+  terraceSigns.setNodes(terraceSignNodes());
+  applyWorktreeLayer();
   applySearchLayerMute();
 
   if (state.selection && state.selection.type !== 'pr' && !scope.nodes.has(state.selection.node)) {
@@ -603,7 +651,11 @@ function rebuildScene(opts: { instant?: boolean; anchor?: VNode | null } = {}): 
   renderLegend();
 
   startTransition(from, opts.anchor ? footprintOf(opts.anchor, root) : null);
-  flyTo(root, opts.instant);
+  // Zooming out, the levels we pass through only exist in the layout that was
+  // just built, so their framings are collected here rather than by the caller.
+  const upFrom = opts.viaUpFrom;
+  const via = upFrom ? chainFramings(upFrom, focus, { descend: false }) : opts.via;
+  flyTo(root, { instant: opts.instant, via });
 }
 
 /**
@@ -619,7 +671,7 @@ function footprintOf(node: VNode, root: VNode | null): Footprint | null {
   if (!r) return null;
   return {
     cx: r.x + r.w / 2,
-    cy: plateTop(target.depth ?? 0, target.type === 'file'),
+    cy: plateTop(target.tier ?? target.depth ?? 0, target.type === 'file'),
     cz: r.z + r.h / 2,
     size: (r.w + r.h) / 2,
   };
@@ -727,6 +779,10 @@ function buildHud(): void {
     const btn = closest(e.target, 'button.toggle');
     if (!btn) return;
     const key = btn.dataset.toggle;
+    if (key === 'worktree') {
+      setWorktree(!state.worktree);
+      return;
+    }
     if (key !== 'coupling' && key !== 'people' && key !== 'fx') return;
     state[key] = !state[key];
     btn.classList.toggle('active', state[key]);
@@ -897,6 +953,8 @@ function applyOverlay(): void {
     }
     if (folderPlates.instanceColor) folderPlates.instanceColor.needsUpdate = true;
   }
+
+  paintWorktree();
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +1042,7 @@ function applySearchLayerMute(): void {
   const show = state.people && !searchPaint.on;
   peopleGroup.visible = show;
   scaffoldGroup.visible = show;
+  worktreeGroup.visible = state.worktree && !searchPaint.on;
 }
 
 /** Matches glow white-cyan (brighter with weight), everything else goes dark. */
@@ -1040,6 +1099,116 @@ function pulseSearchCursor(t: number): void {
   _hl.copy(SEARCH_HL).multiplyScalar(k);
   for (const rec of searchPaint.pulseRecs) rec.mesh.setColorAt(rec.instanceId, _hl);
   for (const mesh of searchPaint.pulseMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------------------
+// Working-tree layer — the "now" end of the time spectrum
+// ---------------------------------------------------------------------------
+
+const WORKTREE_AMBER = new THREE.Color(0xfbbf24);
+const WORKTREE_UNTRACKED = 0x4ade80;
+const WORKTREE_DELETED = 0xef4444;
+
+/** Uncommitted changes, from `git status --porcelain` via the host. */
+const worktree: { changes: WorkChange[]; byPath: Map<string, WorkKind> } = {
+  changes: [],
+  byPath: new Map(),
+};
+
+async function refreshWorktree(): Promise<void> {
+  const res = await host.getStatus();
+  if (!res) {
+    showNotice('Working tree needs the dev server');
+    setWorktree(false);
+    return;
+  }
+  worktree.changes = [];
+  worktree.byPath.clear();
+  for (const c of res.changes) {
+    const kind: WorkKind = c.untracked ? 'untracked'
+      : c.x === 'D' || c.y === 'D' ? 'deleted'
+      : 'modified';
+    const inCity = index.filesByPath.has(c.path);
+    worktree.changes.push({ path: c.path, kind, inCity });
+    if (inCity) worktree.byPath.set(c.path, kind);
+  }
+  pushWorktreeToSidebar();
+  applyWorktreeLayer();
+  applyOverlay();
+}
+
+function setWorktree(on: boolean): void {
+  state.worktree = on;
+  dom.worktreeBtn.classList.toggle('active', on);
+  if (on) {
+    void refreshWorktree();
+    return;
+  }
+  worktree.changes = [];
+  worktree.byPath.clear();
+  pushWorktreeToSidebar();
+  applyWorktreeLayer();
+  applyOverlay(); // restore whatever overlay was underneath
+}
+
+function pushWorktreeToSidebar(): void {
+  sidebar.setWorkingTree(
+    state.worktree
+      ? {
+          changes: worktree.changes,
+          onSelect: (path) => { revealPath(path); },
+          onRefresh: () => { void refreshWorktree(); },
+        }
+      : null
+  );
+}
+
+/** Ghost outlines for the files that are not simply "modified in place". */
+function applyWorktreeLayer(): void {
+  clearGroup(worktreeGroup);
+  worktreeGroup.visible = state.worktree && !searchPaint.on;
+  if (!state.worktree) return;
+
+  const untracked: VNode[] = [];
+  const deleted: VNode[] = [];
+  for (const [path, kind] of worktree.byPath) {
+    if (kind === 'modified') continue;
+    const node = scope.byRealPath.get(path);
+    if (!node || !node.rect) continue;
+    (kind === 'untracked' ? untracked : deleted).push(node);
+  }
+  const green = buildScaffolding(untracked, WORKTREE_UNTRACKED);
+  if (green) { green.userData.pulseRate = 1.5; worktreeGroup.add(green); }
+  const red = buildScaffolding(deleted, WORKTREE_DELETED);
+  if (red) { red.userData.pulseRate = 3.4; worktreeGroup.add(red); }
+}
+
+/**
+ * A recolor pass on top of the active overlay: only the modified files change,
+ * so churn/recent/structure still read underneath. Search highlight outranks it.
+ */
+function paintWorktree(): void {
+  if (!city || !state.worktree || !worktree.byPath.size) return;
+  let touched = false;
+  for (const rec of city.moduleRecords) {
+    const real = realFileOf(rec.file);
+    if (!real || worktree.byPath.get(real.path) !== 'modified') continue;
+    rec.mesh.setColorAt(rec.instanceId, WORKTREE_AMBER);
+    touched = true;
+  }
+  if (touched) for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+
+  const filePlates = city.filePlates;
+  if (!filePlates) return;
+  let plateTouched = false;
+  for (const rec of city.fileRecords) {
+    const real = realFileOf(rec.node);
+    if (!real || worktree.byPath.get(real.path) !== 'modified') continue;
+    _color.copy(WORKTREE_AMBER).multiplyScalar(0.34);
+    filePlates.setColorAt(rec.instanceId, _color);
+    plateTouched = true;
+  }
+  if (plateTouched && filePlates.instanceColor) filePlates.instanceColor.needsUpdate = true;
 }
 
 /**
@@ -1276,7 +1445,7 @@ function packageArcs(): Arc[] {
 function nodeAnchor(node: VNode): THREE.Vector3 | null {
   const r = node.rect;
   if (!r) return null;
-  const y = plateTop(node.depth ?? 0, node.type === 'file') + (node.type === 'file' ? 4 : 2);
+  const y = plateTop(node.tier ?? node.depth ?? 0, node.type === 'file') + (node.type === 'file' ? 4 : 2);
   return new THREE.Vector3(r.x + r.w / 2, y, r.z + r.h / 2);
 }
 
@@ -1307,7 +1476,7 @@ function buildPeopleLayer(): void {
       if (!rect) continue;
       cx += rect.x + rect.w / 2;
       cz += rect.z + rect.h / 2;
-      const plate = plateTop(n.depth ?? 0, n.type === 'file');
+      const plate = plateTop(n.tier ?? n.depth ?? 0, n.type === 'file');
       top = Math.max(top, plate + tallest(n));
       if (targets.length < 20) targets.push(new THREE.Vector3(rect.x + rect.w / 2, plate, rect.z + rect.h / 2));
     }
@@ -1424,10 +1593,19 @@ function boxHeightFor(node: VNode): number {
 function focusNode(node: VNode | null | undefined, opts: { instant?: boolean } = {}): void {
   if (!node || node === state.focus) return;
   const prev = state.focus;
-  const anchor = prev && isDescendantOf(node, prev) ? node : prev;
+  const down = !!prev && isDescendantOf(node, prev);
+  const anchor = down ? node : prev;
+  // Drilling in, the intermediate levels only exist in the layout that is about
+  // to be replaced, so their framings are captured before the rebuild.
+  const via = !opts.instant && down && prev ? chainFramings(prev, node, { descend: true }) : undefined;
   state.focus = node;
   index.groupMaps.clear();
-  rebuildScene({ ...opts, anchor: opts.instant ? null : anchor });
+  rebuildScene({
+    ...opts,
+    anchor: opts.instant ? null : anchor,
+    via,
+    viaUpFrom: !opts.instant && !down && prev ? prev : null,
+  });
 
   if (state.selection) sidebar.setSelection(describe(state.selection));
   else setSelection({ type: node.type, node, rec: null });
@@ -1438,10 +1616,11 @@ function isDescendantOf(node: VNode, ancestor: VNode): boolean {
   return false;
 }
 
-function flyTo(node: VNode, instant?: boolean): void {
+/** The camera pose that frames a node in the layout it currently belongs to. */
+function framingFor(node: VNode): Framing | null {
   const r = node.rect;
-  if (!r) return;
-  const target = new THREE.Vector3(r.x + r.w / 2, plateTop(node.depth ?? 0, node.type === 'file'), r.z + r.h / 2);
+  if (!r) return null;
+  const target = new THREE.Vector3(r.x + r.w / 2, plateTop(node.tier ?? node.depth ?? 0, node.type === 'file'), r.z + r.h / 2);
   const extent = Math.max(r.w, r.h, 12);
   const vFov = (camera.fov * Math.PI) / 180;
   const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
@@ -1470,21 +1649,96 @@ function flyTo(node: VNode, instant?: boolean): void {
   const slide = -shift * dist * Math.tan(hFov / 2);
   target.addScaledVector(right, slide);
   pos.addScaledVector(right, slide);
+  return { pos, target };
+}
 
-  if (instant) {
-    camera.position.copy(pos);
-    controls.target.copy(target);
+/**
+ * Fly to a node, optionally through the framings of the levels in between.
+ * @param opts.via framings to pass through, in travel order
+ */
+function flyTo(node: VNode, opts: { instant?: boolean; via?: Framing[] } = {}): void {
+  const to = framingFor(node);
+  if (!to) return;
+
+  if (opts.instant) {
+    camera.position.copy(to.pos);
+    controls.target.copy(to.target);
     controls.update();
     flight.active = false;
     return;
   }
-  flight.fromPos.copy(camera.position);
-  flight.toPos.copy(pos);
-  flight.fromTarget.copy(controls.target);
-  flight.toTarget.copy(target);
+
+  flight.from.pos.copy(camera.position);
+  flight.from.target.copy(controls.target);
+  // Drop waypoints the camera is effectively already at — a zero-length segment
+  // would eat a slice of the eased parameter and stall the move.
+  const points: Framing[] = [];
+  let prev = flight.from;
+  for (const f of opts.via ?? []) {
+    if (f.pos.distanceTo(prev.pos) + f.target.distanceTo(prev.target) < 6) continue;
+    points.push(f);
+    prev = f;
+  }
+  points.push(to);
+
+  flight.points = points;
   flight.t = 0;
-  flight.dur = 0.75;
+  flight.dur = Math.min(0.75 + 0.28 * (points.length - 1), 1.7);
   flight.active = true;
+}
+
+/**
+ * Framings of the levels strictly between `from` and `to`, in travel order,
+ * evaluated against whatever layout is loaded right now.
+ */
+function chainFramings(from: VNode, to: VNode, opts: { descend: boolean }): Framing[] {
+  const stop = opts.descend ? from : to;
+  const between: VNode[] = [];
+  for (let n = opts.descend ? to.parent : from.parent; n && n !== stop; n = n.parent ?? null) {
+    // Only levels that are actually laid out right now have a real framing.
+    if (!scope.nodes.has(n)) break;
+    between.push(n);
+  }
+  if (opts.descend) between.reverse(); // parent chain runs deep -> shallow
+  const out: Framing[] = [];
+  for (const n of between.slice(0, 4)) {
+    const f = framingFor(n);
+    if (f) out.push(f);
+  }
+  return out;
+}
+
+const _oa = new THREE.Vector3();
+const _ob = new THREE.Vector3();
+const _da = new THREE.Vector3();
+const _db = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+
+/**
+ * Interpolate between two framings around their (moving) pivot: the target
+ * lerps, the camera offset slerps in direction and blends geometrically in
+ * length. A straight positional lerp would dive through the city and make the
+ * view snap to a new centre; this reads as one continuous orbit + dolly.
+ */
+function interpFraming(a: Framing, b: Framing, f: number, outPos: THREE.Vector3, outTarget: THREE.Vector3): void {
+  outTarget.lerpVectors(a.target, b.target, f);
+  _oa.subVectors(a.pos, a.target);
+  _ob.subVectors(b.pos, b.target);
+  const da = Math.max(_oa.length(), 1e-3);
+  const db = Math.max(_ob.length(), 1e-3);
+  _da.copy(_oa).divideScalar(da);
+  _db.copy(_ob).divideScalar(db);
+
+  const dot = Math.min(Math.max(_da.dot(_db), -1), 1);
+  const ang = Math.acos(dot);
+  if (ang < 1e-3) {
+    _dir.copy(_db);
+  } else {
+    const s = Math.sin(ang);
+    _dir.copy(_da).multiplyScalar(Math.sin((1 - f) * ang) / s).addScaledVector(_db, Math.sin(f * ang) / s);
+    _dir.normalize();
+  }
+  outPos.copy(outTarget).addScaledVector(_dir, da * Math.pow(db / da, f));
 }
 
 // ---------------------------------------------------------------------------
@@ -1541,6 +1795,39 @@ function describe(target: Target | null): Descriptor | null {
 // Labels
 // ---------------------------------------------------------------------------
 
+/**
+ * The folders whose names are cut into their terrace side wall (top two tiers).
+ * They are deliberately excluded from the floating label pills: the wall is the
+ * more legible, more permanent piece of signage.
+ */
+const signedNodes = new Set<VNode>();
+
+function terraceSignNodes(): VNode[] {
+  signedNodes.clear();
+  const root = scope.root;
+  // Inside a file/module isolate the "districts" are identifiers, not places.
+  if (!root || root.synth) return [];
+  const base = groupingRoot() ?? root;
+  for (const a of base.children || []) {
+    if (a.type !== 'folder' || !a.rect) continue;
+    signedNodes.add(a);
+    for (const b of a.children || []) {
+      if (b.type === 'folder' && b.rect) signedNodes.add(b);
+    }
+  }
+  return [...signedNodes];
+}
+
+/** The labeler key for a node, also used to link parents to their children. */
+function labelKey(node: VNode): string {
+  return node.path + (node.type === 'file' ? '|f' : '|d');
+}
+
+function parentLabelKey(node: VNode): string | null {
+  const p = node.parent;
+  return p && scope.nodes.has(p) ? labelKey(p) : null;
+}
+
 function updateLabelCandidates(): void {
   if (!city || !scope.root) return;
   const list: LabelCandidate[] = [];
@@ -1551,16 +1838,21 @@ function updateLabelCandidates(): void {
     if (size < 3) return;
     const isFile = n.type === 'file';
     if (!isFile && n === scope.root && scope.root.depth === 0 && (n.children || []).length === 1) return;
+    if (!isFile && signedNodes.has(n)) return; // its name is on the terrace wall
     list.push({
-      key: n.path + (isFile ? '|f' : '|d'),
-      text: String(n.name).toUpperCase(),
+      key: labelKey(n),
+      // Place names are city signage; file names are identifiers.
+      text: isFile ? String(n.name) : String(n.name).toUpperCase(),
       tier: isFile ? 'file' : 'folder',
       pos: new THREE.Vector3(
         n.rect.x + n.rect.w / 2,
-        plateTop(n.depth ?? 0, isFile) + (isFile ? 5 : 9 + (n.depth ?? 0)),
+        plateTop(n.tier ?? n.depth ?? 0, isFile) + (isFile ? 5 : 9 + (n.depth ?? 0)),
         n.rect.z + n.rect.h / 2
       ),
       size,
+      node: n,
+      rec: null,
+      parentKey: parentLabelKey(n),
     });
   });
 
@@ -1572,14 +1864,30 @@ function updateLabelCandidates(): void {
     if (many && (!selNode || realFileOf(rec.file) !== selNode)) continue;
     list.push({
       key: rec.file.path + '#' + rec.mod.name,
-      text: String(rec.mod.name).toUpperCase(),
+      text: String(rec.mod.name),
       tier: 'module',
       pos: new THREE.Vector3(rec.center.x, (rec.file.top ?? 0) + rec.height + 2.5, rec.center.z),
       size: Math.max(rec.height, 3),
+      node: rec.file,
+      rec,
+      parentKey: labelKey(rec.file),
     });
   }
 
   labeler.setCandidates(list);
+  updateLeaderFocus();
+}
+
+/** Leader lines follow whatever the pointer or the selection is pointing at. */
+function updateLeaderFocus(): void {
+  const keys: string[] = [];
+  for (const t of [state.hover, state.selection]) {
+    if (!t || t.type === 'pr') continue;
+    const node = t.rec ? t.rec.file : t.node;
+    const key = labelKey(node);
+    if (!keys.includes(key)) keys.push(key);
+  }
+  labeler.setFocusKeys(keys);
 }
 
 // ---------------------------------------------------------------------------
@@ -1677,8 +1985,13 @@ function updateHover(): void {
     return;
   }
   raycaster.setFromCamera(pointer, camera);
-  const hits = raycaster.intersectObjects(pickables, false);
-  const first = hits[0];
+  // Signage draws over everything, so it also wins the pick: a name you can
+  // read is a name you can click.
+  overlayPickables.length = 0;
+  for (const o of labeler.pickables()) overlayPickables.push(o);
+  for (const o of terraceSigns.pickables()) overlayPickables.push(o);
+  const first = raycaster.intersectObjects(overlayPickables, false)[0]
+    ?? raycaster.intersectObjects(pickables, false)[0];
   setHover(first ? resolveHit(first) : null);
 }
 
@@ -1687,6 +2000,13 @@ function resolveHit(hit: THREE.Intersection): Target | null {
   const o = hit.object;
   const id = hit.instanceId;
   const build = strata.build;
+  // A label / terrace sign resolves to whatever it names.
+  if (o.userData.pickType === 'label' || o.userData.pickType === 'terrace') {
+    const node: VNode | undefined = o.userData.node;
+    if (!node) return null;
+    const rec: ModuleRecord | null = o.userData.rec ?? null;
+    return rec ? { type: 'module', rec, node: rec.file } : { type: node.type, node, rec: null };
+  }
   if (build && o === build.mesh) {
     const level = id === undefined ? undefined : build.records[id];
     return level ? { type: 'file', node: level.file, rec: null, level } : null;
@@ -1721,6 +2041,7 @@ function setHover(hit: Target | null): void {
   state.hover = hit;
   document.body.style.cursor = hit ? 'pointer' : 'default';
   highlightPrLinks();
+  updateLeaderFocus();
 
   if (!hit) {
     hoverBox.visible = false;
@@ -1765,9 +2086,12 @@ function animate(): void {
 
   if (flight.active) {
     flight.t = Math.min(flight.t + dt / flight.dur, 1);
-    const e = easeInOutCubic(flight.t);
-    camera.position.lerpVectors(flight.fromPos, flight.toPos, e);
-    controls.target.lerpVectors(flight.fromTarget, flight.toTarget, e);
+    const n = flight.points.length;
+    const x = easeInOutCubic(flight.t) * n;
+    const i = Math.min(Math.floor(x), n - 1);
+    const a = i === 0 ? flight.from : flight.points[i - 1];
+    const b = flight.points[i];
+    if (a && b) interpFraming(a, b, x - i, camera.position, controls.target);
     if (flight.t >= 1) flight.active = false;
   }
 
@@ -1804,9 +2128,11 @@ function animate(): void {
   // and highlight boxes would all point at the wrong place.
   const settled = transition.t >= 1;
   labeler.group.visible = settled;
+  terraceSigns.group.visible = settled;
   if (settled) {
     updateHover();
     labeler.update(dt);
+    terraceSigns.update(dt);
   } else {
     hoverBox.visible = false;
     selectionBox.visible = false;
@@ -1814,10 +2140,12 @@ function animate(): void {
   updatePeople(t);
   if (arcFlow) arcFlow.update(t);
 
-  for (const c of scaffoldGroup.children) {
-    const rate = c.userData.pulseRate || 2.4;
-    const mat = 'material' in c ? c.material : null;
-    if (mat instanceof THREE.Material) mat.opacity = 0.42 + 0.34 * (0.5 + 0.5 * Math.sin(t * rate));
+  for (const group of [scaffoldGroup, worktreeGroup]) {
+    for (const c of group.children) {
+      const rate = c.userData.pulseRate || 2.4;
+      const mat = 'material' in c ? c.material : null;
+      if (mat instanceof THREE.Material) mat.opacity = 0.42 + 0.34 * (0.5 + 0.5 * Math.sin(t * rate));
+    }
   }
   pulseSearchCursor(t);
   if (settled && state.selection) refreshSelectionBox();

@@ -7,7 +7,7 @@
  * plus `openFile` to jump into the real editor.
  */
 import type {
-  CityData, DiffResponse, LogResponse, SearchResponse, SourceResponse,
+  CityData, DiffResponse, LogResponse, SearchResponse, SourceResponse, StatusResponse,
 } from './types.js';
 
 export interface CityHost {
@@ -19,6 +19,8 @@ export interface CityHost {
   getLog(path: string): Promise<LogResponse | null>;
   /** `git show <hash> -- <path>`, or null when unavailable. */
   getDiff(path: string, hash: string): Promise<DiffResponse | null>;
+  /** Uncommitted working-tree changes ("now"), or null when unavailable. */
+  getStatus(): Promise<StatusResponse | null>;
   /** Content search over the repo, or null when unavailable. */
   search(q: string): Promise<SearchResponse | null>;
   /** False once the git-backed endpoints have proven to be absent. */
@@ -58,6 +60,10 @@ export class HttpHost implements CityHost {
 
   getDiff(path: string, hash: string): Promise<DiffResponse | null> {
     return this.#getJson<DiffResponse>('/api/diff?' + new URLSearchParams({ path, h: hash }).toString());
+  }
+
+  getStatus(): Promise<StatusResponse | null> {
+    return this.#getJson<StatusResponse>('/api/status');
   }
 
   /**

@@ -5,7 +5,7 @@
  */
 import * as THREE from 'three';
 import type { Pr } from '../../shared/types.js';
-import { buildingHeight, plateTop, PLATE_THICKNESS } from './layout.js';
+import { buildingHeight, plateTop, plateThickness, PLATE_THICKNESS } from './layout.js';
 import type { AnyKind, VMod, VNode } from './vtree.js';
 
 // ---------------------------------------------------------------------------
@@ -195,9 +195,12 @@ function buildPlates(nodes: VNode[], isFile: boolean): { mesh: THREE.InstancedMe
     const r = n?.rect;
     if (!n || !r) continue;
     const depth = n.depth ?? 0;
-    const top = plateTop(depth, isFile);
-    pos.set(r.x + r.w / 2, top - PLATE_THICKNESS / 2, r.z + r.h / 2);
-    scale.set(r.w, PLATE_THICKNESS, r.h);
+    const tier = n.tier ?? depth;
+    const top = n.top ?? plateTop(tier, isFile);
+    // The wall reaches down to the parent terrace, so the stack reads as steps.
+    const thick = plateThickness(tier, isFile);
+    pos.set(r.x + r.w / 2, top - thick / 2, r.z + r.h / 2);
+    scale.set(r.w, thick, r.h);
     m.compose(pos, q, scale);
     mesh.setMatrixAt(i, m);
 
@@ -326,7 +329,7 @@ function buildOutlines(folders: VNode[], files: VNode[]): THREE.LineSegments | n
     const r = n.rect;
     if (!r) return;
     const depth = n.depth ?? 0;
-    const y = plateTop(depth, isFile) + 0.02;
+    const y = (n.top ?? plateTop(n.tier ?? depth, isFile)) + 0.02;
     const x0 = r.x;
     const x1 = r.x + r.w;
     const z0 = r.z;
@@ -381,7 +384,9 @@ export function makeLabelSprite(
   text: string,
   { color = '#a8f4ff', worldHeight = 12, glow = true }: { color?: string; worldHeight?: number; glow?: boolean } = {}
 ): THREE.Sprite {
-  const label = String(text || '').toUpperCase();
+  // Case is the caller's call: place names are uppercase city signage, but
+  // identifiers (files, modules) must read exactly as they are written.
+  const label = String(text || '');
   const canvas = document.createElement('canvas');
   const ctx = ctx2d(canvas);
   ctx.font = LABEL_FONT;
@@ -972,7 +977,8 @@ export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.ora
     const x1 = r.x + r.w + grow;
     const z0 = r.z - grow;
     const z1 = r.z + r.h + grow;
-    const y0 = plateTop(n.depth ?? 0, true) - PLATE_THICKNESS - 1;
+    const tier = n.tier ?? n.depth ?? 0;
+    const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1;
     const y1 = y0 + Math.max(tallestBuilding(n) + 6, 14);
 
     const c: Array<[number, number]> = [
@@ -1047,7 +1053,8 @@ export function frameNodeBox(box: THREE.LineSegments, node: VNode | null, height
   }
   const r = node.rect;
   const isFile = node.type === 'file';
-  const top = plateTop(node.depth ?? 0, isFile);
+  const tier = node.tier ?? node.depth ?? 0;
+  const top = plateTop(tier, isFile);
   const h = Math.max(height, 6);
   box.position.set(r.x + r.w / 2, top + h / 2 - PLATE_THICKNESS, r.z + r.h / 2);
   box.scale.set(r.w + 1.5, h, r.h + 1.5);

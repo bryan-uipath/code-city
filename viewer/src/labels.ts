@@ -10,7 +10,8 @@
  * Candidates are plain records supplied by main.ts.
  */
 import * as THREE from 'three';
-import { makeLabelSprite } from './city.js';
+import { makeLabelSprite, PALETTE, type ModuleRecord } from './city.js';
+import type { VNode } from './vtree.js';
 
 const PICK_INTERVAL = 0.15;   // seconds between re-selections
 const MAX_LABELS = 50;
@@ -18,6 +19,8 @@ const MIN_PX = 40;            // smaller than this is unreadable clutter
 const MAX_VIEW_FRACTION = 0.45; // bigger than this and you are "inside" it
 const FADE_RATE = 5.5;
 const CACHE_LIMIT = 180;
+const LEADER_FADE_RATE = 4;
+const LEADER_OPACITY = 0.5;
 
 export type LabelTier = 'folder' | 'file' | 'module';
 
@@ -27,12 +30,24 @@ export interface LabelCandidate {
   tier: LabelTier;
   pos: THREE.Vector3;
   size: number;
+  /** The thing this label names — labels are pickable like the geometry is. */
+  node: VNode;
+  rec: ModuleRecord | null;
+  /** Key of the label one level up, for the contextual leader lines. */
+  parentKey: string | null;
 }
 
 export interface Labeler {
   group: THREE.Group;
   setCandidates(list: LabelCandidate[]): void;
+  /**
+   * Labels whose children should be linked unconditionally (the hovered or
+   * selected node). Empty = leader lines only when exactly two tiers are up.
+   */
+  setFocusKeys(keys: string[]): void;
   update(dt: number): void;
+  /** Currently visible sprites, for the raycaster. */
+  pickables(): THREE.Object3D[];
   dispose(): void;
 }
 
@@ -53,18 +68,27 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
 
   const cache = new Map<string, CacheEntry>();
   const active = new Set<string>();    // keys currently chosen
+  const visible: THREE.Object3D[] = [];
   let candidates: LabelCandidate[] = [];
+  let focusKeys: string[] = [];
   let acc = PICK_INTERVAL;
 
   const _v = new THREE.Vector3();
   const boxes: number[] = [];          // reused screen-space rejection boxes
+  const leaders = makeLeaders();
+  group.add(leaders.lines);
 
-  return { group, setCandidates, update, dispose };
+  return { group, setCandidates, setFocusKeys, update, pickables, dispose };
 
   /** Replace the candidate set (called on focus/selection rebuilds). */
   function setCandidates(list: LabelCandidate[]): void {
     candidates = list || [];
     acc = PICK_INTERVAL; // re-pick on the next update
+  }
+
+  function setFocusKeys(keys: string[]): void {
+    focusKeys = keys;
+    acc = PICK_INTERVAL;
   }
 
   function update(dt: number): void {
@@ -74,6 +98,15 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
       pick();
     }
     fade(dt);
+    leaders.fade(dt);
+  }
+
+  function pickables(): THREE.Object3D[] {
+    visible.length = 0;
+    for (const entry of cache.values()) {
+      if (entry.sprite.visible && entry.sprite.material.opacity > 0.25) visible.push(entry.sprite);
+    }
+    return visible;
   }
 
   // --- selection -----------------------------------------------------------
@@ -98,7 +131,7 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
     scored.sort((a, b) => b.px - a.px);
 
     boxes.length = 0;
-    const chosen = new Set<string>();
+    const chosen = new Map<string, LabelCandidate>();
     for (const s of scored) {
       if (chosen.size >= MAX_LABELS) break;
       const fs = TIER_PX[s.c.tier] || 16;
@@ -108,13 +141,14 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
       const y0 = s.sy - h / 2;
       if (overlaps(x0, y0, w, h)) continue;
       boxes.push(x0, y0, w, h);
-      chosen.add(s.c.key);
+      chosen.set(s.c.key, s.c);
       show(s.c, s.dist, tanHalf, vh);
     }
 
     for (const key of active) if (!chosen.has(key)) hide(key);
     active.clear();
-    for (const key of chosen) active.add(key);
+    for (const key of chosen.keys()) active.add(key);
+    leaders.rebuild(chosen, focusKeys);
     evict();
   }
 
@@ -139,6 +173,7 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
       if (entry) destroy(entry);
       const sprite = makeLabelSprite(c.text, { color: TIER_COLOR[c.tier] || '#bdf3ff', worldHeight: 1 });
       sprite.userData.aspect = sprite.scale.x / sprite.scale.y;
+      sprite.userData.pickType = 'label';
       sprite.material.opacity = 0;
       sprite.visible = false;
       group.add(sprite);
@@ -149,6 +184,8 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
     const worldH = ((TIER_PX[c.tier] || 16) / vh) * 2 * dist * tanHalf;
     entry.sprite.scale.set(worldH * entry.sprite.userData.aspect, worldH, 1);
     entry.sprite.position.copy(c.pos);
+    entry.sprite.userData.node = c.node;
+    entry.sprite.userData.rec = c.rec;
     entry.sprite.userData.target = 1;
     entry.sprite.visible = true;
     entry.used = performance.now();
@@ -192,5 +229,94 @@ export function createLabeler(scene: THREE.Scene, camera: THREE.PerspectiveCamer
     for (const entry of cache.values()) destroy(entry);
     cache.clear();
     active.clear();
+    leaders.dispose();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parent -> child leader lines
+// ---------------------------------------------------------------------------
+
+interface Leaders {
+  lines: THREE.LineSegments;
+  /** Recompute the link set from the labels currently on screen. */
+  rebuild(chosen: Map<string, LabelCandidate>, focusKeys: string[]): void;
+  fade(dt: number): void;
+  dispose(): void;
+}
+
+/**
+ * Thin glowing links from a parent's label to its visible children's labels —
+ * shown only when a parent is hovered/selected, or when the view happens to be
+ * showing exactly two label tiers (the one moment containment is ambiguous and
+ * a full set of links still reads as structure rather than a hairball).
+ */
+function makeLeaders(): Leaders {
+  const MAX_LINKS = 120;
+  const positions = new Float32Array(MAX_LINKS * 6);
+  const geom = new THREE.BufferGeometry();
+  const attr = new THREE.BufferAttribute(positions, 3);
+  attr.setUsage(THREE.DynamicDrawUsage);
+  geom.setAttribute('position', attr);
+  geom.setDrawRange(0, 0);
+
+  const material = new THREE.LineBasicMaterial({
+    color: PALETTE.cyan,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest: false,
+  });
+  const lines = new THREE.LineSegments(geom, material);
+  lines.name = 'labelLeaders';
+  lines.frustumCulled = false;
+  lines.renderOrder = 19;
+  let target = 0;
+
+  return { lines, rebuild, fade, dispose };
+
+  function rebuild(chosen: Map<string, LabelCandidate>, focusKeys: string[]): void {
+    const tiers = new Set<LabelTier>();
+    for (const c of chosen.values()) tiers.add(c.tier);
+    const focus = focusKeys.length ? new Set(focusKeys) : null;
+    // Without a focused parent, only the two-tier view earns the full link set.
+    if (!focus && tiers.size !== 2) {
+      target = 0;
+      geom.setDrawRange(0, 0);
+      return;
+    }
+
+    let n = 0;
+    for (const c of chosen.values()) {
+      if (n >= MAX_LINKS) break;
+      const parentKey = c.parentKey;
+      if (!parentKey) continue;
+      if (focus && !focus.has(parentKey)) continue;
+      const parent = chosen.get(parentKey);
+      if (!parent) continue;
+      const i = n * 6;
+      positions[i] = parent.pos.x;
+      positions[i + 1] = parent.pos.y;
+      positions[i + 2] = parent.pos.z;
+      positions[i + 3] = c.pos.x;
+      positions[i + 4] = c.pos.y;
+      positions[i + 5] = c.pos.z;
+      n++;
+    }
+    attr.needsUpdate = true;
+    geom.setDrawRange(0, n * 2);
+    target = n ? LEADER_OPACITY : 0;
+  }
+
+  function fade(dt: number): void {
+    const k = Math.min(dt * LEADER_FADE_RATE, 1);
+    material.opacity += (target - material.opacity) * k;
+    lines.visible = material.opacity > 0.02;
+  }
+
+  function dispose(): void {
+    geom.dispose();
+    material.dispose();
   }
 }

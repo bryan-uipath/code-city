@@ -12,14 +12,15 @@ The thesis: as more code is written by agents, we read less of it line-by-line. 
 
 ## Features
 
-- **City hierarchy** — repo → folder districts → file blocks → module buildings → (double-click) class members. Double-click isolates and breaks down any level; Esc / breadcrumb zooms back out.
+- **City hierarchy** — repo → folder districts → file blocks → module buildings → (double-click) class members. Folder plates are **stepped terraces**: top-level districts sit visibly raised, and every nesting level is a shallower step on top of its parent. Double-click isolates and breaks down any level; Esc / breadcrumb chains the camera back out through each level it passes.
 - **Overlays** — structure (kind colors), churn (12-month commit heat), fix hotspots (bug-fix commits), recent focus (touched in the last 30 days — the default).
 - **Strata mode** — buildings become one slab per commit: height = commits, footprint = the file's size at that commit, each level colored by its conventional-commit type (feat cyan, fix red, refactor violet…). A second timeline handle sets the range, so dragging it back grows the city out of its own history.
 - **People / PR layer** — open PRs as author avatars on light beams over the files they touch. Beam thickness scales with diff size, altitude with activity recency. Draft PRs render as orange scaffolding; files touched by 2+ PRs get red conflict cages.
 - **Coupling arcs** — directional import edges (animated flow importer → imported), aggregated per package when nothing is selected.
 - **History timeline** — scrub or play through the commit stream and watch activity flow across the city.
-- **Inspector sidebar** — stats, open PRs, recent commits, and actual source/diff snippets for the selected node (dev server only).
-- **Map-style labels** — names scope dynamically to what's in view, districts → files → buildings, like a map engine.
+- **Working-tree layer** — what is uncommitted *right now*: modified files glow amber, untracked files get green ghost outlines, deletions red, with the change list in the sidebar (click to fly there) and a refresh button. Dev server only.
+- **Inspector sidebar** — stats, open PRs (one compact line each, click to expand), recent commits, and actual source/diff snippets for the selected node (dev server only).
+- **Map-style labels** — names scope dynamically to what's in view, districts → files → buildings, like a map engine. The top folder tiers are signed on their terrace side walls instead; every label is clickable (click selects, double-click isolates) and links to its children when you hover it.
 
 All analysis is local: the analyzer runs on your machine and the data never leaves it. The only network calls are optional `gh` PR lookups and GitHub avatar images.
 
@@ -44,8 +45,8 @@ Requirements: Node 20+, git; optionally the [`gh` CLI](https://cli.github.com/) 
 | Input | Action |
 |---|---|
 | Drag / middle-drag / wheel | Orbit / pan / zoom |
-| Hover | Inspect in sidebar |
-| Click | Select (pin details, coupling arcs) |
+| Hover | Inspect in sidebar (a hovered node links to its children's labels) |
+| Click | Select (pin details, coupling arcs) — plates, buildings, labels and terrace signs all pick |
 | Double-click | Isolate + break down that node |
 | Esc / breadcrumb | Back up a level |
 | `C` | Copy the selected node's repo-relative path |
@@ -76,4 +77,4 @@ See [DESIGN.md](DESIGN.md) for the full metaphor, data contract, and style guide
 
 ## Status
 
-Early prototype, moving fast. Recently landed: Strata mode and an incremental analyzer cache (re-analysis reuses the processed commit stream, keyed by repo root under `.codecity/`). In progress: a VS Code extension (the city as a webview, click a building to open the file).
+Early prototype, moving fast. Recently landed: a hierarchy-legibility pass (terraces, side-wall district signage, clickable labels, chained camera flights), the Working-tree layer, Strata mode and an incremental analyzer cache (re-analysis reuses the processed commit stream, keyed by repo root under `.codecity/`). In progress: a VS Code extension (the city as a webview, click a building to open the file).

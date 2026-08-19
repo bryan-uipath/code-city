@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CODE CITY // codebase visualizer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='1' y='8' width='4' height='7' fill='%2322d3ee'/><rect x='6' y='4' width='4' height='11' fill='%230891b2'/><rect x='11' y='10' width='4' height='5' fill='%23fa4616'/></svg>" />
 <style>
   /* ---------------------------------------------------------------- base */
   /* Apollo "Future" design language — future-dark theme.
@@ -129,7 +130,8 @@
   }
   #breadcrumb::-webkit-scrollbar { display: none; }
   #breadcrumb .crumb {
-    color: var(--foreground); text-transform: uppercase; cursor: pointer;
+    /* Path segments are identifiers — no uppercase transform. */
+    color: var(--foreground); cursor: pointer;
     padding: 3px 7px; border: 1px solid transparent; transition: 120ms;
   }
   #breadcrumb .crumb:hover { border-color: var(--brand); color: var(--foreground); background: var(--surface-overlay); }
@@ -233,7 +235,8 @@
   .sb-sec > .h em { font-style: normal; color: var(--foreground-subtle); letter-spacing: 0.12em; }
   .sb-hint { color: var(--foreground-muted); font-size: 10px; opacity: 0.65; letter-spacing: 0.1em; }
 
-  .sb-name { color: var(--foreground); font-size: 12.5px; letter-spacing: 0.1em; text-transform: uppercase; word-break: break-all; }
+  /* Data-derived: identifiers render exactly as they are written in the code. */
+  .sb-name { color: var(--foreground); font-size: 12.5px; letter-spacing: 0.06em; word-break: break-all; }
   .sb-kind { font-size: 9.5px; letter-spacing: 0.24em; text-transform: uppercase; margin-top: 2px; }
   .sb-path { color: var(--foreground-muted); font-size: 9.5px; margin-top: 5px; word-break: break-all; letter-spacing: 0.02em; }
   .sb-note { color: var(--accent-muted); font-size: 9.5px; margin-top: 4px; word-break: break-word; letter-spacing: 0.04em; }
@@ -245,20 +248,59 @@
   .sb-grid .v { color: var(--accent-muted); font-size: 13px; }
 
   .sb-sub { color: var(--foreground-muted); font-size: 9px; letter-spacing: 0.2em; margin: 10px 0 4px; text-transform: uppercase; }
-  .sb-pr { font-size: 10px; color: var(--foreground); line-height: 1.55; margin-bottom: 4px; }
-  .sb-pr .num { color: var(--orange); }
-  .sb-pr .who { color: var(--foreground-muted); }
-  .sb-pr .draft { color: var(--orange); border: 1px solid rgba(250,70,22,0.5); padding: 0 3px; font-size: 8.5px; letter-spacing: 0.12em; }
-  .sb-pr .add { color: var(--green); }
-  .sb-pr .del { color: #ef4444; }
-  .sb-pr .age { color: var(--foreground-muted); font-size: 9px; }
+  /* --- compact PR / commit rows (one line, expand on click) */
+  .sb-pr { font-size: 10px; color: var(--foreground); cursor: pointer; padding: 1px 0; letter-spacing: 0.02em; }
+  .sb-pr:hover { background: rgba(8,145,178,0.12); }
+  .sb-pr > .ln { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; overflow: hidden; }
+  /* Expanded: the full title claims its own line, the metadata wraps under it. */
+  .sb-pr.open > .ln { white-space: normal; flex-wrap: wrap; }
+  .sb-pr.open .ttl { flex: 1 1 100%; overflow: visible; }
+  .sb-pr .num { color: var(--orange); flex: none; }
+  .sb-pr .ttl { color: var(--foreground); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .sb-pr .who { color: var(--foreground-muted); flex: none; }
+  .sb-pr .draft {
+    flex: none; color: var(--orange); border: 1px solid rgba(250,70,22,0.5);
+    padding: 0 2px; font-size: 8px; letter-spacing: 0.06em;
+  }
+  .sb-pr .add { color: var(--green); flex: none; }
+  .sb-pr .del { color: #ef4444; flex: none; }
+  .sb-pr .age { color: var(--foreground-subtle); font-size: 9px; flex: none; margin-left: auto; }
+  .sb-pr .det { color: var(--foreground-muted); font-size: 9px; padding: 1px 0 3px 14px; }
 
-  .sb-commit { font-size: 9.5px; color: var(--foreground); line-height: 1.5; margin-bottom: 3px; letter-spacing: 0.02em; }
-  .sb-commit .h { color: var(--orange); font-size: 9.5px; letter-spacing: 0.05em; display: inline; text-decoration: none; }
-  a.sb-commit .h:hover, .sb-commit a.h:hover { text-decoration: underline; }
-  .sb-commit .when { color: var(--foreground-muted); }
-  .sb-commit .who { color: var(--violet); }
+  .sb-commit {
+    font-size: 9.5px; color: var(--foreground); letter-spacing: 0.02em; padding: 1px 0;
+    display: flex; align-items: baseline; gap: 6px; white-space: nowrap; overflow: hidden;
+  }
+  .sb-commit .h { color: var(--orange); flex: none; text-decoration: none; }
+  .sb-commit a.h:hover { text-decoration: underline; }
+  .sb-commit .msg { overflow: hidden; text-overflow: ellipsis; }
+  .sb-commit .when { color: var(--foreground-subtle); flex: none; margin-left: auto; }
+  .sb-commit .who { color: var(--violet); flex: none; }
   .sb-commit.near { background: rgba(8,145,178,0.18); }
+  .sb-more {
+    font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; cursor: pointer;
+    color: var(--accent-muted); opacity: 0.8; padding: 3px 0 1px;
+  }
+  .sb-more:hover { opacity: 1; text-decoration: underline; }
+
+  /* --- working-tree layer */
+  #sb-worktree > .h button {
+    appearance: none; cursor: pointer; font-family: var(--mono); font-size: 11px; line-height: 1;
+    color: var(--accent-muted); background: var(--surface-overlay);
+    border: 1px solid var(--border); padding: 1px 5px;
+  }
+  #sb-worktree > .h button:hover { background: var(--surface-hover); color: var(--foreground); border-color: var(--brand); }
+  .sb-work {
+    display: flex; align-items: baseline; gap: 6px; cursor: pointer;
+    font-size: 9.5px; padding: 1px 3px; white-space: nowrap; overflow: hidden; letter-spacing: 0.02em;
+  }
+  .sb-work:hover { background: rgba(8,145,178,0.14); }
+  .sb-work .nm { flex: none; }
+  .sb-work .dir { color: var(--foreground-subtle); overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+  .sb-work.modified .nm { color: #fbbf24; }
+  .sb-work.untracked .nm { color: var(--green); }
+  .sb-work.deleted .nm { color: #ef4444; text-decoration: line-through; }
+  .sb-work.ghost { opacity: 0.55; cursor: default; }
 
   .sb-code {
     max-height: 260px; overflow: auto; margin-top: 6px;
@@ -442,6 +484,7 @@
         <button class="toggle" data-toggle="coupling">Coupling arcs<i class="led"></i></button>
         <button class="toggle active" data-toggle="people">People / PRs<i class="led"></i></button>
         <button class="toggle active" data-toggle="fx">FX / hologram<i class="led"></i></button>
+        <button class="toggle" data-toggle="worktree" id="toggle-worktree" style="display:none">Working tree<i class="led"></i></button>
       </div>
     </div>
 

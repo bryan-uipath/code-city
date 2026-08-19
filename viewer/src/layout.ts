@@ -26,6 +26,7 @@ export interface Cell extends Rect {
  * Mutates each node, assigning:
  *   node.rect  = { x, z, w, h }   world-space footprint
  *   node.depth = number           0 for root
+ *   node.tier  = number           terrace tier (depth, minus pass-through levels)
  *   node.top   = number           Y of the walkable top surface of its plate
  * File nodes additionally get node.plots = [{ mod, x, z, w, h }].
  *
@@ -35,7 +36,7 @@ export interface Cell extends Rect {
  */
 export function layoutCity(root: VNode, opts: { size?: number } = {}): VNode {
   const size = opts.size ?? 900;
-  layoutNode(root, { x: -size / 2, z: -size / 2, w: size, h: size }, 0);
+  layoutNode(root, { x: -size / 2, z: -size / 2, w: size, h: size }, 0, 0);
   return root;
 }
 
@@ -78,12 +79,44 @@ export function streetWidth(depth: number): number {
   return Math.min(Math.max(14 - depth * 3, 2), 14);
 }
 
-/** Y of the top surface of the plate belonging to a node at `depth`. */
-export function plateTop(depth: number, isFile: boolean): number {
-  return depth * 0.9 + (isFile ? 0.45 : 0);
+/**
+ * Terrace lift, in world units, going from one hierarchy tier to the next. The
+ * steps shrink with depth so top-level districts sit visibly raised off the
+ * ground and every nesting level below reads as a shallower terrace on top of
+ * its parent. `TIER_LIFT[i]` is the rise from tier `i` to tier `i + 1`.
+ */
+const TIER_LIFT = [10, 6, 3.4, 2, 1.3] as const;
+const TIER_LIFT_MIN = 0.9;
+
+/** The rise from `tier` to `tier + 1`. */
+export function tierLift(tier: number): number {
+  return TIER_LIFT[Math.max(tier, 0)] ?? TIER_LIFT_MIN;
+}
+
+/** How much higher a file plate rides than the folder terrace it sits on. */
+const FILE_RISE = 0.5;
+
+/** Y of the top surface of the plate belonging to a node at terrace `tier`. */
+export function plateTop(tier: number, isFile: boolean): number {
+  let y = 0;
+  for (let i = 0; i < tier; i++) y += tierLift(i);
+  return y + (isFile ? FILE_RISE : 0);
+}
+
+/**
+ * Plate thickness for a tier: a terrace's side wall reaches all the way down to
+ * its parent's surface, which is what makes the stack read as solid steps (and
+ * gives the side-wall signage a face to live on).
+ */
+export function plateThickness(tier: number, isFile: boolean): number {
+  const wall = tier <= 0 ? PLATE_THICKNESS : tierLift(tier - 1);
+  return wall + (isFile ? FILE_RISE : 0) + 0.02;
 }
 
 export const PLATE_THICKNESS = 0.55;
+
+/** Per-depth anti-coplanarity nudge; far below anything the eye can read. */
+const PLATE_EPSILON = 0.012;
 
 // ---------------------------------------------------------------------------
 // Recursive city layout
@@ -98,10 +131,13 @@ interface Entry {
   area: number;
 }
 
-function layoutNode(node: VNode, rect: Rect, depth: number): void {
+function layoutNode(node: VNode, rect: Rect, depth: number, tier: number): void {
   node.rect = rect;
   node.depth = depth;
-  node.top = plateTop(depth, node.type === 'file');
+  node.tier = tier;
+  // Pass-through levels share a tier, so nudge each depth by a hair: without it
+  // a repo -> packages wrapper would be exactly coplanar with its child.
+  node.top = plateTop(tier, node.type === 'file') + depth * PLATE_EPSILON;
 
   if (node.type === 'file') {
     node.plots = layoutModules(node, rect);
@@ -110,6 +146,9 @@ function layoutNode(node: VNode, rect: Rect, depth: number): void {
 
   const kids = node.children;
   if (!kids || !kids.length) return;
+  // A folder with a single child (repo -> packages) is a pass-through, not a
+  // terrace of its own: it would spend a whole tier step on no information.
+  const childTier = kids.length === 1 ? tier : tier + 1;
   if (rect.w < MIN_RECT * 2 || rect.h < MIN_RECT * 2) {
     // Too small to subdivide meaningfully — leave children unplaced.
     for (const k of kids) stripLayout(k);
@@ -137,7 +176,7 @@ function layoutNode(node: VNode, rect: Rect, depth: number): void {
       stripLayout(child);
       continue;
     }
-    layoutNode(child, shrunk, depth + 1);
+    layoutNode(child, shrunk, depth + 1, childTier);
   }
 }
 

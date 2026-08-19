@@ -71,6 +71,8 @@ export interface VNode {
   /** null when the node was too small to place at this extent. */
   rect?: Rect | null;
   depth?: number;
+  /** Terrace tier — depth minus pass-through (single-child) levels. */
+  tier?: number;
   /** Y of the walkable top surface of the node's plate. */
   top?: number;
   /** File nodes: one plot per module. */

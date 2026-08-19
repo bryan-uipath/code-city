@@ -177,25 +177,42 @@ docs green · test amber · perf pink · ci gray · unknown = age gradient.
   (API-dependent panes already hide themselves). Use cases: GitHub Pages,
   internal doc hubs, attaching a city snapshot to a PR or design doc.
 
-## Hierarchy legibility (planned — UX polish pass)
+## Hierarchy legibility (implemented — UX polish pass)
 
-At repo scale it's hard to tell a top-level package from folders nested inside
+At repo scale it was hard to tell a top-level package from folders nested inside
 it. The fixes, layered:
 
-- **Elevated terraces** — folder plate elevation steps by hierarchy tier, so
-  top-level districts sit visibly raised and nesting reads as stacked terraces.
-- **Side-wall names** — top 1–2 folder tiers get their names rendered on the
-  terrace side faces (plinth signage, camera-facing side); floating label pills
-  only from level 3 down. Top-level names most visible.
-- **Clickable labels** — every label joins the raycast set (click = select,
-  double-click = isolate).
-- **Parent→child label leader lines** — thin links from a parent's label to its
-  children's labels, shown contextually (parent hovered/selected, or when two
-  label tiers are visible) so containment is explicit without constant clutter.
-- **Smooth hierarchical zoom** — drill/back transitions chain through each
-  intermediate level instead of re-centering per jump.
-- Sidebar polish: condensed PR/commit rows (expand on demand); identifiers in
-  true case (no uppercase transform on data-derived names).
+- **Elevated terraces** — plate elevation steps by hierarchy *tier*, not depth:
+  `TIER_LIFT = [10, 6, 3.4, 2, 1.3]` world units (0.9 beyond), and a plate's
+  side wall reaches all the way down to its parent's surface, so the stack reads
+  as solid steps rather than floating slabs (`plateTop` / `plateThickness` in
+  `layout.ts`). A folder with a single child (repo → packages) is a
+  *pass-through*: it shares its child's tier instead of spending a whole step on
+  no information, with a per-depth 0.012 nudge so the two never z-fight.
+- **Side-wall names** (`viewer/src/terrace.ts`) — the top two folder tiers get
+  their names on the terrace side face: one canvas-texture plane per folder,
+  re-seated every 200ms onto whichever of the four faces currently points at the
+  camera, faded in by projected wall height. Those folders are dropped from the
+  floating label pills, which now start at tier 3.
+- **Clickable labels** — label sprites and side signs carry their node in
+  `userData` and are raycast *before* the geometry (they draw on top, so they
+  pick on top): click selects, double-click isolates.
+- **Parent→child label leader lines** — one dynamic `LineSegments` in the
+  labeler links a parent label to its visible children, shown only when that
+  parent is hovered/selected or when exactly two label tiers are on screen, and
+  cross-faded like the labels themselves.
+- **Smooth hierarchical zoom** — the camera flies along a *chain of framings*
+  under one global ease. A single-level move interpolates around the pivot
+  (target lerps, the camera offset slerps and blends its length geometrically),
+  so the view swings instead of re-centring; a multi-level jump inserts the
+  framing of every level it passes through — captured before the rebuild when
+  drilling in, after it when zooming out, since that is when those rects exist.
+  The unfold/fold stage transition is unchanged.
+- Sidebar: condensed one-line PR rows (`#3123 · title… · draft · @author · 2h ·
+  +adds −dels`, click for full title + file count) and commit rows (hash ·
+  subject · author · age, five then "+N more"); identifiers render in true case
+  (only panel titles stay uppercase). Same rule in 3D — folder names are
+  uppercase city signage, file and module names are identifiers.
 
 ## Markdown support (planned)
 
@@ -205,14 +222,24 @@ links and `[[wikilinks]]` (resolved by filename/slug); new `section` building
 kind. Churn/timeline/strata work unchanged — strata on a growing document is a
 natural fit.
 
-## Working-tree view (in progress)
+## Working-tree view (implemented)
 
-`GET /api/status` (implemented) returns `git status --porcelain` as
-`{changes: [{path, x, y, untracked}]}`. Viewer gains a "Working tree" layer:
-modified files glow amber, untracked render as ghost outlines, deletions as red
-voids; sidebar lists the changes; refresh on demand. Completes the time
-spectrum: strata → 12-month timeline → 30-day recent → open PRs → **now**.
-Dev-server (and future VS Code host) only; hidden on static exports.
+`GET /api/status` returns `git status --porcelain` as
+`{changes: [{path, x, y, untracked}]}`, reached through `CityHost.getStatus()`.
+The "Working tree" toggle in Layers completes the time spectrum: strata →
+12-month timeline → 30-day recent → open PRs → **now**.
+
+- **Modified** files glow amber (`#fbbf24`) — a recolor pass layered *on top of*
+  the active overlay, so churn/recent/structure still read underneath (the
+  search highlight outranks both, exactly as the PR layer does).
+- **Untracked** files get a green ghost outline where they have a plate; files
+  the analyzer never saw (new files, non-source paths, untracked directories)
+  appear in the sidebar list only. **Deleted** files get a red ghost while their
+  plate still exists.
+- The sidebar section groups the changes modified / untracked / deleted, each
+  row clickable (select + fly), with a refresh button that re-reads git.
+- The toggle only appears once `/api/status` has answered, so a static export
+  never shows a control it cannot serve.
 
 ## Tour SDK (planned — PR-review integration)
 
@@ -278,6 +305,8 @@ viewer/src/main.ts        # scene, interaction, overlays
 viewer/src/vtree.ts       # the viewer's augmented node type (layout, synthetic scopes)
 viewer/src/layout.ts      # squarified treemap layout
 viewer/src/city.ts        # geometry/instancing builders
+viewer/src/labels.ts      # map-style dynamic labels + parent->child leader lines
+viewer/src/terrace.ts     # district names on the terrace side walls
 viewer/src/strata.ts      # Strata mode: per-commit slab stacks + their paints
 viewer/public/data.json   # generated (gitignored)
 ```

@@ -240,7 +240,7 @@ export function createStrata(
     for (const { node, history } of stacks) {
       const rect = node.rect;
       if (!rect) continue;
-      const top = plateTop(node.depth ?? 0, node.type === 'file');
+      const top = plateTop(node.tier ?? node.depth ?? 0, node.type === 'file');
       const inset = Math.min(0.8, rect.w * 0.08, rect.h * 0.08);
       const baseW = Math.max(rect.w - inset * 2, 0.25);
       const baseH = Math.max(rect.h - inset * 2, 0.25);
