@@ -30,14 +30,14 @@ import {
   type Descriptor, type Sidebar, type WorkChange, type WorkKind,
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
-import { createSearch, type HighlightSpec, type SearchPalette } from './search.js';
+import { createSearch, type HighlightSpec, type SearchPalette, type SearchResultsPayload } from './search.js';
 import type { TourTarget } from '../../shared/tour.js';
 import { createTour, type TourPlayer } from './tour.js';
 import {
-  buildStrataIndex, createStrata, COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
-  type StrataBuild, type StrataIndex, type StrataRecord,
+  buildStrataIndex, createStrata, commitTypePaint, COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
+  type StrataBuild, type StrataIndex, type StrataPaint, type StrataRecord,
 } from './strata.js';
-import { asVNode, type VMod, type VNode } from './vtree.js';
+import { asVNode, type AnyKind, type VMod, type VNode } from './vtree.js';
 
 const MAX_ARCS = 150;
 const DAY = 86400;
@@ -56,7 +56,12 @@ let CITY_SIZE = 900;
 // State
 // ---------------------------------------------------------------------------
 
-/** `strata` is a render mode: it replaces buildings, the rest recolor them. */
+/**
+ * The mode never changes the massing — the stacked strata silhouette is shared
+ * by all five at folder scope (see `strataActive`). It only changes the PAINT:
+ * `strata` colors each level by its commit type, the other four color a file's
+ * whole stack by that file's metric.
+ */
 type Mode = 'structure' | 'churn' | 'fix' | 'recent' | 'strata';
 
 /** A node (or building) the pointer / selection is on. */
@@ -254,12 +259,14 @@ const searchPaint: {
   cursor: { path: string; mods: Set<string> | null } | null;
   pulseRecs: ModuleRecord[];
   pulseMeshes: THREE.InstancedMesh[];
+  pulseStrata: number[];
 } = {
   on: false,
   paths: null,
   cursor: null,
   pulseRecs: [],     // instance records under the keyboard cursor
   pulseMeshes: [],   // their meshes, for a single needsUpdate per frame
+  pulseStrata: [],   // strata instance ids under the cursor, same job
 };
 const SEARCH_HL = new THREE.Color(0xbdfcff);
 const _hl = new THREE.Color();
@@ -297,6 +304,7 @@ async function main(): Promise<void> {
     reveal: revealPath,
     notice: showNotice,
     search: (q) => host.search(q),
+    results: setSearchResults,
   });
 
   state.focus = state.root;
@@ -771,15 +779,12 @@ function buildHud(): void {
     state.mode = mode;
     for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) b.classList.toggle('active', b === btn);
     if (mode === 'strata' && !timeline.enabled) showNotice('Strata needs a commit stream — re-run the analyzer');
-    applyStrataMode();
     if (mode === 'strata' && !strataActive() && timeline.enabled) {
-      showNotice('Strata is a city-level mode — Esc back out of this isolate');
+      showNotice('Per-commit levels are city-level massing — Esc back out of this isolate');
     }
+    // The massing is shared, so switching mode is a recolor and nothing else.
     applyOverlay();
     renderLegend();
-    refreshPickables();
-    updateLabelCandidates();
-    refreshSelectionBox();
   });
 
   dom.toggles.addEventListener('click', (e) => {
@@ -814,12 +819,16 @@ function isMode(value: string | undefined): value is Mode {
 
 function renderLegend(): void {
   const rows: string[] = [];
+  const stacked = strata.build !== null;
   if (state.mode === 'structure') {
     const kinds = scope.root && scope.root.synth ? [...KIND_ORDER, ...MEMBER_ORDER] : [...KIND_ORDER];
     for (const kind of kinds) {
       const hex = '#' + KIND_COLORS[kind].toString(16).padStart(6, '0');
       rows.push(`<div class="row"><i class="sw" style="background:${hex};box-shadow:0 0 8px ${hex}"></i><span>${kind}</span></div>`);
     }
+    // At folder scope a whole stack takes its file's dominant kind; the kinds
+    // themselves become buildings once you isolate into the file.
+    if (stacked) rows.push(`<div class="row"><span>file = dominant kind · isolate for modules</span></div>`);
   } else if (state.mode === 'recent') {
     rows.push(
       `<div class="row"><i class="sw" style="background:#4ade80;box-shadow:0 0 8px #4ade80"></i><span>touched &lt; 30d</span></div>`,
@@ -844,6 +853,11 @@ function renderLegend(): void {
       `<div id="ramp"></div>`,
       `<div class="ramp-labels"><span>0</span><span>${label}</span><span>${max}</span></div>`
     );
+  }
+  // Strata mode names the massing in its own block; every other mode gets the
+  // same footnote, because the shape on screen is the same shape.
+  if (stacked && state.mode !== 'strata') {
+    rows.push(`<div class="row"><span>level = commit · area = loc</span></div>`);
   }
   dom.legend.innerHTML = rows.join('');
 }
@@ -912,6 +926,7 @@ function applyOverlay(): void {
     paintSearch();
     return;
   }
+  paintStrata();
   const mode = state.mode;
   const scrubbing = mode === 'recent' && state.timeCursor !== null;
   const maxV =
@@ -921,19 +936,23 @@ function applyOverlay(): void {
   const denom = Math.sqrt(Math.max(maxV, 1));
   const green = new THREE.Color(PALETTE.green);
 
-  for (const rec of city.moduleRecords) {
-    if (mode === 'structure' || mode === 'strata') {
-      _color.copy(rec.baseColor);
-    } else if (mode === 'recent') {
-      const r = recentValue(rec.file);
-      if (r.count > 0) _color.copy(green).multiplyScalar(scrubbing ? 1 + r.flash * 1.6 : 1);
-      else _color.copy(rec.baseColor).multiplyScalar(0.15);
-    } else {
-      heatColor(Math.sqrt(Math.max(heatValue(rec.file), 0)) / denom, _color);
+  // The buildings are hidden wherever the stacks stand, so repainting thousands
+  // of invisible instances would be pure cost.
+  if (!strata.build) {
+    for (const rec of city.moduleRecords) {
+      if (mode === 'structure' || mode === 'strata') {
+        _color.copy(rec.baseColor);
+      } else if (mode === 'recent') {
+        const r = recentValue(rec.file);
+        if (r.count > 0) _color.copy(green).multiplyScalar(scrubbing ? 1 + r.flash * 1.6 : 1);
+        else _color.copy(rec.baseColor).multiplyScalar(0.15);
+      } else {
+        heatColor(Math.sqrt(Math.max(heatValue(rec.file), 0)) / denom, _color);
+      }
+      rec.mesh.setColorAt(rec.instanceId, _color);
     }
-    rec.mesh.setColorAt(rec.instanceId, _color);
+    for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
-  for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
   const filePlates = city.filePlates;
   if (filePlates) {
@@ -969,19 +988,26 @@ function applyOverlay(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Strata replaces the module buildings with per-commit slabs, so it only makes
- * sense where files are the unit of rendering: inside a file or module isolate
- * (a synthetic scope) the city falls back to normal module massing.
+ * The stacked slabs are the city's SHARED massing, not one mode's geometry: a
+ * file's silhouette always tells its commit history, and the mode only decides
+ * how that silhouette is painted. So the layer stands wherever files are the
+ * unit of rendering — every folder scope, every mode. Inside a file or module
+ * isolate (a synthetic scope) the module buildings come back, because that is
+ * the level where per-module shape and kind actually resolve.
+ *
+ * Without a commit stream (v1 data) there is nothing to stack and the city
+ * falls back to module massing everywhere.
  */
 function strataActive(): boolean {
-  return state.mode === 'strata' && timeline.enabled && !!scope.root && !scope.root.synth;
+  return timeline.enabled && !!scope.root && !scope.root.synth;
 }
 
 /** Build (or tear down) the strata layer for the current scope. */
 function applyStrataMode(): void {
   if (!city) return;
   const on = strataActive();
-  timeline.setRangeMode(on); // the second handle belongs to this mode alone
+  // The second handle changes the massing, which every mode now shares.
+  timeline.setRangeMode(on);
   for (const mesh of city.buildingMeshes) mesh.visible = !on;
   if (strata.build) {
     disposeObject(strata.build.group);
@@ -1015,6 +1041,106 @@ function updateStrata(): void {
   build.update({ start: timeline.start, cursor: state.timeCursor });
   dom.statModulesLabel.textContent = 'LEVELS';
   dom.statModules.textContent = fmt(build.records.length);
+  paintStrata();
+}
+
+/** Dormant / untouched massing — the same tone the legend calls "dormant". */
+const DORMANT = new THREE.Color(0x1b2432);
+/** Dominant module kind per file, memoized: the paint runs per instance. */
+const dominantKind = new Map<VNode, THREE.Color>();
+
+/**
+ * Repaint the stacks for the active pass. This is the whole difference between
+ * the modes at folder scope: same geometry, different color.
+ */
+function paintStrata(): void {
+  const build = strata.build;
+  if (!build) return;
+  if (searchPaint.on) {
+    build.recolor(searchStrataPaint());
+    collectStrataPulse(build);
+    return;
+  }
+  searchPaint.pulseStrata.length = 0;
+  build.recolor(state.mode === 'strata' ? commitTypePaint : metricStrataPaint());
+}
+
+/**
+ * One flat color per FILE: the silhouette already carries the history, so the
+ * color is free to carry the metric. Structure uses the file's dominant module
+ * kind — at org zoom a per-module building is sub-pixel anyway, and the kinds
+ * resolve properly the moment you isolate into the file.
+ */
+function metricStrataPaint(): StrataPaint {
+  const mode = state.mode;
+  const maxV =
+    mode === 'churn' ? index.max.churn :
+    mode === 'fix' ? index.max.fixChurn :
+    index.max.recentChurn;
+  const denom = Math.sqrt(Math.max(maxV, 1));
+  const green = new THREE.Color(PALETTE.green);
+  const scrubbing = mode === 'recent' && state.timeCursor !== null;
+  const worktreeOn = state.worktree && worktree.byPath.size > 0;
+
+  return (record, _age, target) => {
+    const file = record.file;
+    // The working-tree layer rides on top of a uniform paint exactly as it does
+    // on the buildings; Strata mode keeps its bands and opts out.
+    if (worktreeOn) {
+      const real = realFileOf(file);
+      if (real && worktree.byPath.get(real.path) === 'modified') return target.copy(WORKTREE_AMBER);
+    }
+    if (mode === 'structure') return target.copy(dominantKindColor(file));
+    if (mode === 'recent') {
+      const r = recentValue(file);
+      return r.count > 0
+        ? target.copy(green).multiplyScalar(scrubbing ? 1 + r.flash * 1.4 : 1)
+        : target.copy(DORMANT);
+    }
+    return heatColor(Math.sqrt(Math.max(heatValue(file), 0)) / denom, target);
+  };
+}
+
+/** The search / tour highlight, as the stacks see it. */
+function searchStrataPaint(): StrataPaint {
+  const paths = searchPaint.paths;
+  return (record, _age, target) => {
+    const real = realFileOf(record.file);
+    const hit = real && paths ? paths.get(real.path) : null;
+    return hit
+      ? target.copy(SEARCH_HL).multiplyScalar(0.45 + 0.85 * hit.w)
+      : target.copy(DORMANT).multiplyScalar(0.55);
+  };
+}
+
+/** Instance ids of the file under the palette's keyboard cursor. */
+function collectStrataPulse(build: StrataBuild): void {
+  searchPaint.pulseStrata.length = 0;
+  const cursor = searchPaint.cursor;
+  if (!cursor) return;
+  for (let i = 0; i < build.records.length; i++) {
+    const rec = build.records[i];
+    if (rec && realFileOf(rec.file)?.path === cursor.path) searchPaint.pulseStrata.push(i);
+  }
+}
+
+/** The kind that owns most of a file's lines — the file's "character". */
+function dominantKindColor(file: VNode): THREE.Color {
+  const cached = dominantKind.get(file);
+  if (cached) return cached;
+  const source = realFileOf(file) ?? file;
+  const totals = new Map<AnyKind, number>();
+  for (const mod of source.modules ?? []) totals.set(mod.kind, (totals.get(mod.kind) ?? 0) + Math.max(mod.loc, 1));
+  let best = 0;
+  let kind: AnyKind | null = null;
+  for (const [k, loc] of totals) {
+    if (loc <= best) continue;
+    best = loc;
+    kind = k;
+  }
+  const color = new THREE.Color(kind === null ? PALETTE.filePlate : KIND_COLORS[kind]);
+  dominantKind.set(file, color);
+  return color;
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +1156,7 @@ function setSearchHighlight(spec: HighlightSpec | null): void {
     searchPaint.cursor = null;
     searchPaint.pulseRecs.length = 0;
     searchPaint.pulseMeshes.length = 0;
+    searchPaint.pulseStrata.length = 0;
     // An open palette with no matches still dims the city; a closed one restores.
     if (spec || was) applyOverlay();
     applySearchLayerMute();
@@ -1042,6 +1169,26 @@ function setSearchHighlight(spec: HighlightSpec | null): void {
   applyOverlay();
   applySearchLayerMute();
   refreshPickables();
+}
+
+/**
+ * The ⌘F hits, mirrored into the sidebar. This list deliberately outlives the
+ * palette: closing it hands the city back to its overlay, but the results stay
+ * as a work queue — a file row selects and flies, a line row opens the code
+ * pane on that span. Escape, or picking something else in the city, retires it.
+ */
+function setSearchResults(view: SearchResultsPayload | null): void {
+  sidebar.setSearch(
+    view
+      ? {
+          query: view.query,
+          files: view.files,
+          truncated: view.truncated,
+          onSelectFile: (path) => { revealPath(path); },
+          onSelectLine: (path, line) => { revealPath(path, { line }); },
+        }
+      : null
+  );
 }
 
 /** PR beams/scaffolding would drown the highlight, so they rest while searching. */
@@ -1059,23 +1206,26 @@ function paintSearch(): void {
   const cursor = searchPaint.cursor;
   searchPaint.pulseRecs.length = 0;
   searchPaint.pulseMeshes.length = 0;
+  paintStrata();
 
-  for (const rec of city.moduleRecords) {
-    const real = realFileOf(rec.file);
-    const hit = real && paths ? paths.get(real.path) : null;
-    if (real && hit) {
-      const exact = !hit.mods || hit.mods.has(rec.mod.name);
-      _color.copy(SEARCH_HL).multiplyScalar((exact ? 1 : 0.3) * (0.45 + 0.85 * hit.w));
-      if (cursor && real.path === cursor.path && (!cursor.mods || cursor.mods.has(rec.mod.name))) {
-        searchPaint.pulseRecs.push(rec);
-        if (!searchPaint.pulseMeshes.includes(rec.mesh)) searchPaint.pulseMeshes.push(rec.mesh);
+  if (!strata.build) {
+    for (const rec of city.moduleRecords) {
+      const real = realFileOf(rec.file);
+      const hit = real && paths ? paths.get(real.path) : null;
+      if (real && hit) {
+        const exact = !hit.mods || hit.mods.has(rec.mod.name);
+        _color.copy(SEARCH_HL).multiplyScalar((exact ? 1 : 0.3) * (0.45 + 0.85 * hit.w));
+        if (cursor && real.path === cursor.path && (!cursor.mods || cursor.mods.has(rec.mod.name))) {
+          searchPaint.pulseRecs.push(rec);
+          if (!searchPaint.pulseMeshes.includes(rec.mesh)) searchPaint.pulseMeshes.push(rec.mesh);
+        }
+      } else {
+        _color.copy(rec.baseColor).multiplyScalar(0.05);
       }
-    } else {
-      _color.copy(rec.baseColor).multiplyScalar(0.05);
+      rec.mesh.setColorAt(rec.instanceId, _color);
     }
-    rec.mesh.setColorAt(rec.instanceId, _color);
+    for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
-  for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
   const filePlates = city.filePlates;
   if (filePlates) {
@@ -1101,11 +1251,16 @@ function paintSearch(): void {
 
 /** Extra pulse on the row under the keyboard cursor. */
 function pulseSearchCursor(t: number): void {
-  if (!searchPaint.on || !searchPaint.pulseRecs.length) return;
+  if (!searchPaint.on) return;
+  const build = strata.build;
+  if (!searchPaint.pulseRecs.length && !(build && searchPaint.pulseStrata.length)) return;
   const k = 1.15 + 0.85 * (0.5 + 0.5 * Math.sin(t * 5.4));
   _hl.copy(SEARCH_HL).multiplyScalar(k);
   for (const rec of searchPaint.pulseRecs) rec.mesh.setColorAt(rec.instanceId, _hl);
   for (const mesh of searchPaint.pulseMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  if (!build) return;
+  for (const id of searchPaint.pulseStrata) build.mesh.setColorAt(id, _hl);
+  if (searchPaint.pulseStrata.length && build.mesh.instanceColor) build.mesh.instanceColor.needsUpdate = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1256,14 +1411,19 @@ function applyWorktreeLayer(): void {
  */
 function paintWorktree(): void {
   if (!city || !state.worktree || !worktree.byPath.size) return;
-  let touched = false;
-  for (const rec of city.moduleRecords) {
-    const real = realFileOf(rec.file);
-    if (!real || worktree.byPath.get(real.path) !== 'modified') continue;
-    rec.mesh.setColorAt(rec.instanceId, WORKTREE_AMBER);
-    touched = true;
+  // Where the stacks stand there are no visible buildings, and the amber is
+  // already part of their paint (`metricStrataPaint`); only the plates below
+  // still need it, which the second half of this pass does.
+  if (!strata.build) {
+    let touched = false;
+    for (const rec of city.moduleRecords) {
+      const real = realFileOf(rec.file);
+      if (!real || worktree.byPath.get(real.path) !== 'modified') continue;
+      rec.mesh.setColorAt(rec.instanceId, WORKTREE_AMBER);
+      touched = true;
+    }
+    if (touched) for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
-  if (touched) for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
   const filePlates = city.filePlates;
   if (!filePlates) return;
@@ -1986,6 +2146,8 @@ function bindEvents(): void {
     const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
     downAt = null;
     if (moved > 4) return; // it was an orbit drag
+    // Picking something in the city is the end of the search errand.
+    if (sidebar.hasSearch()) setSearchResults(null);
     setSelection(state.hover ? { ...state.hover } : null);
   });
 
@@ -2019,6 +2181,12 @@ function bindEvents(): void {
       }
     }
     if (e.key === 'Escape') {
+      // The results list outlives the palette, so Escape retires it before it
+      // starts popping the focus stack.
+      if (sidebar.hasSearch()) {
+        setSearchResults(null);
+        return;
+      }
       const up = state.focus?.parent;
       if (up) focusNode(up);
     }

@@ -32,7 +32,8 @@ export interface Timeline {
   cursor: number | null;
   /**
    * Start of the visible range in epoch seconds — only the second handle moves
-   * it, and only Strata mode shows that handle. Every other mode reads `min`.
+   * it, and it appears wherever the city stands on strata massing (every mode
+   * at folder scope). A file/module isolate has no stacks, so it hides.
    */
   start: number;
   playing: boolean;

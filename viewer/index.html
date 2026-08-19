@@ -283,6 +283,26 @@
   }
   .sb-more:hover { opacity: 1; text-decoration: underline; }
 
+  /* --- search results (the palette's ⌘F hits, kept after it closes) */
+  #sb-search { max-height: 46vh; overflow: auto; }
+  .sb-hit {
+    display: flex; align-items: baseline; gap: 6px; cursor: pointer;
+    font-size: 9.5px; padding: 1.5px 3px; white-space: nowrap; overflow: hidden; letter-spacing: 0.02em;
+  }
+  .sb-hit:hover, .sb-hit.open { background: rgba(8,145,178,0.14); }
+  .sb-hit .tw { color: var(--accent-muted); flex: none; font-size: 8px; }
+  .sb-hit .nm { color: var(--foreground); flex: none; }
+  .sb-hit .dir { color: var(--foreground-subtle); overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+  .sb-hit .cnt { margin-left: auto; color: var(--accent-muted); flex: none; }
+  .sb-hit-line {
+    display: flex; gap: 6px; cursor: pointer; font-size: 9px; line-height: 1.5;
+    padding: 0 3px 0 16px; white-space: pre; overflow: hidden; letter-spacing: 0;
+  }
+  .sb-hit-line:hover { background: rgba(8,145,178,0.14); }
+  .sb-hit-line .ln { color: var(--foreground-subtle); flex: none; min-width: 30px; text-align: right; }
+  .sb-hit-line .src { color: #b9e6f2; overflow: hidden; text-overflow: ellipsis; }
+  .sb-hit mark, .sb-hit-line mark { background: rgba(250,70,22,0.28); color: #ffd9cd; }
+
   /* --- working-tree layer */
   #sb-worktree > .h button {
     appearance: none; cursor: pointer; font-family: var(--mono); font-size: 11px; line-height: 1;
@@ -350,7 +370,7 @@
   }
   #tl-range::-moz-range-thumb { width: 3px; height: 30px; background: var(--orange); border: 0; border-radius: 0; }
 
-  /* Range start handle — Strata mode only. It sits over #tl-range, so the track
+  /* Range start handle — shown while the city stands on strata massing. It sits over #tl-range, so the track
      stays inert and only the thumb takes the pointer; clicks anywhere else on
      the bar still move the cursor handle underneath. */
   #tl-start { display: none; }
@@ -561,7 +581,7 @@
     <div id="tl-track">
       <canvas id="tl-spark"></canvas>
       <input id="tl-range" type="range" min="0" max="1000" value="1000" step="1" />
-      <!-- range start: only Strata mode reveals it (see #timeline.ranged) -->
+      <!-- range start: revealed while the strata massing is up (see #timeline.ranged) -->
       <input id="tl-start" type="range" min="0" max="1000" value="0" step="1" />
     </div>
   </div>

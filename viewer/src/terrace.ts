@@ -14,9 +14,26 @@ import type { VNode } from './vtree.js';
 /** Seconds between face re-picks. */
 const PICK_INTERVAL = 0.2;
 const FADE_RATE = 4.5;
-/** Below this on-screen wall height the sign is unreadable clutter. */
+/** Below this apparent letter height the sign is unreadable clutter. */
 const MIN_PX = 4;
-const FULL_PX = 9;
+const FULL_PX = 8;
+/**
+ * Apparent height of the LETTERS a sign holds onto as the camera pulls back.
+ * Sized on the wall alone, a top-level district name lands near 10px at the org
+ * overview — legible only if you already know what it says.
+ */
+const TARGET_PX = 15;
+/**
+ * Fraction of the sign plane the letters actually ink: the texture is a 64px
+ * font on a 96px canvas, so the plane is always taller than what you read.
+ */
+const INK_RATIO = 0.5;
+/**
+ * How far past its wall a sign may grow to reach that. Capped so the letters
+ * stay signage on the terrace rather than a billboard over the city, and so a
+ * close-up sign never balloons (up close the natural size already wins).
+ */
+const MAX_UPSCALE = 2.2;
 
 export interface TerraceSigns {
   group: THREE.Group;
@@ -41,6 +58,13 @@ interface Sign {
   wall: number;
   aspect: number;
   target: number;
+  tier: number;
+  /**
+   * Only the top tier is allowed to outgrow its wall: it is the signage you
+   * navigate the whole city by. A deeper sign that did the same would rise over
+   * the terrace above it and read as broken letters behind the buildings there.
+   */
+  upscale: boolean;
 }
 
 /** Outward normal (XZ) and the plane yaw that points a sign along it. */
@@ -67,6 +91,7 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
   let acc = PICK_INTERVAL;
   const visible: THREE.Object3D[] = [];
   const _v = new THREE.Vector3();
+  const _sign = new THREE.Vector3();
 
   return { group, setNodes, update, pickables, dispose };
 
@@ -79,6 +104,9 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
         group.add(sign.mesh);
       }
     }
+    let top = Infinity;
+    for (const s of signs) top = Math.min(top, s.tier);
+    for (const s of signs) s.upscale = s.tier <= top;
     acc = PICK_INTERVAL;
   }
 
@@ -120,6 +148,8 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
       wall,
       aspect: tex.aspect,
       target: 0,
+      tier,
+      upscale: false,
     };
   }
 
@@ -159,24 +189,32 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
       // Text as tall as the wall allows, shrunk further when the name is longer
       // than the face it has to sit on.
       let h = s.wall * 0.82;
+      // Distance band: from far away the wall is a few pixels of screen, so
+      // grow the letters until they hold TARGET_PX — the same apparent-size
+      // idea the labeler uses, bounded so a close-up sign never balloons.
+      const dist = Math.max(camera.position.distanceTo(_sign.set(s.cx, s.y, s.cz)), 1);
+      const perPx = (2 * dist * tanHalf) / vh;
+      if (s.upscale) h = Math.min(Math.max(h, (TARGET_PX / INK_RATIO) * perPx), h * MAX_UPSCALE);
       let w = h * s.aspect;
-      const maxW = span * 0.9;
+      const maxW = span * 0.96;
       if (w > maxW) {
         const k = maxW / w;
         w = maxW;
         h *= k;
       }
       const out = 0.06;
+      // An upscaled sign stands ON the terrace edge rather than sinking into
+      // the parent plate below it, where its lower half would be occluded.
+      const y = h > s.wall ? s.y - s.wall / 2 + h / 2 : s.y;
       s.mesh.position.set(
         s.cx + best.nx * (s.hw + out),
-        s.y,
+        y,
         s.cz + best.nz * (s.hh + out)
       );
       s.mesh.rotation.set(0, best.yaw, 0);
       s.mesh.scale.set(w, h, 1);
 
-      const dist = camera.position.distanceTo(s.mesh.position);
-      const px = dist > 1 ? (h / (2 * dist * tanHalf)) * vh : 0;
+      const px = (h * INK_RATIO) / perPx;
       _v.copy(s.mesh.position).project(camera);
       const onScreen = _v.z < 1 && _v.x > -1.4 && _v.x < 1.4 && _v.y > -1.4 && _v.y < 1.4;
       s.target = onScreen
@@ -222,8 +260,8 @@ function signTexture(name: string, tier: number): { texture: THREE.CanvasTexture
   const textW = Math.ceil(probe.measureText(text).width) + spacing * Math.max(text.length - 1, 0);
 
   const canvas = document.createElement('canvas');
-  const h = 128;
-  canvas.width = Math.max(textW + 72, 16);
+  const h = 96;
+  canvas.width = Math.max(textW + 40, 16);
   canvas.height = h;
   const ctx = ctx2d(canvas);
   ctx.font = SIGN_FONT;
@@ -241,13 +279,13 @@ function signTexture(name: string, tier: number): { texture: THREE.CanvasTexture
   ctx.shadowColor = color;
   ctx.shadowBlur = 18;
   ctx.fillStyle = color;
-  let x = 36;
+  let x = 20;
   for (const ch of text) {
     ctx.fillText(ch, x, h / 2);
     x += ctx.measureText(ch).width + spacing;
   }
   ctx.shadowBlur = 0;
-  x = 36;
+  x = 20;
   for (const ch of text) {
     ctx.fillText(ch, x, h / 2);
     x += ctx.measureText(ch).width + spacing;

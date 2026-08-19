@@ -38,9 +38,10 @@ zoom-out), like unfolding a hologram.
 - Orbit / zoom / pan (OrbitControls).
 - Hover → HUD tooltip (name, kind, loc, churn, fix count, PRs touching it).
 - Double-click → camera fly-to + focus that node (breadcrumb updates). Esc / breadcrumb → back up.
-- Mode buttons (HUD): Structure · Churn · Fix hotspots · Recent focus · Strata
-  (the first four recolor the module buildings; Strata replaces them). Toggles:
-  Coupling arcs · People/PRs.
+- Mode buttons (HUD): Structure · Churn · Fix hotspots · Recent focus · Strata.
+  **The mode never changes the massing** — at folder scope all five stand on the
+  same strata stacks and only repaint them (see "Strata as the shared massing").
+  Toggles: Coupling arcs · People/PRs.
 
 ## Data contract — `viewer/public/data.json`
 
@@ -112,6 +113,36 @@ Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippe
 - Materials: emissive-heavy, slight transparency; additive-blended edge lines on focus; UnrealBloomPass for glow.
 - HUD: monospace/uppercase, thin 1px cyan (#22d3ee) borders on translucent dark panels, orange (#fa4616) for active states. CSS scanline + vignette overlay for the retro-CRT feel.
 
+## Strata as the shared massing (implemented)
+
+Strata is no longer one mode's geometry: **at every folder scope, in every mode,
+a file is its stack of commits.** The silhouette carries the history and the
+mode carries the metric, so switching modes is a pure recolor — the city never
+reshuffles under you, and comparing "where is the churn" with "where is the
+recent work" is comparing two paints of one shape.
+
+- `strataActive()` = a commit stream exists **and** the scope root is a real
+  folder. Mode is not part of it. Without a stream (v1 data) the city falls back
+  to module massing everywhere.
+- **Structure** paints each stack with the file's *dominant module kind* (the
+  kind owning most of its lines): at org zoom a per-module building is sub-pixel
+  anyway, so the kind that characterizes the file is the honest signal.
+  **Churn / fix / recent** paint the whole stack with that file's heat or
+  recency — per-level uniform, since the level bands are already spoken for by
+  the shape. **Strata** keeps the per-level conventional-commit colors.
+  All of that is one `StrataPaint` swapped through `recolor()`; the search /
+  tour highlight and the working-tree amber are two more paints in the same seam.
+- **Module buildings appear when you isolate a file** (or a module). That is
+  where kind, size and nesting resolve, and it is unchanged.
+- The **range handle is therefore live in every mode** — it changes the massing,
+  and the massing is shared. It hides only inside a file/module isolate, where
+  there are no stacks.
+- The legend gains the massing footnote (`level = commit · area = loc`) in the
+  non-strata modes, and Structure notes that kinds resolve inside a file.
+- Cost: one `InstancedMesh` for the whole city, allocated for the widest range.
+  flow-workbench (3.7k files / 17.7k levels) holds 60fps at org level, including
+  timeline playback, which rewrites every matrix ~8×/s.
+
 ## Strata buildings (implemented — the "Strata" render mode)
 
 Make BOTH dimensions of a building semantic: **height = commit count** (each
@@ -143,7 +174,7 @@ Shipped as an exclusive render mode (`viewer/src/strata.ts`), file-level only:
   age gradient (dim violet → bright cyan). Geometry and color are separate
   passes (`update()` vs `recolor(paint)`), which is the seam the eventual
   "strata as the universal massing, overlays as pure recolors" step needs.
-- **Two timeline handles**: the start handle (cyan, Strata mode only) sets the
+- **Two timeline handles**: the start handle (cyan) sets the
   oldest level rendered; the existing cursor sets the base snapshot — LOC is
   rewound past every commit newer than it. Dragging start left grows the city.
 - Hover/select resolves a level to its file and shows that level's commit
@@ -151,11 +182,10 @@ Shipped as an exclusive render mode (`viewer/src/strata.ts`), file-level only:
   normal module massing inside the file scope (per-function history would need
   per-commit parsing).
 
-Direction: strata becomes the SHARED building massing across all modes —
-churn/recent/structure reduce to recolor passes over the same stacked
-geometry (module-level buildings appear on file isolate). Level colors encode
-conventional-commit type: feat cyan · fix red · refactor violet · chore slate ·
-docs green · test amber · perf pink · ci gray · unknown = age gradient.
+Level colors encode conventional-commit type: feat cyan · fix red · refactor
+violet · chore slate · docs green · test amber · perf pink · ci gray · unknown =
+age gradient. (Shipped follow-up: the stacks became the shared massing for every
+mode — see "Strata as the shared massing" above.)
 
 ## Analyzer cache & static export
 
@@ -194,6 +224,13 @@ it. The fixes, layered:
   re-seated every 200ms onto whichever of the four faces currently points at the
   camera, faded in by projected wall height. Those folders are dropped from the
   floating label pills, which now start at tier 3.
+  Sized on the wall alone a top-level name is ~10px at the org overview, so the
+  **top tier holds an apparent size**: it grows (up to 2.2× its wall, bottom-
+  anchored on the terrace edge so it never sinks into the plate below) until the
+  letters read ~15px, and shrinks back to the wall as you approach. Deeper tiers
+  deliberately do not — a sign that outgrew its wall there would float over the
+  terrace above it. The first tier step is also 13 units rather than 10, since
+  that step *is* the wall the loudest signage lives on.
 - **Clickable labels** — label sprites and side signs carry their node in
   `userData` and are raycast *before* the geometry (they draw on top, so they
   pick on top): click selects, double-click isolates.
@@ -221,6 +258,26 @@ headings (nesting by heading depth → `children`); edges = relative markdown
 links and `[[wikilinks]]` (resolved by filename/slug); new `section` building
 kind. Churn/timeline/strata work unchanged — strata on a growing document is a
 natural fit.
+
+## Search (implemented — ⌘P paths/modules · ⌘F contents)
+
+One palette, two modes (`viewer/src/search.ts`), both driving the same city
+reaction: matches glow white-cyan, everything else dims, the row under the
+keyboard cursor pulses. It is a recolor pass over whatever is standing —
+buildings inside an isolate, strata stacks at folder scope — and closing the
+palette hands the city back to its overlay.
+
+- **The ⌘F results outlive the palette.** The palette is a launcher; the work
+  queue is the sidebar's SEARCH section, mirrored through a `results(view|null)`
+  host verb. A file row selects and flies; unfolding it lists the matched lines
+  with the query marked, and a line row opens the code pane on that span through
+  the existing `Descriptor.span` machinery.
+- It clears on Escape (which retires the list *before* it starts popping the
+  focus stack) or as soon as you pick something else in the city — that click is
+  the end of the errand.
+- `markHtml` (sidebar.ts) is the single escape-then-mark helper both the palette
+  rows and the sidebar mirror render through: paths, source lines and the echoed
+  query are all escaped before the `<mark>` wrapping.
 
 ## Working-tree view (implemented)
 

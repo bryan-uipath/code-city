@@ -13,15 +13,16 @@ The thesis: as more code is written by agents, we read less of it line-by-line. 
 ## Features
 
 - **City hierarchy** — repo → folder districts → file blocks → module buildings → (double-click) class members. Folder plates are **stepped terraces**: top-level districts sit visibly raised, and every nesting level is a shallower step on top of its parent. Double-click isolates and breaks down any level; Esc / breadcrumb chains the camera back out through each level it passes.
-- **Overlays** — structure (kind colors), churn (12-month commit heat), fix hotspots (bug-fix commits), recent focus (touched in the last 30 days — the default).
-- **Strata mode** — buildings become one slab per commit: height = commits, footprint = the file's size at that commit, each level colored by its conventional-commit type (feat cyan, fix red, refactor violet…). A second timeline handle sets the range, so dragging it back grows the city out of its own history.
+- **Strata massing** — at city level a file *is* its history: one slab per commit, so height = commits and footprint = the file's size at that commit. Every mode stands on the same stacks and only repaints them, so switching overlays never reshuffles the skyline. A second timeline handle sets the range, so dragging it back grows the city out of its own history. Module buildings return the moment you isolate a file.
+- **Overlays** — structure (the file's dominant module kind; the kinds themselves resolve inside a file), churn (12-month commit heat), fix hotspots (bug-fix commits), recent focus (touched in the last 30 days — the default), and strata (each level colored by its conventional-commit type: feat cyan, fix red, refactor violet…).
 - **People / PR layer** — open PRs as author avatars on light beams over the files they touch. Beam thickness scales with diff size, altitude with activity recency. Draft PRs render as orange scaffolding; files touched by 2+ PRs get red conflict cages.
 - **Coupling arcs** — directional import edges (animated flow importer → imported), aggregated per package when nothing is selected.
 - **History timeline** — scrub or play through the commit stream and watch activity flow across the city.
 - **Working-tree layer** — what is uncommitted *right now*: modified files glow amber, untracked files get green ghost outlines, deletions red, with the change list in the sidebar (click to fly there) and a refresh button. Dev server only.
 - **Inspector sidebar** — stats, open PRs (one compact line each, click to expand), recent commits, and actual source/diff snippets for the selected node (dev server only).
 - **Guided tours** — a tour is a JSON file (hand-written, or emitted by a coding agent that just read a PR) that flies the camera through 5–10 places in the code, isolating or highlighting each one and narrating it in the sidebar, with diffs, screenshots and links attached. See [Loading a tour](#loading-a-tour) and [docs/tours.md](docs/tours.md).
-- **Map-style labels** — names scope dynamically to what's in view, districts → files → buildings, like a map engine. The top folder tiers are signed on their terrace side walls instead; every label is clickable (click selects, double-click isolates) and links to its children when you hover it.
+- **Map-style labels** — names scope dynamically to what's in view, districts → files → buildings, like a map engine. The top folder tiers are signed on their terrace side walls instead, holding a readable size from the org overview down to a close-up; every label is clickable (click selects, double-click isolates) and links to its children when you hover it.
+- **Search** — `⌘P` for paths and modules, `⌘F` for file contents; matches glow and the rest of the city dims. The `⌘F` hits stay in the sidebar after the palette closes: click a file to fly there, unfold it for its matched lines, click a line to open the source at that span.
 
 All analysis is local: the analyzer runs on your machine and the data never leaves it. The only network calls are optional `gh` PR lookups and GitHub avatar images.
 
@@ -50,6 +51,7 @@ Requirements: Node 20+, git; optionally the [`gh` CLI](https://cli.github.com/) 
 | Click | Select (pin details, coupling arcs) — plates, buildings, labels and terrace signs all pick |
 | Double-click | Isolate + break down that node |
 | Esc / breadcrumb | Back up a level |
+| `⌘P` / `⌘F` | Find a file or module / find in file contents |
 | `C` | Copy the selected node's repo-relative path |
 | `←` / `→` / `Esc` | Tour only: previous step / next step / exit the tour |
 
@@ -103,4 +105,4 @@ See [DESIGN.md](DESIGN.md) for the full metaphor, data contract, and style guide
 
 ## Status
 
-Early prototype, moving fast. Recently landed: a hierarchy-legibility pass (terraces, side-wall district signage, clickable labels, chained camera flights), the Working-tree layer, Strata mode, an incremental analyzer cache, guided tours, and markdown support. Current focus: core UX and fit & finish. Future: a VS Code extension over the existing `CityHost` seam (see DESIGN.md).
+Early prototype, moving fast. Recently landed: a hierarchy-legibility pass (terraces, side-wall district signage, clickable labels, chained camera flights), the Working-tree layer, Strata as the shared massing across every mode, an incremental analyzer cache, guided tours, and markdown support. Current focus: core UX and fit & finish. Future: a VS Code extension over the existing `CityHost` seam (see DESIGN.md).

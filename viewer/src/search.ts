@@ -13,12 +13,14 @@
  *   reveal(path, {module, line}) -> pop scope if needed, select + fly, true/false
  *   notice(msg)          -> transient HUD message
  *   search(q)            -> content search results, or null when unavailable
+ *   results(view|null)   -> mirror the ⌘F hits into the sidebar; unlike the
+ *                           highlight, this list outlives the palette
  *
  * Everything data-derived (paths, module names, matched source lines, the echoed
  * query) is escaped before it reaches innerHTML.
  */
 import type { SearchMatch, SearchResponse } from '../../shared/types.js';
-import { escapeHtml } from './sidebar.js';
+import { escapeHtml, markHtml, type SearchFileHits } from './sidebar.js';
 import type { VNode } from './vtree.js';
 
 const MAX_RESULTS = 30;
@@ -37,6 +39,11 @@ export interface SearchHost {
   reveal(path: string, opts?: { module?: string | null; line?: number }): boolean;
   notice(msg: string): void;
   search(q: string): Promise<SearchResponse | null>;
+  /**
+   * Mirror the content hits into the sidebar. Unlike `highlight`, this survives
+   * the palette closing — the host decides when the list has gone stale.
+   */
+  results(view: SearchResultsPayload | null): void;
 }
 
 export interface SearchPalette {
@@ -54,13 +61,17 @@ export interface FileResult {
   score: number;
 }
 
-/** All content matches for one file in ⌘F mode. */
-interface Group {
-  path: string;
-  matches: Array<{ line: number; text: string }>;
-}
+/** All content matches for one file in ⌘F mode — the sidebar's row type. */
+type Group = SearchFileHits;
 
 type Result = FileResult | Group;
+
+/** What the sidebar mirror needs; the host adds the click behaviour. */
+export interface SearchResultsPayload {
+  query: string;
+  files: Group[];
+  truncated: boolean;
+}
 
 /** A keyboard-navigable row: a file/group header, or one matched line. */
 interface Row {
@@ -236,6 +247,7 @@ export function createSearch(host: SearchHost): SearchPalette {
       state.status = state.mode === 'file' ? 'type to search paths & modules' : `type ${MIN_CONTENT_QUERY}+ chars`;
       render();
       pushHighlight();
+      if (state.mode === 'content') host.results(null);
       return;
     }
     if (state.mode === 'file') {
@@ -251,6 +263,7 @@ export function createSearch(host: SearchHost): SearchPalette {
       state.status = `type ${MIN_CONTENT_QUERY}+ chars`;
       render();
       pushHighlight();
+      host.results(null);
       return;
     }
     state.status = 'searching…';
@@ -267,14 +280,18 @@ export function createSearch(host: SearchHost): SearchPalette {
       state.status = 'content search requires the dev server';
       render();
       pushHighlight();
+      host.results(null);
       return;
     }
-    state.results = groupMatches(json.matches);
-    const n = state.results.length;
+    const groups = groupMatches(json.matches);
+    state.results = groups;
+    const n = groups.length;
     state.status = `${n} file${n === 1 ? '' : 's'}${json.truncated ? ' · truncated' : ''}`;
     state.cursor = 0;
     render();
     pushHighlight();
+    // The sidebar keeps this list after the palette closes.
+    host.results({ query: q, files: groups, truncated: !!json.truncated });
   }
 
   /** The fuzzy index over the whole real tree (rebuilt if the root changes). */
@@ -365,8 +382,8 @@ export function createSearch(host: SearchHost): SearchPalette {
         return (
           `<div class="pal-row${active}" data-i="${i}">` +
           `<span class="tag ${r.module ? 'mod' : 'file'}">${r.module ? 'MOD' : 'FILE'}</span>` +
-          `<span class="nm">${mark(r.label, q)}</span>` +
-          `<span class="dir">${mark(r.sub, q)}</span>` +
+          `<span class="nm">${markHtml(r.label, q)}</span>` +
+          `<span class="dir">${markHtml(r.sub, q)}</span>` +
           `</div>`
         );
       }
@@ -377,7 +394,7 @@ export function createSearch(host: SearchHost): SearchPalette {
         return (
           `<div class="pal-row${active}" data-i="${i}">` +
           `<span class="tag ${open ? 'mod' : 'file'}">${open ? '&#9662;' : '&#9656;'}</span>` +
-          `<span class="nm">${mark(baseName(g.path), q)}</span>` +
+          `<span class="nm">${markHtml(baseName(g.path), q)}</span>` +
           `<span class="dir">${escapeHtml(dirName(g.path))}</span>` +
           `<span class="cnt">${g.matches.length} match${g.matches.length === 1 ? '' : 'es'}</span>` +
           `</div>`
@@ -388,7 +405,7 @@ export function createSearch(host: SearchHost): SearchPalette {
       return (
         `<div class="pal-row line${active}" data-i="${i}">` +
         `<span class="ln">${Number(m.line) || 0}</span>` +
-        `<span class="src">${mark(m.text, q)}</span>` +
+        `<span class="src">${markHtml(m.text, q)}</span>` +
         `</div>`
       );
     });
@@ -585,23 +602,6 @@ function buildDom(): PaletteDom {
   const status = root.querySelector<HTMLElement>('#pal-status');
   if (!tabs || !input || !list || !status) throw new Error('palette markup missing');
   return { root, tabs, input, list, status };
-}
-
-/** Escape `text`, wrapping every case-insensitive occurrence of `q` in <mark>. */
-function mark(text: string, q: string): string {
-  const s = String(text ?? '');
-  const needle = String(q ?? '').trim().toLowerCase();
-  if (!needle) return escapeHtml(s);
-  const hay = s.toLowerCase();
-  let out = '';
-  let i = 0;
-  for (;;) {
-    const at = hay.indexOf(needle, i);
-    if (at < 0) break;
-    out += escapeHtml(s.slice(i, at)) + '<mark>' + escapeHtml(s.slice(at, at + needle.length)) + '</mark>';
-    i = at + needle.length;
-  }
-  return out + escapeHtml(s.slice(i));
 }
 
 function baseName(path: string): string {

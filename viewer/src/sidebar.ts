@@ -14,6 +14,9 @@ const MAX_COMMITS = 8;
 /** Commit rows shown before the "+N more" expander. */
 const COMMIT_PEEK = 5;
 const PR_PEEK = 6;
+/** Search result rows shown before the list is cut off. */
+const SEARCH_FILE_PEEK = 40;
+const SEARCH_LINE_PEEK = 12;
 
 /** How a working-tree path differs from HEAD. */
 export type WorkKind = 'modified' | 'untracked' | 'deleted';
@@ -30,6 +33,32 @@ export interface WorkingTree {
   changes: WorkChange[];
   onSelect(path: string): void;
   onRefresh(): void;
+}
+
+/** One matched source line of a content search. */
+export interface SearchLine {
+  line: number;
+  text: string;
+}
+
+/** One file's content-search hits, as the palette found them. */
+export interface SearchFileHits {
+  path: string;
+  matches: SearchLine[];
+}
+
+/**
+ * The ⌘F results, mirrored out of the palette so they outlive it: the palette
+ * is a launcher, this is the list you keep working through.
+ */
+export interface SearchResults {
+  query: string;
+  files: SearchFileHits[];
+  truncated: boolean;
+  /** Select + fly to the file (no line). */
+  onSelectFile(path: string): void;
+  /** Select the file and open the code pane at that line. */
+  onSelectLine(path: string, line: number): void;
 }
 
 /**
@@ -84,6 +113,10 @@ export interface Sidebar {
   setSelection(desc: Descriptor | null): void;
   /** Time cursor (epoch seconds or null) — re-renders the commit list. */
   setCursor(t: number | null): void;
+  /** Content-search results; null removes the section. */
+  setSearch(view: SearchResults | null): void;
+  /** Whether the search section is currently showing anything. */
+  hasSearch(): boolean;
   /** Working-tree change list; null removes the section. */
   setWorkingTree(view: WorkingTree | null): void;
   /** Current tour step; null removes the section and restores SELECTED. */
@@ -99,10 +132,11 @@ export function createSidebar(
 
   const secInspect = section('inspect');
   const secTour = section('tour');
+  const secSearch = section('search');
   const secSelected = section('selected');
   const secWork = section('worktree');
   const secCode = section('code');
-  body.append(secInspect, secTour, secSelected, secWork, secCode);
+  body.append(secInspect, secTour, secSearch, secSelected, secWork, secCode);
 
   const state: {
     hover: Descriptor | null;
@@ -116,6 +150,9 @@ export function createSidebar(
     allCommits: boolean;
     work: WorkingTree | null;
     tour: TourView | null;
+    search: SearchResults | null;
+    /** Result files expanded to their matched lines. */
+    openHits: Set<string>;
   } = {
     hover: null,
     selected: null,
@@ -128,6 +165,8 @@ export function createSidebar(
     allCommits: false,
     work: null,
     tour: null,
+    search: null,
+    openHits: new Set(),
   };
 
   widthBtn.addEventListener('click', () => {
@@ -151,6 +190,27 @@ export function createSidebar(
     }
   });
 
+  // A result row selects its file; the caret (or a second click) unfolds the
+  // matched lines, and a line opens the code pane on that span.
+  secSearch.addEventListener('click', (e) => {
+    const view = state.search;
+    if (!view) return;
+    const lineEl = closest(e.target, '.sb-hit-line[data-path]');
+    if (lineEl) {
+      const path = lineEl.dataset.path;
+      const line = Number(lineEl.dataset.line);
+      if (path && Number.isFinite(line)) view.onSelectLine(path, line);
+      return;
+    }
+    const fileEl = closest(e.target, '.sb-hit[data-path]');
+    const path = fileEl?.dataset.path;
+    if (!path) return;
+    if (state.openHits.has(path)) state.openHits.delete(path);
+    else state.openHits.add(path);
+    renderSearch();
+    view.onSelectFile(path);
+  });
+
   secWork.addEventListener('click', (e) => {
     const work = state.work;
     if (!work) return;
@@ -165,6 +225,7 @@ export function createSidebar(
 
   renderInspect();
   renderTour();
+  renderSearch();
   renderSelected();
   renderWork();
   secCode.style.display = 'none';
@@ -185,6 +246,15 @@ export function createSidebar(
     setCursor(t) {
       state.cursor = t;
       renderSelected();
+    },
+    setSearch(view) {
+      // A new query starts folded; the same query re-rendered keeps its state.
+      if (!view || !state.search || view.query !== state.search.query) state.openHits.clear();
+      state.search = view;
+      renderSearch();
+    },
+    hasSearch() {
+      return state.search !== null;
     },
     setWorkingTree(view) {
       state.work = view;
@@ -326,6 +396,59 @@ export function createSidebar(
       ? `<div class="sb-more">${state.allCommits ? '− less' : `+${hidden} more`}</div>`
       : '';
     return `<div class="sb-sub">${title}</div>` + rows.join('') + more;
+  }
+
+  // --- search results ------------------------------------------------------
+
+  /**
+   * The palette's content hits, kept alive after it closes. Paths, source lines
+   * and the echoed query are all author-controlled text: escaped here, with the
+   * query marked inside the escaped result.
+   */
+  function renderSearch(): void {
+    const view = state.search;
+    if (!view) {
+      secSearch.style.display = 'none';
+      secSearch.innerHTML = '';
+      return;
+    }
+    secSearch.style.display = '';
+    const n = view.files.length;
+    let total = 0;
+    for (const f of view.files) total += f.matches.length;
+    const head =
+      `<div class="h"><span>Search</span>` +
+      `<em>${fmt(total)} in ${fmt(n)} file${n === 1 ? '' : 's'}${view.truncated ? ' +' : ''}</em></div>` +
+      `<div class="sb-path">${escapeHtml(view.query)}</div>`;
+    if (!n) {
+      secSearch.innerHTML = head + `<div class="sb-hint">No matches</div>`;
+      return;
+    }
+
+    const parts: string[] = [];
+    for (const file of view.files.slice(0, SEARCH_FILE_PEEK)) {
+      const open = state.openHits.has(file.path);
+      parts.push(
+        `<div class="sb-hit${open ? ' open' : ''}" data-path="${escapeHtml(file.path)}">` +
+        `<span class="tw">${open ? '&#9662;' : '&#9656;'}</span>` +
+        `<span class="nm">${escapeHtml(baseName(file.path))}</span>` +
+        `<span class="dir">${escapeHtml(dirName(file.path))}</span>` +
+        `<span class="cnt">${fmt(file.matches.length)}</span></div>`
+      );
+      if (!open) continue;
+      for (const m of file.matches.slice(0, SEARCH_LINE_PEEK)) {
+        parts.push(
+          `<div class="sb-hit-line" data-path="${escapeHtml(file.path)}" data-line="${Number(m.line) || 0}">` +
+          `<span class="ln">${Number(m.line) || 0}</span>` +
+          `<span class="src">${markHtml(m.text, view.query)}</span></div>`
+        );
+      }
+      if (file.matches.length > SEARCH_LINE_PEEK) {
+        parts.push(`<div class="sb-hint">+${fmt(file.matches.length - SEARCH_LINE_PEEK)} more lines</div>`);
+      }
+    }
+    if (n > SEARCH_FILE_PEEK) parts.push(`<div class="sb-hint">+${fmt(n - SEARCH_FILE_PEEK)} more files</div>`);
+    secSearch.innerHTML = head + parts.join('');
   }
 
   // --- working tree --------------------------------------------------------
@@ -548,6 +671,26 @@ function shortAge(rel: string): string {
 /** `Element.closest` from an event target that may not be an element at all. */
 function closest(target: EventTarget | null, selector: string): HTMLElement | null {
   return target instanceof Element ? target.closest<HTMLElement>(selector) : null;
+}
+
+/**
+ * Escape `text`, wrapping every case-insensitive occurrence of `q` in `<mark>`.
+ * Both the palette rows and the sidebar's mirror of them render through this.
+ */
+export function markHtml(text: string, q: string): string {
+  const s = String(text ?? '');
+  const needle = String(q ?? '').trim().toLowerCase();
+  if (!needle) return escapeHtml(s);
+  const hay = s.toLowerCase();
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const at = hay.indexOf(needle, i);
+    if (at < 0) break;
+    out += escapeHtml(s.slice(i, at)) + '<mark>' + escapeHtml(s.slice(at, at + needle.length)) + '</mark>';
+    i = at + needle.length;
+  }
+  return out + escapeHtml(s.slice(i));
 }
 
 export function escapeHtml(s: string): string {

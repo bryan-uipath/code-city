@@ -84,8 +84,12 @@ export function streetWidth(depth: number): number {
  * steps shrink with depth so top-level districts sit visibly raised off the
  * ground and every nesting level below reads as a shallower terrace on top of
  * its parent. `TIER_LIFT[i]` is the rise from tier `i` to tier `i + 1`.
+ *
+ * The first step is also the top-tier terrace's side wall — the face its name
+ * is signed on (`terrace.ts`) — so it is sized for that name to stay readable
+ * from the org overview, not only for the step to read as a step.
  */
-const TIER_LIFT = [10, 6, 3.4, 2, 1.3] as const;
+const TIER_LIFT = [13, 6, 3.4, 2, 1.3] as const;
 const TIER_LIFT_MIN = 0.9;
 
 /** The rise from `tier` to `tier + 1`. */
