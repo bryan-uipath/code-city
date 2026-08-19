@@ -19,7 +19,7 @@ import type { CityData, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind
 import { layoutCity, plateTop, buildingHeight } from './layout.js';
 import {
   buildCity, buildEnvironment, disposeObject,
-  buildCouplingArcs, buildArcFlow, buildPrMarker, buildScaffolding, makeSelectionBox, frameNodeBox,
+  buildCouplingArcs, buildArcFlow, buildPrMarker, buildScaffolding, makeSelectionBox, frameNodeBox, makeLabelSprite,
   heatColor, walk, KIND_COLORS, KIND_ORDER, MEMBER_ORDER, PALETTE,
   type Arc, type ArcFlow, type CityBuild, type ModuleRecord,
 } from './city.js';
@@ -617,6 +617,7 @@ function rebuildScene(
   const focus = state.focus;
   if (!focus) return;
   const from = opts.anchor ? footprintOf(opts.anchor, scope.root) : null;
+  clearCallout();
   if (city) {
     disposeObject(city.group);
     city = null;
@@ -2112,6 +2113,87 @@ function resolveHit(hit: THREE.Intersection): Target | null {
   return null;
 }
 
+// --- hover callout: name pill raised above the hovered thing, line down -----
+
+const callout: { sprite: THREE.Sprite | null; line: THREE.Line | null; anchor: THREE.Vector3; aspect: number } = {
+  sprite: null,
+  line: null,
+  anchor: new THREE.Vector3(),
+  aspect: 1,
+};
+
+function clearCallout(): void {
+  if (callout.sprite) {
+    scene.remove(callout.sprite);
+    disposeObject(callout.sprite);
+    callout.sprite = null;
+  }
+  if (callout.line) {
+    scene.remove(callout.line);
+    callout.line.geometry.dispose();
+    const m = callout.line.material;
+    if (Array.isArray(m)) for (const mm of m) mm.dispose();
+    else m.dispose();
+    callout.line = null;
+  }
+}
+
+function showCallout(hit: NodeTarget, name: string): void {
+  clearCallout();
+  if (hit.type === 'module' && hit.rec) {
+    hit.rec.mesh.getMatrixAt(hit.rec.instanceId, _m4);
+    _m4.decompose(_v3, _q, _scale);
+    callout.anchor.set(_v3.x, _v3.y + _scale.y, _v3.z);
+  } else {
+    const r = hit.node.rect;
+    if (!r) return;
+    const top = plateTop(hit.node.tier ?? hit.node.depth ?? 0, hit.node.type === 'file');
+    callout.anchor.set(r.x + r.w / 2, top + boxHeightFor(hit.node), r.z + r.h / 2);
+  }
+  const sprite = makeLabelSprite(name, { color: '#eafcff', worldHeight: 10 });
+  callout.aspect = sprite.scale.y > 0 ? sprite.scale.x / sprite.scale.y : 1;
+  sprite.renderOrder = 12;
+  scene.add(sprite);
+  callout.sprite = sprite;
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3));
+  const line = new THREE.Line(
+    geom,
+    new THREE.LineBasicMaterial({
+      color: PALETTE.cyan,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: false,
+    })
+  );
+  line.renderOrder = 11;
+  line.frustumCulled = false;
+  scene.add(line);
+  callout.line = line;
+  updateCallout();
+}
+
+/** Per-frame: constant apparent size, leader line from the anchor up to the pill. */
+function updateCallout(): void {
+  const sprite = callout.sprite;
+  const line = callout.line;
+  if (!sprite || !line) return;
+  const dist = camera.position.distanceTo(callout.anchor);
+  const h = Math.min(Math.max(dist * 0.021, 3.5), 34);
+  const rise = h * 2.4;
+  sprite.scale.set(h * callout.aspect, h, 1);
+  sprite.position.set(callout.anchor.x, callout.anchor.y + rise + h / 2, callout.anchor.z);
+  const attr = line.geometry.getAttribute('position');
+  if (attr instanceof THREE.BufferAttribute) {
+    attr.setXYZ(0, callout.anchor.x, callout.anchor.y + 0.5, callout.anchor.z);
+    attr.setXYZ(1, callout.anchor.x, callout.anchor.y + rise, callout.anchor.z);
+    attr.needsUpdate = true;
+  }
+}
+
 function setHover(hit: Target | null): void {
   const prev = state.hover;
   const same =
@@ -2129,6 +2211,7 @@ function setHover(hit: Target | null): void {
 
   if (!hit) {
     hoverBox.visible = false;
+    clearCallout();
     sidebar.setHover(null);
     return;
   }
@@ -2137,7 +2220,10 @@ function setHover(hit: Target | null): void {
   else if (hit.type === 'pr') hoverBox.visible = false;
   else frameNodeBox(hoverBox, hit.node, boxHeightFor(hit.node));
 
-  sidebar.setHover(describe(hit));
+  const desc = describe(hit);
+  if (hit.type !== 'pr' && desc) showCallout(hit, desc.name);
+  else clearCallout();
+  sidebar.setHover(desc);
 }
 
 /** Hovering an avatar brightens that PR's beams and file rings. */
@@ -2228,6 +2314,7 @@ function animate(): void {
     selectionBox.visible = false;
   }
   updatePeople(t);
+  updateCallout();
   if (arcFlow) arcFlow.update(t);
 
   for (const group of [scaffoldGroup, worktreeGroup]) {
