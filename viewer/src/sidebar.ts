@@ -2,7 +2,8 @@
  * sidebar.ts — the persistent right inspector panel.
  *
  * Three stacked sections: INSPECT (live hover), SELECTED (pinned click, with
- * PRs + commits) and CODE (source span + latest diff from the host).
+ * PRs + commits) and CODE (source span + latest diff from the host). A fourth,
+ * TOUR, takes SELECTED's place while a tour is playing.
  * Everything data-derived is escaped before it reaches innerHTML.
  */
 import type { CityHost } from '../../shared/host.js';
@@ -29,6 +30,27 @@ export interface WorkingTree {
   changes: WorkChange[];
   onSelect(path: string): void;
   onRefresh(): void;
+}
+
+/**
+ * One artifact of the current tour step, already resolved and safety-checked by
+ * the player (diffs fetched through the host, URLs scheme-validated).
+ */
+export type TourArtifactView =
+  | { type: 'diff'; label: string; diff: string | null }
+  | { type: 'image'; src: string; caption: string | null }
+  | { type: 'link'; href: string; label: string };
+
+/** The tour player's sidebar section; null removes it and restores SELECTED. */
+export interface TourView {
+  title: string;
+  /** 1-based. */
+  index: number;
+  count: number;
+  stepTitle: string;
+  /** Plain text — rendered as escaped paragraphs, never as markup. */
+  narration: string;
+  artifacts: TourArtifactView[];
 }
 
 /** What main.ts hands over for one hovered / selected thing. */
@@ -64,6 +86,8 @@ export interface Sidebar {
   setCursor(t: number | null): void;
   /** Working-tree change list; null removes the section. */
   setWorkingTree(view: WorkingTree | null): void;
+  /** Current tour step; null removes the section and restores SELECTED. */
+  setTour(view: TourView | null): void;
 }
 
 export function createSidebar(
@@ -74,10 +98,11 @@ export function createSidebar(
   const widthBtn = requireEl('sb-width');
 
   const secInspect = section('inspect');
+  const secTour = section('tour');
   const secSelected = section('selected');
   const secWork = section('worktree');
   const secCode = section('code');
-  body.append(secInspect, secSelected, secWork, secCode);
+  body.append(secInspect, secTour, secSelected, secWork, secCode);
 
   const state: {
     hover: Descriptor | null;
@@ -90,6 +115,7 @@ export function createSidebar(
     openPrs: Set<number>;
     allCommits: boolean;
     work: WorkingTree | null;
+    tour: TourView | null;
   } = {
     hover: null,
     selected: null,
@@ -101,6 +127,7 @@ export function createSidebar(
     openPrs: new Set(),
     allCommits: false,
     work: null,
+    tour: null,
   };
 
   widthBtn.addEventListener('click', () => {
@@ -137,6 +164,7 @@ export function createSidebar(
   });
 
   renderInspect();
+  renderTour();
   renderSelected();
   renderWork();
   secCode.style.display = 'none';
@@ -162,6 +190,11 @@ export function createSidebar(
       state.work = view;
       renderWork();
     },
+    setTour(view) {
+      state.tour = view;
+      renderTour();
+      renderSelected();
+    },
   };
 
   // --- sections ------------------------------------------------------------
@@ -173,7 +206,39 @@ export function createSidebar(
       (d ? statsHtml(d) : `<div class="sb-hint">Hover a plate or building</div>`);
   }
 
+  /**
+   * The tour step. Narration is UNTRUSTED author text: it is escaped and split
+   * on blank lines into paragraphs, never interpreted as markup of any kind.
+   */
+  function renderTour(): void {
+    const t = state.tour;
+    if (!t) {
+      secTour.style.display = 'none';
+      secTour.innerHTML = '';
+      return;
+    }
+    secTour.style.display = '';
+    const paras = t.narration
+      .split(/\r?\n\s*\r?\n/)
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => `<div class="sb-para">${escapeHtml(p)}</div>`)
+      .join('');
+    secTour.innerHTML =
+      `<div class="h"><span>Tour</span><em>${t.index} / ${t.count}</em></div>` +
+      `<div class="sb-tour-tour">${escapeHtml(t.title)}</div>` +
+      `<div class="sb-name">${escapeHtml(t.stepTitle)}</div>` +
+      (paras || `<div class="sb-hint">No narration</div>`) +
+      t.artifacts.map(artifactHtml).join('');
+  }
+
   function renderSelected(): void {
+    // The tour owns this slot while it plays.
+    if (state.tour) {
+      secSelected.style.display = 'none';
+      return;
+    }
+    secSelected.style.display = '';
     const d = state.selected;
     if (!d) {
       secSelected.innerHTML =
@@ -406,6 +471,29 @@ function diffHtml(text: string): string {
     return cls ? `<span class="${cls}">${escapeHtml(line)}</span>` : escapeHtml(line);
   });
   return `<div class="sb-code">${out.join('\n')}</div>`;
+}
+
+/**
+ * One tour artifact. `src`/`href` were scheme-validated by the SDK's
+ * `validateTour`; escaping here closes the attribute-injection half.
+ */
+function artifactHtml(a: TourArtifactView): string {
+  if (a.type === 'diff') {
+    return (
+      `<div class="sb-sub">Diff · ${escapeHtml(a.label)}</div>` +
+      (a.diff ? diffHtml(a.diff) : `<div class="sb-hint">diff unavailable</div>`)
+    );
+  }
+  if (a.type === 'image') {
+    return (
+      `<img class="sb-shot" src="${escapeHtml(a.src)}" alt="${escapeHtml(a.caption ?? '')}" />` +
+      (a.caption ? `<div class="sb-hint">${escapeHtml(a.caption)}</div>` : '')
+    );
+  }
+  return (
+    `<a class="sb-link" href="${escapeHtml(a.href)}" target="_blank" rel="noopener noreferrer">` +
+    `${escapeHtml(a.label)} &#8599;</a>`
+  );
 }
 
 function prAge(pr: Pr): string {

@@ -427,6 +427,47 @@
   .pal-row mark { background: rgba(250,70,22,0.28); color: #ffd9cd; }
   .pal-empty { color: var(--foreground-muted); font-size: 10px; letter-spacing: 0.14em; padding: 8px 7px; text-transform: uppercase; opacity: 0.7; }
 
+  /* --- tour player */
+  /* `.panel` re-declares position: relative after `.hud`, so pin it explicitly. */
+  /* Same footprint as #help, which it replaces, so it clears the timeline. */
+  #tour { position: fixed; left: 14px; bottom: 14px; width: 214px; padding: 10px 12px 11px; display: none; }
+  #tour.on { display: block; }
+  body.touring #help { display: none; }
+  #tour .t {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+    font-size: 9px; letter-spacing: 0.24em; text-transform: uppercase;
+    color: var(--foreground-muted); margin-bottom: 6px;
+  }
+  #tour .t #tour-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tour .t em { font-style: normal; color: var(--orange); flex: none; letter-spacing: 0.12em; }
+  /* Step titles are prose, not signage — no uppercase transform. */
+  #tour-name { color: var(--foreground); font-size: 11.5px; line-height: 1.5; letter-spacing: 0.04em; }
+  #tour-bar { height: 2px; background: var(--surface-overlay); margin: 9px 0 8px; }
+  #tour-bar i { display: block; height: 100%; width: 0; background: var(--accent-muted); box-shadow: 0 0 8px var(--accent-muted); transition: width 120ms linear; }
+  #tour-btns { display: flex; gap: 5px; }
+  #tour-btns button {
+    appearance: none; cursor: pointer; font-family: var(--mono); font-size: 10px; line-height: 1;
+    letter-spacing: 0.1em; color: var(--foreground); background: rgba(39,39,42,0.72);
+    border: 1px solid var(--border); padding: 5px 4px; flex: 1;
+  }
+  #tour-btns button:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--brand); }
+  #tour-btns button:disabled { opacity: 0.35; cursor: default; }
+  #tour-btns #tour-auto.on {
+    color: #ffd9cd; border-color: var(--orange);
+    background: linear-gradient(90deg, rgba(250,70,22,0.28), rgba(250,70,22,0.06));
+  }
+  #tour-btns #tour-exit { color: var(--foreground-muted); }
+
+  /* tour sidebar section */
+  .sb-tour-tour { color: var(--accent-muted); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 4px; }
+  .sb-para { color: var(--foreground-secondary); font-size: 10.5px; line-height: 1.65; letter-spacing: 0.03em; margin-top: 8px; white-space: pre-wrap; word-break: break-word; }
+  .sb-shot { display: block; max-width: 100%; height: auto; margin-top: 10px; border: 1px solid var(--border); }
+  .sb-link {
+    display: inline-block; margin-top: 9px; color: var(--accent-muted); font-size: 10px;
+    letter-spacing: 0.1em; text-decoration: none; border-bottom: 1px dotted currentColor; word-break: break-all;
+  }
+  .sb-link:hover { color: var(--foreground); }
+
   /* --- boot / error banner */
   #boot {
     position: fixed; inset: 0; z-index: 60; display: flex;
@@ -524,6 +565,9 @@
       <input id="tl-start" type="range" min="0" max="1000" value="0" step="1" />
     </div>
   </div>
+
+  <!-- tour player (bottom-left; replaces the help panel while a tour runs) -->
+  <div id="tour" class="hud panel"></div>
 
   <div id="notice"></div>
 

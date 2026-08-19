@@ -1,0 +1,94 @@
+{
+  "title": "How Code City is built",
+  "steps": [
+    {
+      "target": "README.md",
+      "title": "Welcome — the shape of the project",
+      "camera": "orbit",
+      "narration": "You are looking at this visualizer's own source, rendered by itself. Folders are city districts, files are the plates inside them, and every function, class and interface is a building standing on its file.\n\nThe whole system is a straight pipeline with four stops, all of them lit up around you right now: the analyzer walks a repo and writes one JSON file; the shared types are the contract that file obeys; the layout turns the tree into rectangles; and the city turns those rectangles into geometry.\n\nUse the arrow keys (or the buttons bottom-left) to walk the pipeline. Esc leaves the tour at any point and hands the city back to you.",
+      "highlight": [
+        "analyzer/analyze.ts",
+        "shared/types.ts",
+        "viewer/src/layout.ts",
+        "viewer/src/city.ts"
+      ],
+      "artifacts": [
+        {
+          "type": "link",
+          "href": "https://github.com/bryan-uipath/codebase-visualizer",
+          "label": "The repository on GitHub"
+        }
+      ]
+    },
+    {
+      "target": "analyzer/analyze.ts",
+      "title": "Stop 1 — the analyzer",
+      "camera": "isolate",
+      "narration": "Everything starts here, and it runs entirely on your machine. The analyzer discovers source files under the chosen roots, parses each one with the TypeScript compiler API to pull out its top-level modules (and class members, and markdown headings), and mines git for the rest.\n\nOne `git log --numstat` pass produces three things at once: churn per file, the fix-commit subset, and the full commit stream with per-file added/deleted counts. That single pass is what later powers the timeline, the recent-focus overlay and Strata mode — nothing in the viewer ever shells out to git for history.\n\nYou are now standing inside the file: each building is one exported function or constant. This is what `camera: \"isolate\"` does — it drills in and re-lays out the subtree to fill the stage.",
+      "highlight": ["shared/types.ts"]
+    },
+    {
+      "target": "shared/types.ts#CityData",
+      "title": "Stop 2 — the data contract",
+      "camera": "isolate",
+      "narration": "`CityData` is the seam of the whole project. The analyzer is its only producer and the viewer is its only consumer, so neither side imports the other — they agree on this file and nothing else.\n\nThe tree carries folder and file nodes with their stats; `edges` are directional import couplings (a imports b); `prs` come from the `gh` CLI; and `files` + `commits` are the compact commit stream, where each commit lists file *indices* rather than paths so twelve months of history stay small enough to ship in one JSON file.\n\nIf you are adding a feature, ask first whether it needs a new field here. If it does, the analyzer and the viewer change together.",
+      "highlight": ["analyzer/analyze.ts", "shared/host.ts"],
+      "artifacts": [
+        {
+          "type": "diff",
+          "commit": "ce61a8c",
+          "path": "shared/types.ts"
+        }
+      ]
+    },
+    {
+      "target": "viewer/src/layout.ts#layoutCity",
+      "title": "Stop 3 — turning a tree into a map",
+      "camera": "frame",
+      "narration": "`layoutCity` is a squarified treemap: each folder's rectangle is divided among its children in proportion to lines of code, recursively, with a street-width gap between siblings so the result reads as blocks rather than a mosaic.\n\nIt also assigns the terrace geometry — a plate's *tier*, its top surface Y and its thickness — which is what makes a top-level district sit visibly higher than the folders nested inside it. Folders with a single child are pass-through: they share their child's tier instead of spending a whole step on no information.\n\nThis step used `camera: \"frame\"` — a context shot. The camera flew to the building without drilling into it, so you can still see the neighbourhood it lives in.",
+      "highlight": ["viewer/src/vtree.ts"]
+    },
+    {
+      "target": "viewer/src/city.ts#buildCity",
+      "title": "Stop 4 — geometry, in as few draw calls as possible",
+      "camera": "isolate",
+      "narration": "`buildCity` walks the laid-out tree once and fills instanced meshes: one for folder plates, one for file plates, and one per module kind for the buildings. A repo the size of a large monorepo becomes a few dozen draw calls instead of tens of thousands.\n\nThat design decides how every overlay works. Churn, fix-hotspots, recent-focus, the search highlight and the working-tree layer never rebuild geometry — they walk the same instance records and rewrite per-instance colors. Look for `applyOverlay` and `paintSearch` in main.ts for the pattern.\n\nThe module records this returns are also what the raycaster resolves a hover into, so picking, highlighting and labelling all share one index.",
+      "highlight": ["viewer/src/main.ts", "viewer/src/labels.ts"]
+    },
+    {
+      "target": "viewer/src/strata.ts",
+      "title": "Stop 5 — Strata: buildings made of history",
+      "camera": "orbit",
+      "narration": "Strata is the most opinionated view in the tool. It replaces module buildings with one slab per commit: height is the number of commits that touched the file, and each slab's footprint is the file's size at that moment in time, reconstructed by walking the numstat deltas backwards from today.\n\nThe silhouette becomes the file's biography — a steady taper means it grew gradually, a straight tower means heavy churn at a stable size, tall and thin means a tiny file that is endlessly touched. Slab color is the conventional-commit type of that commit: feat cyan, fix red, refactor violet.\n\nThe attached diff is the commit that introduced this file. The camera is slowly orbiting because this step asked for `camera: \"orbit\"` — the treatment for something whose shape is the point.",
+      "highlight": ["viewer/src/timeline.ts"],
+      "artifacts": [
+        {
+          "type": "diff",
+          "commit": "9db96f3",
+          "path": "viewer/src/strata.ts"
+        }
+      ]
+    },
+    {
+      "target": "shared/host.ts#CityHost",
+      "title": "Stop 6 — the host seam",
+      "camera": "isolate",
+      "narration": "The viewer never fetches anything itself. It asks a `CityHost` for the dataset, for source lines, for a log, for a diff, for git status, for a content search — and every one of those may answer null.\n\n`HttpHost` is the browser implementation, backed by a small dev-server middleware that shells out to git inside the analyzed repo with every path validated against the repo root. On a static export those endpoints simply do not exist, the host latches to unavailable, and the panes that need them hide themselves.\n\nThis is also the extension point: a VS Code webview would inject a postMessage-backed host with the same six methods plus `openFile`, and nothing else in the viewer would change.",
+      "highlight": ["viewer/src/sidebar.ts", "viewer/vite.config.js"]
+    },
+    {
+      "target": "viewer/src/sidebar.ts#createSidebar",
+      "title": "Stop 7 — the inspector, and where you are standing",
+      "camera": "frame",
+      "narration": "Every panel you have been reading is rendered here. The sidebar stacks INSPECT (live hover), TOUR (this, while a tour is playing), SELECTED, the working-tree change list, and CODE — the real source span and latest diff, pulled through the host.\n\nOne rule holds throughout: anything derived from data is escaped before it reaches innerHTML. Tour files are untrusted input, so narration is rendered as escaped plain text with paragraph breaks and never as markup, and artifact URLs are scheme-checked in `shared/tour.ts` before they are ever put in an attribute.\n\nThat is the tour. Press Esc to exit — the city, your selection and the normal Esc-to-go-up behaviour all come straight back.",
+      "highlight": ["shared/tour.ts", "viewer/src/tour.ts"],
+      "artifacts": [
+        {
+          "type": "link",
+          "href": "https://github.com/bryan-uipath/codebase-visualizer/blob/main/docs/tours.md",
+          "label": "docs/tours.md — how an agent writes one of these"
+        }
+      ]
+    }
+  ]
+}

@@ -31,6 +31,8 @@ import {
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
 import { createSearch, type HighlightSpec, type SearchPalette } from './search.js';
+import type { TourTarget } from '../../shared/tour.js';
+import { createTour, type TourPlayer } from './tour.js';
 import {
   buildStrataIndex, createStrata, COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
   type StrataBuild, type StrataIndex, type StrataRecord,
@@ -176,6 +178,9 @@ let terraceSigns: TerraceSigns;
 let sidebar: Sidebar;
 let timeline: Timeline;
 let search: SearchPalette | null = null;
+let tour: TourPlayer | null = null;
+/** A tour step asked for a slow orbit; suspended while the camera is flying. */
+let orbitWanted = false;
 let arcMesh: THREE.Mesh | null = null;
 let arcFlow: ArcFlow | null = null;
 let selectionBox: THREE.LineSegments;
@@ -299,6 +304,7 @@ async function main(): Promise<void> {
   rebuildScene({ instant: true });
   buildHud();
   bindEvents();
+  tour = createTourPlayer();
   animate();
 
   requestAnimationFrame(() => dom.boot.classList.add('hide'));
@@ -1099,6 +1105,66 @@ function pulseSearchCursor(t: number): void {
   _hl.copy(SEARCH_HL).multiplyScalar(k);
   for (const rec of searchPaint.pulseRecs) rec.mesh.setColorAt(rec.instanceId, _hl);
   for (const mesh of searchPaint.pulseMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------------------
+// Tour player — the city drives itself through a scripted walk
+// ---------------------------------------------------------------------------
+
+/**
+ * The player owns its own HUD and sidebar section; everything it does to the
+ * city goes through these five verbs, each of which is machinery that already
+ * existed for search, drill-down and the overlay passes.
+ */
+function createTourPlayer(): TourPlayer {
+  return createTour({
+    frame: (target) => tourReveal(target),
+    isolate: (target) => {
+      if (!tourReveal(target)) return false;
+      const sel = state.selection;
+      if (sel && sel.type !== 'pr') focusNode(focusTargetFor(sel));
+      return true;
+    },
+    highlight: (targets) => tourHighlight(targets),
+    setOrbit: (on) => {
+      orbitWanted = on;
+      if (!on) controls.autoRotate = false;
+    },
+    onUserCamera: (fn) => { controls.addEventListener('start', fn); },
+    setView: (view) => sidebar.setTour(view),
+    getDiff: (path, hash) => host.getDiff(path, hash),
+    notice: showNotice,
+    onExit: () => { sidebar.setSelection(state.selection ? describe(state.selection) : null); },
+  });
+}
+
+function tourReveal(target: TourTarget): boolean {
+  return revealPath(target.path, { module: target.module, line: target.range?.start });
+}
+
+/**
+ * Co-highlight the step's target plus its blast radius, reusing the
+ * search-highlight recolor pass (matches glow, everything else dims). The
+ * target itself burns brightest; null hands the city back to its overlay.
+ */
+function tourHighlight(targets: TourTarget[] | null): void {
+  if (!targets || !targets.length) {
+    setSearchHighlight(null);
+    return;
+  }
+  const paths = new Map<string, { w: number; mods: Set<string> | null }>();
+  targets.forEach((t, i) => {
+    const w = i === 0 ? 1 : 0.62;
+    const prev = paths.get(t.path);
+    if (!prev) {
+      paths.set(t.path, { w, mods: t.module ? new Set([t.module]) : null });
+      return;
+    }
+    prev.w = Math.max(prev.w, w);
+    if (!t.module) prev.mods = null;        // a whole-file target outranks module ones
+    else if (prev.mods) prev.mods.add(t.module);
+  });
+  setSearchHighlight({ paths, cursor: null });
 }
 
 // ---------------------------------------------------------------------------
@@ -1933,6 +1999,24 @@ function bindEvents(): void {
     // only, never also pop the focus scope.
     if (search && search.isOpen()) return;
     if (isEditable(e.target)) return;
+    // A running tour owns Escape and the arrows before anything else does.
+    if (tour && tour.isActive()) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        tour.exit();
+        return;
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        tour.next();
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        tour.prev();
+        return;
+      }
+    }
     if (e.key === 'Escape') {
       const up = state.focus?.parent;
       if (up) focusNode(up);
@@ -2122,6 +2206,12 @@ function animate(): void {
       applyOverlay();
     }
   }
+
+  if (tour) tour.tick(dt);
+  // The orbit treatment must not fight a camera flight, which writes the
+  // position directly a few lines above.
+  controls.autoRotate = orbitWanted && !flight.active;
+  controls.autoRotateSpeed = 0.35;
 
   controls.update();
   // Mid-transition the stage is still folded, so world-space picking, labels

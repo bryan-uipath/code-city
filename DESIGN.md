@@ -241,30 +241,57 @@ The "Working tree" toggle in Layers completes the time spectrum: strata →
 - The toggle only appears once `/api/status` has answered, so a static export
   never shows a control it cannot serve.
 
-## Tour SDK (planned — PR-review integration)
+## Tour SDK (implemented — PR-review integration)
 
-A TypeScript SDK for *codifying a guided tour of the city*, so a coding agent
-(or a human) can walk reviewers through a PR or subsystem:
+A tour *codifies a guided walk through the city*, so a coding agent (or a human)
+can fly reviewers through a PR or subsystem instead of handing them a flat file
+list. The contract lives in `shared/tour.ts`:
 
 ```ts
 export interface Tour { title: string; steps: TourStep[]; }
 export interface TourStep {
-  target: string;            // path, path#module, or path:line-range
+  target: string;            // path, path#module, or path:start-end
   title: string;
-  narration: string;         // markdown, shown in the sidebar
-  artifacts?: TourArtifact[];// diffs (commit/PR refs), images (demo shots), links
-  camera?: 'isolate' | 'frame' | 'orbit';  // how to present the target
-  highlight?: string[];      // additional paths/modules to co-highlight
+  narration: string;         // plain text; blank lines split paragraphs
+  artifacts?: TourArtifact[];// { diff, commit, path? } | { image, src } | { link, href }
+  camera?: 'isolate' | 'frame' | 'orbit';
+  highlight?: string[];      // co-highlighted targets — the blast radius
 }
 ```
 
-The viewer gains a tour player (step list, next/prev, autoplay) that flies the
-camera through each step, isolates/highlights targets, and renders narration +
-artifacts in the sidebar. Tours load from a JSON/TS module or stream in live
-from an agent (CityHost extension). The companion piece is an agent skill:
-"generate a tour of this PR" — the agent reads the diff, picks the key
-locations, writes the Tour object. Primary use case: PR reviews where the
-reviewer flies the change instead of reading a flat file list.
+- **Untrusted by construction.** A tour is JSON from anywhere, so it crosses one
+  boundary: `validateTour(x: unknown): Tour | null` narrows field by field and
+  rebuilds the object from validated pieces (no `as`, no surviving extra keys),
+  dropping malformed steps/artifacts, capping sizes, and scheme-checking every
+  URL (images: `https:` or `data:image/…;base64`; links: `https:` only).
+  Narration is rendered as **escaped plain text with paragraph breaks — never
+  markdown-to-HTML**, so a hostile tour can neither script nor style anything.
+- **The player** (`viewer/src/tour.ts`) owns the bottom-left HUD panel (step
+  x/y, prev/next, autoplay, exit — it takes `#help`'s slot) and a TOUR section
+  that displaces SELECTED in the sidebar. Autoplay holds ~8s a step and stops on
+  any user camera input (the OrbitControls `start` event).
+- **Everything it does to the city is existing machinery**, reached through five
+  host verbs implemented in main.ts: `frame` = `revealPath` (select + fly),
+  `isolate` = reveal then `focusNode(focusTargetFor(...))`, `orbit` = frame plus
+  `controls.autoRotate` (suspended while a flight is writing the camera
+  position), `highlight` = the search-highlight recolor pass with the target at
+  full weight and the co-highlights at 0.62, `getDiff` = `CityHost.getDiff`, so
+  diff artifacts are tinted by the same `diffHtml` as the inspector's diff pane.
+- **Esc outranks everything**: a running tour eats Escape (and ←/→) before the
+  focus-stack pop, and exiting restores the overlay, the selection and the
+  normal Esc behaviour.
+- **Three ways in**: `?tour=<relative .json path>` (same-origin relative paths
+  only — absolute, cross-origin and `..` are refused), drag-and-drop of a
+  `.json` file onto the window, and `window.cityTour.load(tour)` for live agent
+  injection. All three run the same validator.
+- `viewer/public/tours/welcome.json` is a worked example: eight steps through
+  this repo's own pipeline (analyzer → contract → layout → city → strata → host
+  seam → inspector), with a real diff artifact and links. It expects
+  `npm run analyze -- .`.
+
+The companion piece is the agent recipe in `docs/tours.md`: read the diff, pick
+the 5–10 locations that carry the idea, emit the Tour JSON, hand the user
+`npm run dev` plus `?tour=` or `window.cityTour.load`.
 
 ## Future ideas (recorded, not scheduled)
 
@@ -277,14 +304,10 @@ reviewer flies the change instead of reading a flat file list.
   through the system*: data pulses traveling the import arcs / between buildings
   as the program runs, watched variables as glowing payloads. The city becomes a
   runtime instrument, not just a static map.
-- **Coding-agent tours** — let a coding agent (Claude Code etc.) drive the camera
-  and highlights to give a guided *tour of a PR or diff*: "here's the entry
-  point, this interface changed, these three files consume it" — camera
-  waypoints + narration + synchronized highlights. Same mechanism doubles as
-  living documentation of an interaction (agent highlights the interfaces/files
-  involved in a flow while explaining it). Natural extension of the
-  city-as-shared-referent idea: the agent doesn't just read the city, it
-  *presents* with it.
+- **Live agent tours** — the Tour SDK ships the scripted case; the open half is
+  a *streaming* one, where an agent drives the camera turn by turn over a
+  channel (CityHost extension) instead of emitting a finished file, so it can
+  present with the city while it is still reasoning about it.
 - **PR / diff focus mode** — first-class "show me this PR" view: isolate the
   PR's changed files plus their import blast-radius, dim the rest of the city,
   color by added/modified/deleted, with the diff in the sidebar. Entry points:
@@ -299,6 +322,7 @@ reviewer flies the change instead of reading a flat file list.
 ```
 shared/types.ts           # the data.json contract, shared analyzer <-> viewer
 shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
+shared/tour.ts            # Tour SDK types + validateTour (the untrusted-input boundary)
 analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs]
 viewer/index.html         # HUD markup + CSS
 viewer/src/main.ts        # scene, interaction, overlays
@@ -308,5 +332,7 @@ viewer/src/city.ts        # geometry/instancing builders
 viewer/src/labels.ts      # map-style dynamic labels + parent->child leader lines
 viewer/src/terrace.ts     # district names on the terrace side walls
 viewer/src/strata.ts      # Strata mode: per-commit slab stacks + their paints
+viewer/src/tour.ts        # tour player: HUD panel, steps, autoplay, tour loading
+viewer/public/tours/       # bundled tours (welcome.json = this repo's own architecture)
 viewer/public/data.json   # generated (gitignored)
 ```

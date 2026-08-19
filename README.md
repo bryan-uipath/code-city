@@ -20,6 +20,7 @@ The thesis: as more code is written by agents, we read less of it line-by-line. 
 - **History timeline** — scrub or play through the commit stream and watch activity flow across the city.
 - **Working-tree layer** — what is uncommitted *right now*: modified files glow amber, untracked files get green ghost outlines, deletions red, with the change list in the sidebar (click to fly there) and a refresh button. Dev server only.
 - **Inspector sidebar** — stats, open PRs (one compact line each, click to expand), recent commits, and actual source/diff snippets for the selected node (dev server only).
+- **Guided tours** — a tour is a JSON file (hand-written, or emitted by a coding agent that just read a PR) that flies the camera through 5–10 places in the code, isolating or highlighting each one and narrating it in the sidebar, with diffs, screenshots and links attached. See [Loading a tour](#loading-a-tour) and [docs/tours.md](docs/tours.md).
 - **Map-style labels** — names scope dynamically to what's in view, districts → files → buildings, like a map engine. The top folder tiers are signed on their terrace side walls instead; every label is clickable (click selects, double-click isolates) and links to its children when you hover it.
 
 All analysis is local: the analyzer runs on your machine and the data never leaves it. The only network calls are optional `gh` PR lookups and GitHub avatar images.
@@ -50,6 +51,31 @@ Requirements: Node 20+, git; optionally the [`gh` CLI](https://cli.github.com/) 
 | Double-click | Isolate + break down that node |
 | Esc / breadcrumb | Back up a level |
 | `C` | Copy the selected node's repo-relative path |
+| `←` / `→` / `Esc` | Tour only: previous step / next step / exit the tour |
+
+## Loading a tour
+
+Three ways in, all of them validated through `validateTour` in
+[`shared/tour.ts`](shared/tour.ts) — tour files are untrusted input, so
+narration renders as plain text and artifact URLs are scheme-checked:
+
+```bash
+# 1. query param — relative, same-origin .json paths only
+npm run dev            # then open http://localhost:5173/?tour=tours/welcome.json
+
+# 2. drag a .json tour file anywhere onto the window
+
+# 3. live injection, from the console or an agent bridge
+#    window.cityTour.load({ title: "…", steps: [ … ] })
+```
+
+While a tour plays: `←` / `→` step, `Esc` exits, and the bottom-left panel has
+prev / next / autoplay (~8s a step, pauses as soon as you touch the camera) /
+exit. Exiting restores the city exactly as it was.
+
+The bundled `viewer/public/tours/welcome.json` is a tour of **this** repo's own
+architecture, so it expects `npm run analyze -- .` first. To write your own — or
+to have an agent write one for a PR — see [docs/tours.md](docs/tours.md).
 
 ## How it works
 
