@@ -129,6 +129,18 @@ the base snapshot — dragging the start handle back literally grows the city.
 File-level only at first (per-function historical size needs per-commit
 parsing); ships as a "Strata" mode alongside the log-scale massing.
 
+## Analyzer cache & static export (planned)
+
+- **Incremental analysis cache** — git history is append-only: persist the
+  processed commit stream + numstat deltas in `.codecity/cache.json` keyed by
+  the last-processed commit hash; subsequent runs only walk
+  `git log <cached>..HEAD` and merge. Module extraction cached per file keyed
+  by git blob SHA (`git ls-files -s`). Target: near-instant re-analysis.
+- **Static export** — `npm run export`: vite-build the viewer with the current
+  `data.json` baked into `dist/` as a self-contained static visualization
+  (API-dependent panes already hide themselves). Use cases: GitHub Pages,
+  internal doc hubs, attaching a city snapshot to a PR or design doc.
+
 ## Future ideas (recorded, not scheduled)
 
 - **Debug adapter integration** — attach via DAP and show *live values streaming
