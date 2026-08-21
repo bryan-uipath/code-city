@@ -12,14 +12,20 @@
  * narration reaches the DOM as escaped plain text — never as markup.
  */
 import type { DiffResponse } from '../../shared/types.js';
-import type { Tour, TourArtifact, TourDiff, TourStep, TourTarget } from '../../shared/tour.js';
+import type { Tour, TourArtifact, TourCheckpoint, TourDiff, TourStep, TourTarget } from '../../shared/tour.js';
 import { parseTourTarget, validateTour } from '../../shared/tour.js';
 import type { TourArtifactView, TourView } from './sidebar.js';
 
 /** Seconds an autoplaying step is held before advancing. */
 const AUTOPLAY_STEP = 8;
-/** Only a relative, same-origin `.json` path may be fetched via `?tour=`. */
-const SAFE_TOUR_PATH = /^(?:\.\/)?(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+\.json$/;
+/**
+ * Only a relative, same-origin tour path may be fetched via `?tour=`.
+ * `.cctour` is the preferred extension; `.json` stays accepted. Both hold the
+ * same JSON — the extension only says "this file is a tour".
+ */
+const SAFE_TOUR_PATH = /^(?:\.\/)?(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+\.(?:cctour|json)$/;
+/** Same pair, for naming a dropped file. */
+const TOUR_EXT = /\.(?:cctour|json)$/i;
 
 export interface TourHost {
   /** Select + fly to a target without drilling into it. False = not in this city. */
@@ -32,6 +38,8 @@ export interface TourHost {
   setOrbit(on: boolean): void;
   /** Register a callback fired whenever the *user* moves the camera. */
   onUserCamera(fn: () => void): void;
+  /** Arm the tour's timeline annotations; null clears them (see checkpoints.ts). */
+  setCheckpoints(list: TourCheckpoint[] | null): void;
   /** Push the current step into the sidebar; null removes the section. */
   setView(view: TourView | null): void;
   /** `git show <hash> -- <path>` through the environment adapter. */
@@ -94,6 +102,7 @@ export function createTour(host: TourHost): TourPlayer {
     state.tour = tour;
     state.step = -1;
     state.autoplay = false;
+    host.setCheckpoints(tour.checkpoints ?? null);
     document.body.classList.add('touring');
     el.root.classList.add('on');
     go(0);
@@ -107,6 +116,7 @@ export function createTour(host: TourHost): TourPlayer {
     state.token++;
     setAutoplay(false);
     host.setOrbit(false);
+    host.setCheckpoints(null);
     host.highlight(null);
     host.setView(null);
     document.body.classList.remove('touring');
@@ -228,7 +238,7 @@ export function createTour(host: TourHost): TourPlayer {
 
   // --- loading -------------------------------------------------------------
 
-  /** `?tour=<relative .json path>` — same-origin relative paths only. */
+  /** `?tour=<relative .cctour or .json path>` — same-origin relative paths only. */
   async function loadFromQuery(): Promise<void> {
     const raw = new URLSearchParams(window.location.search).get('tour');
     if (!raw) return;
@@ -238,15 +248,19 @@ export function createTour(host: TourHost): TourPlayer {
     }
     try {
       const res = await fetch('./' + raw.replace(/^\.\//, ''), { cache: 'no-cache' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      // A `.cctour` is served with whatever type the host guesses, so the
+      // content-type guard only applies to `.json`. Either way the body has to
+      // parse as JSON and then survive `validateTour`.
       const type = res.headers.get('content-type') ?? '';
-      if (!res.ok || !type.includes('json')) throw new Error('HTTP ' + res.status);
-      load(await res.json());
+      if (raw.endsWith('.json') && !type.includes('json')) throw new Error('not json');
+      load(JSON.parse(await res.text()));
     } catch {
       host.notice('Tour not found: ' + raw);
     }
   }
 
-  /** Drop a .json tour file anywhere on the window. */
+  /** Drop a `.cctour` (or `.json`) tour file anywhere on the window. */
   function bindDragAndDrop(): void {
     window.addEventListener('dragover', (e) => {
       if (!e.dataTransfer) return;
@@ -257,8 +271,8 @@ export function createTour(host: TourHost): TourPlayer {
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
       e.preventDefault();
-      if (!/\.json$/i.test(file.name)) {
-        host.notice('Drop a .json tour file');
+      if (!TOUR_EXT.test(file.name)) {
+        host.notice('Drop a .cctour tour file');
         return;
       }
       void file.text().then(

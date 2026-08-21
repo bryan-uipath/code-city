@@ -32,7 +32,9 @@ import {
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
 import { createSearch, type HighlightSpec, type SearchPalette, type SearchResultsPayload } from './search.js';
 import type { TourTarget } from '../../shared/tour.js';
+import { validateCheckpoints } from '../../shared/tour.js';
 import { createTour, type TourPlayer } from './tour.js';
+import { createCheckpoints, type Checkpoints } from './checkpoints.js';
 import {
   buildStrataIndex, createStrata, commitTypePaint, commitTypeKey,
   COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
@@ -243,6 +245,7 @@ let sidebar: Sidebar;
 let timeline: Timeline;
 let search: SearchPalette | null = null;
 let tour: TourPlayer | null = null;
+let checkpoints: Checkpoints;
 /** A tour step asked for a slow orbit; suspended while the camera is flying. */
 let orbitWanted = false;
 let arcMesh: THREE.Mesh | null = null;
@@ -448,6 +451,7 @@ async function main(): Promise<void> {
     onChange: onTimeCursor,
     onRange: () => { strata.dirty = true; },
   });
+  checkpoints = createCheckpoints();
   sidebar = createSidebar({ host, timeline, githubUrl: data.repo?.githubUrl });
   labeler = createLabeler(scene, camera);
   search = createSearch({
@@ -465,6 +469,7 @@ async function main(): Promise<void> {
   buildHud();
   bindEvents();
   tour = createTourPlayer();
+  installScriptHooks();
   animate();
 
   requestAnimationFrame(() => dom.boot.classList.add('hide'));
@@ -1742,10 +1747,76 @@ function createTourPlayer(): TourPlayer {
       if (!on) controls.autoRotate = false;
     },
     onUserCamera: (fn) => { controls.addEventListener('start', fn); },
+    setCheckpoints: (list) => checkpoints.load(list),
     setView: (view) => sidebar.setTour(view),
     getDiff: (path, hash) => host.getDiff(path, hash),
     notice: showNotice,
     onExit: () => { sidebar.setSelection(state.selection ? describe(state.selection) : null); },
+  });
+}
+
+/**
+ * Scripting hooks — the programmatic surface recordings, tours and tests
+ * drive the viewer through (sibling of `window.cityTour`):
+ *
+ *   `cityScript.hover(path)`      shows the same callout + box a pointer pick
+ *                                 would (null clears); the next real pointer
+ *                                 move takes hover back.
+ *   `cityScript.screenPos(path)`  projects a path's rooftop to CSS pixels, so
+ *                                 a script can aim a real mouse at a building.
+ *   `cityCheckpoints`             feeds the timeline-annotation layer directly
+ *                                 (same validation as tour JSON — untrusted).
+ */
+function installScriptHooks(): void {
+  const nodeFor = (path: unknown): VNode | null =>
+    typeof path === 'string'
+      ? index.filesByPath.get(path) ?? index.nodesByPath.get(path) ?? null
+      : null;
+  /** World-space rooftop anchor — the point the hover callout rises from. */
+  const rooftop = (node: VNode): THREE.Vector3 | null => {
+    const r = node.rect;
+    if (!r) return null;
+    const top = plateTop(node.tier ?? node.depth ?? 0, node.type === 'file');
+    return new THREE.Vector3(r.x + r.w / 2, top + boxHeightFor(node), r.z + r.h / 2).add(stageHome);
+  };
+
+  Reflect.set(window, 'cityScript', {
+    hover(path: unknown): boolean {
+      if (path === null) {
+        setHover(null);
+        return true;
+      }
+      const node = nodeFor(path);
+      if (!node) return false;
+      setHover({ type: node.type, node, rec: null });
+      return true;
+    },
+    screenPos(path: unknown): { x: number; y: number; onScreen: boolean } | null {
+      const node = nodeFor(path);
+      const anchor = node ? rooftop(node) : null;
+      if (!anchor) return null;
+      anchor.project(camera);
+      return {
+        x: ((anchor.x + 1) / 2) * window.innerWidth,
+        y: ((1 - anchor.y) / 2) * window.innerHeight,
+        onScreen: Math.abs(anchor.x) <= 1 && Math.abs(anchor.y) <= 1 && anchor.z < 1,
+      };
+    },
+  });
+
+  Reflect.set(window, 'cityCheckpoints', {
+    load: (raw: unknown) => {
+      const list = validateCheckpoints(raw);
+      checkpoints.load(list);
+      return list.length;
+    },
+    show: (title: unknown, hold?: unknown) => {
+      if (typeof title !== 'string' || !title.trim()) return false;
+      checkpoints.show(title.slice(0, 200), typeof hold === 'number' ? hold : undefined);
+      return true;
+    },
+    busy: () => checkpoints.busy(),
+    clear: () => checkpoints.clear(),
   });
 }
 
@@ -3253,6 +3324,11 @@ function animate(): void {
     rehomeStage();
   }
 
+  checkpoints.tick(
+    dt,
+    timeline.enabled ? timeline.cursor : null,
+    timeline.enabled ? { min: timeline.min, max: timeline.max } : null
+  );
   if (timeline.enabled) {
     timeline.tick(dt);
     if (strata.dirty && strata.build) {

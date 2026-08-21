@@ -509,6 +509,35 @@
   }
   .sb-link:hover { color: var(--foreground); }
 
+  /* --- timeline checkpoints (see src/checkpoints.ts) */
+  /* Deliberately not .hud: annotations are part of the scene's narration, so
+     they survive chrome-free captures that hide the HUD. */
+  #checkpoint {
+    position: fixed; z-index: 45; left: 0; right: 0; bottom: 92px;
+    display: flex; justify-content: center; pointer-events: none;
+    opacity: 0; transition: opacity 0.35s ease;
+  }
+  #checkpoint.on { opacity: 1; }
+  #checkpoint .cp-inner {
+    display: flex; align-items: baseline;
+    padding: 8px 16px 9px;
+    background: rgba(9, 9, 11, 0.72);
+    border: 1px solid rgba(34, 211, 238, 0.32);
+    box-shadow: 0 0 18px rgba(34, 211, 238, 0.1), inset 0 0 14px rgba(34, 211, 238, 0.05);
+    font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--foreground-secondary);
+  }
+  #cp-dot { color: var(--orange); margin-right: 10px; animation: cp-pulse 1.15s ease-in-out infinite; }
+  #cp-caret {
+    color: var(--accent-muted); text-shadow: 0 0 8px var(--accent-muted);
+    animation: cp-blink 0.95s steps(1, end) infinite; margin-left: 1px;
+  }
+  @keyframes cp-pulse {
+    0%, 100% { opacity: 1; text-shadow: 0 0 9px var(--orange); }
+    50% { opacity: 0.3; text-shadow: none; }
+  }
+  @keyframes cp-blink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+
   /* --- boot / error banner */
   #boot {
     position: fixed; inset: 0; z-index: 60; display: flex;
@@ -610,6 +639,11 @@
 
   <!-- tour player (bottom-left; replaces the help panel while a tour runs) -->
   <div id="tour" class="hud panel"></div>
+
+  <!-- timeline checkpoint captions (see src/checkpoints.ts) -->
+  <div id="checkpoint" aria-live="polite">
+    <span class="cp-inner"><span id="cp-dot">&#9679;</span><span id="cp-text"></span><span id="cp-caret">&#9612;</span></span>
+  </div>
 
   <div id="notice"></div>
 

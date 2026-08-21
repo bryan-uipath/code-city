@@ -16,6 +16,24 @@
 export interface Tour {
   title: string;
   steps: TourStep[];
+  /** Optional timeline annotations, surfaced as the time cursor crosses them. */
+  checkpoints?: TourCheckpoint[];
+}
+
+/**
+ * A timeline annotation: a caption pinned to a moment in the repo's history.
+ * It fires when the timeline cursor crosses that moment (scrub, playback, or a
+ * scripted sweep). Give either `ts` (epoch seconds — exact) or `at` (a 0..1
+ * fraction of the timeline range — portable across re-exports); `ts` wins when
+ * both are present.
+ */
+export interface TourCheckpoint {
+  ts?: number;
+  at?: number;
+  /** Plain text; never rendered as markup. */
+  title: string;
+  /** Seconds the caption holds before fading (default is the viewer's). */
+  hold?: number;
 }
 
 /** How the camera presents a step's target. */
@@ -70,6 +88,7 @@ export interface TourTarget {
 // ---------------------------------------------------------------------------
 
 const MAX_STEPS = 60;
+const MAX_CHECKPOINTS = 40;
 const MAX_ARTIFACTS = 8;
 const MAX_HIGHLIGHTS = 60;
 const MAX_TITLE = 200;
@@ -143,7 +162,36 @@ export function validateTour(x: unknown): Tour | null {
     const step = validateStep(raw);
     if (step) steps.push(step);
   }
-  return steps.length ? { title, steps } : null;
+  if (!steps.length) return null;
+  const tour: Tour = { title, steps };
+  const checkpoints = validateCheckpoints(x.checkpoints);
+  if (checkpoints.length) tour.checkpoints = checkpoints;
+  return tour;
+}
+
+/**
+ * Check an unknown value against the checkpoint contract. Same posture as
+ * `validateTour`: the result is rebuilt from validated fields, malformed
+ * entries are dropped, titles are plain text.
+ */
+export function validateCheckpoints(x: unknown): TourCheckpoint[] {
+  if (!Array.isArray(x)) return [];
+  const out: TourCheckpoint[] = [];
+  for (const raw of x.slice(0, MAX_CHECKPOINTS)) {
+    if (!isRecord(raw)) continue;
+    const title = str(raw.title, MAX_TITLE);
+    if (!title) continue;
+    const ts = num(raw.ts);
+    const at = num(raw.at);
+    if (ts === null && (at === null || at < 0 || at > 1)) continue;
+    const cp: TourCheckpoint = { title };
+    if (ts !== null) cp.ts = ts;
+    else if (at !== null) cp.at = at;
+    const hold = num(raw.hold);
+    if (hold !== null) cp.hold = Math.min(Math.max(hold, 0.3), 30);
+    out.push(cp);
+  }
+  return out;
 }
 
 function validateStep(x: unknown): TourStep | null {
@@ -211,6 +259,11 @@ function str(value: unknown, max: number): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
+}
+
+/** A finite number, or null. */
+function num(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
