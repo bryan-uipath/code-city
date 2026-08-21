@@ -510,16 +510,22 @@
   .sb-link:hover { color: var(--foreground); }
 
   /* --- timeline checkpoints (see src/checkpoints.ts) */
-  /* Deliberately not .hud: annotations are part of the scene's narration, so
-     they survive chrome-free captures that hide the HUD. */
+  /* Deliberately not .hud: annotations are the scene's narration rather than
+     chrome, so a chrome-free capture should keep them. */
   #checkpoint {
-    position: fixed; z-index: 45; left: 0; right: 0; bottom: 92px;
+    /* the timeline's band, so the caption sits over the bar it annotates and
+       can never paint across the sidebar or the control stack */
+    position: fixed; z-index: 45; bottom: 92px;
+    left: 244px; right: calc(var(--sb-w, 300px) + 28px);
     display: flex; justify-content: center; pointer-events: none;
     opacity: 0; transition: opacity 0.35s ease;
   }
   #checkpoint.on { opacity: 1; }
   #checkpoint .cp-inner {
     display: flex; align-items: baseline;
+    /* A title is validated to 200 chars; the rest is ellipsised rather than
+       allowed to grow the box or wrap it into the scene. */
+    max-width: 100%;
     padding: 8px 16px 9px;
     background: rgba(9, 9, 11, 0.72);
     border: 1px solid rgba(34, 211, 238, 0.32);
@@ -527,8 +533,10 @@
     font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase;
     color: var(--foreground-secondary);
   }
-  #cp-dot { color: var(--orange); margin-right: 10px; animation: cp-pulse 1.15s ease-in-out infinite; }
+  #cp-dot { color: var(--orange); margin-right: 10px; flex: none; animation: cp-pulse 1.15s ease-in-out infinite; }
+  #cp-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #cp-caret {
+    flex: none;
     color: var(--accent-muted); text-shadow: 0 0 8px var(--accent-muted);
     animation: cp-blink 0.95s steps(1, end) infinite; margin-left: 1px;
   }
@@ -537,6 +545,11 @@
     50% { opacity: 0.3; text-shadow: none; }
   }
   @keyframes cp-blink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+  }
 
   /* --- boot / error banner */
   #boot {
@@ -641,9 +654,10 @@
   <div id="tour" class="hud panel"></div>
 
   <!-- timeline checkpoint captions (see src/checkpoints.ts) -->
-  <div id="checkpoint" aria-live="polite">
+  <div id="checkpoint" aria-hidden="true">
     <span class="cp-inner"><span id="cp-dot">&#9679;</span><span id="cp-text"></span><span id="cp-caret">&#9612;</span></span>
   </div>
+  <span id="cp-live" class="sr-only" aria-live="polite"></span>
 
   <div id="notice"></div>
 

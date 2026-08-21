@@ -25,6 +25,13 @@ const CROWDED_HOLD = 1.0;
 const TYPE_RATE = 55;
 /** Fade-out seconds (matches the #checkpoint CSS transition). */
 const FADE = 0.35;
+/**
+ * Captions waiting to play. A caption costs type-time plus hold, so an
+ * unbounded queue turns a few seconds of scrubbing into minutes of narration
+ * about moments the cursor left long ago. Past this depth the oldest waiting
+ * captions are dropped — the cursor's recent history is the interesting part.
+ */
+const MAX_QUEUE = 3;
 
 export interface TimelineWindow {
   min: number;
@@ -60,9 +67,12 @@ interface Active {
 export function createCheckpoints(): Checkpoints {
   const rootEl = document.getElementById('checkpoint');
   const textEl = document.getElementById('cp-text');
-  if (!rootEl || !textEl) throw new Error('missing #checkpoint markup');
+  const liveEl = document.getElementById('cp-live');
+  if (!rootEl || !textEl || !liveEl) throw new Error('missing #checkpoint markup');
   const root: HTMLElement = rootEl;
   const text: HTMLElement = textEl;
+  /** Off-screen live region: the type-on is decorative, the sentence is not. */
+  const live: HTMLElement = liveEl;
 
   const entries: Armed[] = [];
   const queue: Array<{ title: string; hold?: number }> = [];
@@ -74,19 +84,28 @@ export function createCheckpoints(): Checkpoints {
   return { load, show, clear, busy, tick };
 
   function load(list: TourCheckpoint[] | null): void {
-    entries.length = 0;
+    // A caption from the previous set must not outlive it — exiting a tour
+    // mid-type would otherwise leave the old caption fading on screen.
+    clear();
     for (const cp of list ?? []) entries.push({ cp, fired: false });
     mustArm = true;
   }
 
   function show(title: string, hold?: number): void {
-    queue.push({ title, hold });
+    // Same bounds `validateCheckpoints` applies, so a caption arriving through
+    // the script hook cannot pin itself on screen with a non-finite hold.
+    const bounded =
+      typeof hold === 'number' && Number.isFinite(hold)
+        ? Math.min(Math.max(hold, 0.3), 30)
+        : undefined;
+    queue.push({ title, hold: bounded });
   }
 
   function clear(): void {
     entries.length = 0;
     queue.length = 0;
     active = null;
+    live.textContent = '';
     root.classList.remove('on');
   }
 
@@ -110,7 +129,9 @@ export function createCheckpoints(): Checkpoints {
     // Scrubbing backwards re-arms everything at or ahead of the cursor. The
     // bound is inclusive so that scrubbing onto a moment re-fires it — without
     // it, a checkpoint pinned to the very start of history could never play.
+    // Anything still queued came from the pass we just reversed, so it is stale.
     if (cur < lastCursor) {
+      queue.length = 0;
       for (const e of entries) {
         const at = momentOf(e.cp, range);
         if (at !== null && at >= cur) e.fired = false;
@@ -130,6 +151,7 @@ export function createCheckpoints(): Checkpoints {
     }
     due.sort((a, b) => a.at - b.at);
     for (const d of due) queue.push({ title: d.cp.title, hold: d.cp.hold });
+    if (queue.length > MAX_QUEUE) queue.splice(0, queue.length - MAX_QUEUE);
 
     advance(dt);
   }
@@ -142,6 +164,7 @@ export function createCheckpoints(): Checkpoints {
       if (!next) return;
       active = { title: next.title, hold: next.hold ?? DEFAULT_HOLD, phase: 'type', t: 0 };
       text.textContent = '';
+      live.textContent = next.title;
       root.classList.add('on');
     }
 

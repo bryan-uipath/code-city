@@ -25,19 +25,14 @@
       "title": "Stop 1 — the analyzer",
       "camera": "isolate",
       "narration": "Everything starts here, and it runs entirely on your machine. The analyzer discovers source files under the chosen roots, parses each one with the TypeScript compiler API to pull out its top-level modules (and class members, and markdown headings), and mines git for the rest.\n\nOne `git log --numstat` pass produces three things at once: churn per file, the fix-commit subset, and the full commit stream with per-file added/deleted counts. That single pass is what later powers the timeline, the recent-focus overlay and Strata mode — nothing in the viewer ever shells out to git for history.\n\nYou are now standing inside the file: each building is one exported function or constant. This is what `camera: \"isolate\"` does — it drills in and re-lays out the subtree to fill the stage.",
-      "highlight": [
-        "shared/types.ts"
-      ]
+      "highlight": ["shared/types.ts"]
     },
     {
       "target": "shared/types.ts#CityData",
       "title": "Stop 2 — the data contract",
       "camera": "isolate",
       "narration": "`CityData` is the seam of the whole project. The analyzer is its only producer and the viewer is its only consumer, so neither side imports the other — they agree on this file and nothing else.\n\nThe tree carries folder and file nodes with their stats; `edges` are directional import couplings (a imports b); `prs` come from the `gh` CLI; and `files` + `commits` are the compact commit stream, where each commit lists file *indices* rather than paths so twelve months of history stay small enough to ship in one JSON file.\n\nIf you are adding a feature, ask first whether it needs a new field here. If it does, the analyzer and the viewer change together.",
-      "highlight": [
-        "analyzer/analyze.ts",
-        "shared/host.ts"
-      ],
+      "highlight": ["analyzer/analyze.ts", "shared/host.ts"],
       "artifacts": [
         {
           "type": "diff",
@@ -51,28 +46,21 @@
       "title": "Stop 3 — turning a tree into a map",
       "camera": "frame",
       "narration": "`layoutCity` is a squarified treemap: each folder's rectangle is divided among its children in proportion to lines of code, recursively, with a street-width gap between siblings so the result reads as blocks rather than a mosaic.\n\nIt also assigns the terrace geometry — a plate's *tier*, its top surface Y and its thickness — which is what makes a top-level district sit visibly higher than the folders nested inside it. Folders with a single child are pass-through: they share their child's tier instead of spending a whole step on no information.\n\nThis step used `camera: \"frame\"` — a context shot. The camera flew to the building without drilling into it, so you can still see the neighbourhood it lives in.",
-      "highlight": [
-        "viewer/src/vtree.ts"
-      ]
+      "highlight": ["viewer/src/vtree.ts"]
     },
     {
       "target": "viewer/src/city.ts#buildCity",
       "title": "Stop 4 — geometry, in as few draw calls as possible",
       "camera": "isolate",
       "narration": "`buildCity` walks the laid-out tree once and fills instanced meshes: one for folder plates, one for file plates, and one per module kind for the buildings. A repo the size of a large monorepo becomes a few dozen draw calls instead of tens of thousands.\n\nThat design decides how every overlay works. Churn, fix-hotspots, recent-focus, the search highlight and the working-tree layer never rebuild geometry — they walk the same instance records and rewrite per-instance colors. Look for `applyOverlay` and `paintSearch` in main.ts for the pattern.\n\nThe module records this returns are also what the raycaster resolves a hover into, so picking, highlighting and labelling all share one index.",
-      "highlight": [
-        "viewer/src/main.ts",
-        "viewer/src/labels.ts"
-      ]
+      "highlight": ["viewer/src/main.ts", "viewer/src/labels.ts"]
     },
     {
       "target": "viewer/src/strata.ts",
       "title": "Stop 5 — Strata: buildings made of history",
       "camera": "orbit",
       "narration": "Strata is the most opinionated view in the tool. It replaces module buildings with one slab per commit: height is the number of commits that touched the file, and each slab's footprint is the file's size at that moment in time, reconstructed by walking the numstat deltas backwards from today.\n\nThe silhouette becomes the file's biography — a steady taper means it grew gradually, a straight tower means heavy churn at a stable size, tall and thin means a tiny file that is endlessly touched. Slab color is the conventional-commit type of that commit: feat cyan, fix red, refactor violet.\n\nThe attached diff is the commit that introduced this file. The camera is slowly orbiting because this step asked for `camera: \"orbit\"` — the treatment for something whose shape is the point.",
-      "highlight": [
-        "viewer/src/timeline.ts"
-      ],
+      "highlight": ["viewer/src/timeline.ts"],
       "artifacts": [
         {
           "type": "diff",
@@ -86,20 +74,14 @@
       "title": "Stop 6 — the host seam",
       "camera": "isolate",
       "narration": "The viewer never fetches anything itself. It asks a `CityHost` for the dataset, for source lines, for a log, for a diff, for git status, for a content search — and every one of those may answer null.\n\n`HttpHost` is the browser implementation, backed by a small dev-server middleware that shells out to git inside the analyzed repo with every path validated against the repo root. On a static export those endpoints simply do not exist, the host latches to unavailable, and the panes that need them hide themselves.\n\nThis is also the extension point: a VS Code webview would inject a postMessage-backed host with the same six methods plus `openFile`, and nothing else in the viewer would change.",
-      "highlight": [
-        "viewer/src/sidebar.ts",
-        "viewer/vite.config.js"
-      ]
+      "highlight": ["viewer/src/sidebar.ts", "viewer/vite.config.js"]
     },
     {
       "target": "viewer/src/sidebar.ts#createSidebar",
       "title": "Stop 7 — the inspector",
       "camera": "frame",
       "narration": "Every panel you have been reading is rendered here. The sidebar stacks INSPECT (live hover), TOUR (this, while a tour is playing), SELECTED, the working-tree change list, and CODE — the real source span and latest diff, pulled through the host.\n\nOne rule holds throughout: anything derived from data is escaped before it reaches innerHTML. Tour files are untrusted input, so narration is rendered as escaped plain text with paragraph breaks and never as markup, and artifact URLs are scheme-checked in `shared/tour.ts` before they are ever put in an attribute.\n\nOne more stop: the timeline along the bottom, and what a tour can pin to it.",
-      "highlight": [
-        "shared/tour.ts",
-        "viewer/src/tour.ts"
-      ],
+      "highlight": ["shared/tour.ts", "viewer/src/tour.ts"],
       "artifacts": [
         {
           "type": "link",
@@ -113,45 +95,17 @@
       "title": "Stop 8 — checkpoints: narration pinned to time",
       "camera": "isolate",
       "narration": "The steps you just walked are pinned to *places*. A checkpoint is pinned to a *moment*: a caption attached to a point in the repo's history, which fires as the timeline cursor crosses it.\n\nThis tour ships eight of them, one per era of this codebase. Press the play button at the left of the timeline bar along the bottom — or drag the cursor — and watch the captions type on above it as the city grows from the initial commit to the shape you are standing in. Scrubbing backwards re-arms every checkpoint you pass, so you can run the history again.\n\nA checkpoint gives its moment as `ts` (an exact epoch second) or, as this tour does, `at` — a fraction of the timeline's range, which survives re-analysing the repo. The rest is the same posture as everything else here: titles are validated at the boundary and reach the DOM as plain text.\n\nThat is the tour. Press Esc to exit — the city, your selection and the normal Esc-to-go-up behaviour all come straight back.",
-      "highlight": [
-        "shared/tour.ts",
-        "viewer/src/timeline.ts"
-      ]
+      "highlight": ["shared/tour.ts", "viewer/src/timeline.ts"]
     }
   ],
   "checkpoints": [
-    {
-      "at": 0.0,
-      "title": "initial commit — a treemap and some boxes"
-    },
-    {
-      "at": 0.08,
-      "title": "v2 — inspector, drill-down, timeline"
-    },
-    {
-      "at": 0.16,
-      "title": "search palette lights up the city"
-    },
-    {
-      "at": 0.3,
-      "title": "strict typescript, one shared contract"
-    },
-    {
-      "at": 0.52,
-      "title": "strata — buildings made of git history"
-    },
-    {
-      "at": 0.66,
-      "title": "markdown becomes architecture"
-    },
-    {
-      "at": 0.8,
-      "title": "tour sdk — agents can fly you through a change",
-      "hold": 2.2
-    },
-    {
-      "at": 0.94,
-      "title": "cinematic camera, legend as a query"
-    }
+    { "at": 0.0, "title": "initial commit — a treemap and some boxes" },
+    { "at": 0.08, "title": "v2 — inspector, drill-down, timeline" },
+    { "at": 0.16, "title": "search palette lights up the city" },
+    { "at": 0.3, "title": "strict typescript, one shared contract" },
+    { "at": 0.52, "title": "strata — buildings made of git history" },
+    { "at": 0.66, "title": "markdown becomes architecture" },
+    { "at": 0.8, "title": "tour sdk — agents can fly you through a change", "hold": 2.2 },
+    { "at": 0.94, "title": "cinematic camera, legend as a query" }
   ]
 }

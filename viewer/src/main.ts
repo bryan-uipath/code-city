@@ -1768,10 +1768,18 @@ function createTourPlayer(): TourPlayer {
  *                                 (same validation as tour JSON — untrusted).
  */
 function installScriptHooks(): void {
-  const nodeFor = (path: unknown): VNode | null =>
-    typeof path === 'string'
-      ? index.filesByPath.get(path) ?? index.nodesByPath.get(path) ?? null
-      : null;
+  /**
+   * Resolve against what is *rendered*, not the whole tree: a node outside the
+   * current scope keeps the `rect` from whatever layout last contained it, so
+   * the global index would answer with coordinates from a previous stage.
+   */
+  const nodeFor = (path: unknown): VNode | null => {
+    if (typeof path !== 'string') return null;
+    const scoped = scope.byRealPath.get(path);
+    if (scoped) return scoped;
+    const node = index.filesByPath.get(path) ?? index.nodesByPath.get(path) ?? null;
+    return node && scope.nodes.has(node) ? node : null;
+  };
   /** World-space rooftop anchor — the point the hover callout rises from. */
   const rooftop = (node: VNode): THREE.Vector3 | null => {
     const r = node.rect;

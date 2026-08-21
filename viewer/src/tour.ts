@@ -254,7 +254,7 @@ export function createTour(host: TourHost): TourPlayer {
       // parse as JSON and then survive `validateTour`.
       const type = res.headers.get('content-type') ?? '';
       if (raw.endsWith('.json') && !type.includes('json')) throw new Error('not json');
-      load(JSON.parse(await res.text()));
+      load(await res.json());
     } catch {
       host.notice('Tour not found: ' + raw);
     }
