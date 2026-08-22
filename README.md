@@ -64,10 +64,10 @@ Three ways in, all of them validated through `validateTour` in
 narration renders as plain text and artifact URLs are scheme-checked:
 
 ```bash
-# 1. query param — relative, same-origin .json paths only
-npm run dev            # then open http://localhost:5173/?tour=tours/welcome.json
+# 1. query param — relative, same-origin .cctour / .json paths only
+npm run dev            # then open http://localhost:5173/?tour=tours/welcome.cctour
 
-# 2. drag a .json tour file anywhere onto the window
+# 2. drag a .cctour tour file anywhere onto the window
 
 # 3. live injection, from the console or an agent bridge
 #    window.cityTour.load({ title: "…", steps: [ … ] })
@@ -77,7 +77,7 @@ While a tour plays: `←` / `→` step, `Esc` exits, and the bottom-left panel h
 prev / next / autoplay (~8s a step, pauses as soon as you touch the camera) /
 exit. Exiting restores the city exactly as it was.
 
-The bundled `viewer/public/tours/welcome.json` is a tour of **this** repo's own
+The bundled `viewer/public/tours/welcome.cctour` is a tour of **this** repo's own
 architecture, so it expects `npm run analyze -- .` first. To write your own — or
 to have an agent write one for a PR — see [docs/tours.md](docs/tours.md).
 

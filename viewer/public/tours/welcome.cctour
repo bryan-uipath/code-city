@@ -78,9 +78,9 @@
     },
     {
       "target": "viewer/src/sidebar.ts#createSidebar",
-      "title": "Stop 7 — the inspector, and where you are standing",
+      "title": "Stop 7 — the inspector",
       "camera": "frame",
-      "narration": "Every panel you have been reading is rendered here. The sidebar stacks INSPECT (live hover), TOUR (this, while a tour is playing), SELECTED, the working-tree change list, and CODE — the real source span and latest diff, pulled through the host.\n\nOne rule holds throughout: anything derived from data is escaped before it reaches innerHTML. Tour files are untrusted input, so narration is rendered as escaped plain text with paragraph breaks and never as markup, and artifact URLs are scheme-checked in `shared/tour.ts` before they are ever put in an attribute.\n\nThat is the tour. Press Esc to exit — the city, your selection and the normal Esc-to-go-up behaviour all come straight back.",
+      "narration": "Every panel you have been reading is rendered here. The sidebar stacks INSPECT (live hover), TOUR (this, while a tour is playing), SELECTED, the working-tree change list, and CODE — the real source span and latest diff, pulled through the host.\n\nOne rule holds throughout: anything derived from data is escaped before it reaches innerHTML. Tour files are untrusted input, so narration is rendered as escaped plain text with paragraph breaks and never as markup, and artifact URLs are scheme-checked in `shared/tour.ts` before they are ever put in an attribute.\n\nOne more stop: the timeline along the bottom, and what a tour can pin to it.",
       "highlight": ["shared/tour.ts", "viewer/src/tour.ts"],
       "artifacts": [
         {
@@ -89,6 +89,23 @@
           "label": "docs/tours.md — how an agent writes one of these"
         }
       ]
+    },
+    {
+      "target": "viewer/src/checkpoints.ts",
+      "title": "Stop 8 — checkpoints: narration pinned to time",
+      "camera": "isolate",
+      "narration": "The steps you just walked are pinned to *places*. A checkpoint is pinned to a *moment*: a caption attached to a point in the repo's history, which fires as the timeline cursor crosses it.\n\nThis tour ships eight of them, one per era of this codebase. Press the play button at the left of the timeline bar along the bottom — or drag the cursor — and watch the captions type on above it as the city grows from the initial commit to the shape you are standing in. Scrubbing backwards re-arms every checkpoint you pass, so you can run the history again.\n\nA checkpoint gives its moment as `ts` (an exact epoch second) or, as this tour does, `at` — a fraction of the timeline's range, which survives re-analysing the repo. The rest is the same posture as everything else here: titles are validated at the boundary and reach the DOM as plain text.\n\nThat is the tour. Press Esc to exit — the city, your selection and the normal Esc-to-go-up behaviour all come straight back.",
+      "highlight": ["shared/tour.ts", "viewer/src/timeline.ts"]
     }
+  ],
+  "checkpoints": [
+    { "at": 0.0, "title": "initial commit — a treemap and some boxes" },
+    { "at": 0.08, "title": "v2 — inspector, drill-down, timeline" },
+    { "at": 0.16, "title": "search palette lights up the city" },
+    { "at": 0.3, "title": "strict typescript, one shared contract" },
+    { "at": 0.52, "title": "strata — buildings made of git history" },
+    { "at": 0.66, "title": "markdown becomes architecture" },
+    { "at": 0.8, "title": "tour sdk — agents can fly you through a change", "hold": 2.2 },
+    { "at": 0.94, "title": "cinematic camera, legend as a query" }
   ]
 }

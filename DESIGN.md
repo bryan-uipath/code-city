@@ -445,18 +445,27 @@ export interface TourStep {
 - **Esc outranks everything**: a running tour eats Escape (and ←/→) before the
   focus-stack pop, and exiting restores the overlay, the selection and the
   normal Esc behaviour.
-- **Three ways in**: `?tour=<relative .json path>` (same-origin relative paths
-  only — absolute, cross-origin and `..` are refused), drag-and-drop of a
-  `.json` file onto the window, and `window.cityTour.load(tour)` for live agent
-  injection. All three run the same validator.
-- `viewer/public/tours/welcome.json` is a worked example: eight steps through
+- **Three ways in**: `?tour=<relative path>` (same-origin relative paths only —
+  absolute, cross-origin and `..` are refused), drag-and-drop of a file onto the
+  window, and `window.cityTour.load(tour)` for live agent injection. All three
+  run the same validator. Tour files are named `.cctour` (plain JSON with an
+  extension that names what it is); `.json` stays accepted for older tours.
+  `window.cityTour.load` is the path for a project that keeps its tours in its
+  own repo — the visualizer ships only the generic welcome tour.
+- `viewer/public/tours/welcome.cctour` is a worked example: nine steps through
   this repo's own pipeline (analyzer → contract → layout → city → strata → host
-  seam → inspector), with a real diff artifact and links. It expects
-  `npm run analyze -- .`.
+  seam → inspector → checkpoints), with a real diff artifact and links, plus
+  eight checkpoints pinned across its history. It expects `npm run analyze -- .`.
+- **Checkpoints** (`viewer/src/checkpoints.ts`) are the time-axis counterpart to
+  steps: a tour's `checkpoints[]` pin captions to moments (`ts`, or `at` as a
+  fraction of the timeline range), and each fires as the timeline cursor crosses
+  it. Loading arms only what is ahead of the cursor; scrubbing back re-arms.
+  Captions crossed together queue in chronological order and hold shorter while
+  the queue is backed up.
 
 The companion piece is the agent recipe in `docs/tours.md`: read the diff, pick
-the 5–10 locations that carry the idea, emit the Tour JSON, hand the user
-`npm run dev` plus `?tour=` or `window.cityTour.load`.
+the 5–10 locations that carry the idea, emit the `.cctour`, hand the user
+`npm run dev` plus `?tour=`, a file to drop, or `window.cityTour.load`.
 
 ## Future ideas (recorded, not scheduled)
 
@@ -507,6 +516,6 @@ viewer/src/labels.ts      # map-style dynamic labels + parent->child leader line
 viewer/src/terrace.ts     # district names on the terrace side walls
 viewer/src/strata.ts      # Strata mode: per-commit slab stacks + their paints
 viewer/src/tour.ts        # tour player: HUD panel, steps, autoplay, tour loading
-viewer/public/tours/       # bundled tours (welcome.json = this repo's own architecture)
+viewer/public/tours/       # bundled tours (welcome.cctour = this repo's own architecture)
 viewer/public/data.json   # generated (gitignored)
 ```
