@@ -19,7 +19,7 @@ The thesis: as more code is written by agents, we read less of it line-by-line. 
 - **People / PR layer** — open PRs as author avatars on light beams over the files they touch. Beam thickness scales with diff size, altitude with activity recency. Draft PRs render as orange scaffolding; files touched by 2+ PRs get red conflict cages.
 - **Coupling arcs** — directional import edges (animated flow importer → imported), aggregated per package when nothing is selected.
 - **History timeline** — scrub or play through the commit stream and watch activity flow across the city.
-- **Working-tree layer** — what is uncommitted *right now*: modified files glow amber, untracked files get green ghost outlines, deletions red, with the change list in the sidebar (click to fly there) and a refresh button. Dev server only.
+- **Working-tree layer** — what is uncommitted *right now*: the unchanged city ghosts while modified files paint green↔red by their line balance, untracked files rise as cyan under-construction blocks, and deletions leave red vacant lots — with the change list in the sidebar (click to fly there) and a refresh button. On by default (a clean tree renders normally); dev server only.
 - **Inspector sidebar** — stats, open PRs (one compact line each, click to expand), recent commits, and actual source/diff snippets for the selected node (dev server only).
 - **Guided tours** — a tour is a JSON file (hand-written, or emitted by a coding agent that just read a PR) that flies the camera through 5–10 places in the code, isolating or highlighting each one and narrating it in the sidebar, with diffs, screenshots and links attached. See [Loading a tour](#loading-a-tour) and [docs/tours.md](docs/tours.md).
 - **Map-style labels** — names scope dynamically to what's in view, districts → files → buildings, like a map engine. The top folder tiers are signed on their terrace side walls instead, holding a readable size from the org overview down to a close-up; every label is clickable (click selects, double-click isolates) and links to its children when you hover it.
@@ -33,7 +33,7 @@ All analysis is local: the analyzer runs on your machine and the data never leav
 npm install
 
 # analyze a repo (writes viewer/public/data.json)
-npm run analyze -- /path/to/your/repo            # analyzes ./packages by default
+npm run analyze -- /path/to/your/repo            # analyzes the whole repo by default
 npm run analyze -- /path/to/repo --roots src,lib # custom roots
 npm run analyze -- /path/to/repo --no-prs        # skip GitHub PR lookup
 

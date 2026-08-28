@@ -159,7 +159,6 @@ const PLATE_EPSILON = 0.012;
 // Recursive city layout
 // ---------------------------------------------------------------------------
 
-const MIN_RECT_BASE = 1.2;
 /**
  * Smallest placeable footprint, in ABSOLUTE world units — deliberately not
  * multiplied by the legibility scale: scaling a small scope up would grow the
@@ -167,9 +166,7 @@ const MIN_RECT_BASE = 1.2;
  * Kept absolute, drilling into a scaled-up scope places what the parent
  * scope had to strip.
  */
-function minRect(): number {
-  return MIN_RECT_BASE;
-}
+const MIN_RECT = 1.2;
 
 interface Entry {
   item: Weighted;
@@ -197,7 +194,6 @@ function layoutNode(node: VNode, rect: Rect, depth: number, tier: number): void 
   // A folder with a single child (repo -> packages) is a pass-through, not a
   // terrace of its own: it would spend a whole tier step on no information.
   const childTier = kids.length === 1 ? tier : tier + 1;
-  const MIN_RECT = minRect();
   if (rect.w < MIN_RECT * 2 || rect.h < MIN_RECT * 2) {
     // Too small to subdivide meaningfully — the folder itself becomes one
     // massing block approximating everything underneath.

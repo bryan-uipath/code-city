@@ -20,6 +20,8 @@ const MAX_UNTRACKED_COUNTED = 400;
 /** Line-count ceiling per untracked file, and the byte ceiling that feeds it. */
 const MAX_UNTRACKED_LINES = 10_000;
 const MAX_UNTRACKED_BYTES = 4 * 1024 * 1024;
+/** Total bytes read per /status call — the reads are sync and polled every 5s. */
+const MAX_UNTRACKED_TOTAL_BYTES = 16 * 1024 * 1024;
 
 export default ({ command }) => ({
   // Relative asset URLs so the bundle works wherever it is mounted: a static
@@ -88,7 +90,8 @@ const ROUTES = {
   // Working-tree state: modified / added / deleted / untracked (the "now" view),
   // each entry carrying the per-file line balance the city paints it with.
   '/status': Object.assign(async ({ res, root, params }) => {
-    const { stdout } = await git(root, ['status', '--porcelain']);
+    // -uall: expand untracked dirs to their files, so each gets its own entry.
+    const { stdout } = await git(root, ['status', '--porcelain', '-uall']);
     if (params.get('debug') === '1') {
       const gitEnv = Object.keys(process.env).filter((k) => k.startsWith('GIT_'));
       return send(res, 200, { debugRoot: root, rawLines: stdout.split('\n').filter(Boolean).length, gitEnv });
@@ -114,8 +117,11 @@ const ROUTES = {
         if (!line) continue;
         const [a, d, ...rest] = line.split('\t');
         let p = rest.join('\t');
-        const arrow = p.indexOf(' => '); // rename entry: attribute to the new path
-        if (arrow >= 0) p = p.slice(arrow + 4).replace(/[{}]/g, '');
+        // Rename entries: attribute to the new path. Brace form keeps the common
+        // prefix/suffix (`src/{old => new}.ts`); plain form is the whole path.
+        p = p.replace(/\{([^{}]*) => ([^{}]*)\}/g, '$2').replace(/\/\//g, '/');
+        const arrow = p.indexOf(' => ');
+        if (arrow >= 0) p = p.slice(arrow + 4);
         if (!p) continue;
         // '-' is git's marker for a binary file: no line balance exists.
         const added = a === '-' ? 0 : Number(a) || 0;
@@ -129,10 +135,11 @@ const ROUTES = {
     // own length is the honest "added" count. Capped in both directions: how
     // many files get counted, and how many lines are counted per file.
     let counted = 0;
+    const budget = { left: MAX_UNTRACKED_TOTAL_BYTES };
     for (const c of changes) {
       if (!c.untracked) continue;
       if (counted++ >= MAX_UNTRACKED_COUNTED) break;
-      c.added = countLines(root, c.path);
+      c.added = countLines(root, c.path, budget);
       c.removed = 0;
     }
     for (const c of changes) {
@@ -205,12 +212,15 @@ function safeRelPath(p, root) {
  * `safeRelPath` for the same containment check every other route uses: the path
  * came out of `git status`, but nothing downstream should have to trust that.
  */
-function countLines(root, relPath) {
+function countLines(root, relPath, budget) {
   const rel = safeRelPath(relPath, root);
   if (!rel) return 0;
   try {
     const abs = path.resolve(root, rel);
-    if (fs.statSync(abs).size > MAX_UNTRACKED_BYTES) return MAX_UNTRACKED_LINES;
+    const size = fs.statSync(abs).size;
+    if (size > MAX_UNTRACKED_BYTES) return MAX_UNTRACKED_LINES;
+    if (size > budget.left) return 0; // request byte budget spent
+    budget.left -= size;
     const text = fs.readFileSync(abs, 'utf8');
     if (text.includes('\0')) return 0; // binary: no line balance to report
     let n = 1;

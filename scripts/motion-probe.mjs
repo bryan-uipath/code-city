@@ -127,6 +127,11 @@ const run = async () => {
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
+  // Keep the worktree layer (on by default, dirty tree ghosts the city) out of
+  // the motion traces.
+  await page.addInitScript(() => {
+    window.localStorage.setItem('city:ui-settings', JSON.stringify({ worktree: false }));
+  });
   await page.goto(URL);
   await page.waitForFunction(() => Reflect.get(window, '__motionProbe') !== undefined, null, { timeout: 30000 });
   await page.waitForTimeout(2500);

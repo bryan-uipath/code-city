@@ -63,7 +63,7 @@ Produced by `analyzer/analyze.ts`. All ids are repo-relative POSIX paths.
     // "modules": [{ "name": "Foo", "kind": "class|function|component|interface|type|enum|const", "loc": 42, "exported": true }]
   },
   "edges": [ { "a": "packages/a/src/x.ts", "b": "packages/b/src/y.ts", "n": 3 } ],  // import coupling, deduped, n = import count
-  "prs": [ { "number": 3055, "title": "...", "author": "someone", "avatarUrl": "https://avatars.githubusercontent.com/...", "isDraft": true, "updatedAt": "ISO", "files": ["packages/..."] } ]
+  "prs": [ { "number": 3055, "title": "...", "author": "someone", "avatarUrl": "https://avatars.githubusercontent.com/...", "isDraft": true, "status": "draft|pending|failing|ready", "updatedAt": "ISO", "files": ["packages/..."] } ]
 }
 ```
 
@@ -133,7 +133,7 @@ recent work" is comparing two paints of one shape.
   recency — per-level uniform, since the level bands are already spoken for by
   the shape. **Strata** keeps the per-level conventional-commit colors.
   All of that is one `StrataPaint` swapped through `recolor()`; the search /
-  tour highlight and the working-tree amber are two more paints in the same seam.
+  tour highlight and the working-tree paint are two more paints in the same seam.
 - **Module buildings appear when you isolate a file** (or a module). That is
   where kind, size and nesting resolve, and it is unchanged.
 - The **range handle is therefore live in every mode** — it changes the massing,
@@ -389,18 +389,18 @@ palette hands the city back to its overlay.
 
 ## Working-tree view (implemented)
 
-`GET /api/status` returns `git status --porcelain` as
-`{changes: [{path, x, y, untracked}]}`, reached through `CityHost.getStatus()`.
-The "Working tree" toggle in Layers completes the time spectrum: strata →
-12-month timeline → 30-day recent → open PRs → **now**.
+`GET /api/status` returns `git status --porcelain -uall` plus per-file numstat
+line balances as `{changes: [{path, x, y, untracked, added, removed}]}`,
+reached through `CityHost.getStatus()`. The "Working tree" toggle in Layers
+completes the time spectrum: strata → 12-month timeline → 30-day recent →
+open PRs → **now**. It defaults ON wherever git is reachable; a clean tree
+renders a normal city.
 
-- **Modified** files glow amber (`#fbbf24`) — a recolor pass layered *on top of*
-  the active overlay, so churn/recent/structure still read underneath (the
-  search highlight outranks both, exactly as the PR layer does).
-- **Untracked** files get a green ghost outline where they have a plate; files
-  the analyzer never saw (new files, non-source paths, untracked directories)
-  appear in the sidebar list only. **Deleted** files get a red ghost while their
-  plate still exists.
+- With a dirty tree, unchanged buildings ghost and changes paint vividly:
+  **modified** files on a green↔red axis by their added/removed balance,
+  intensity scaled by magnitude (the search highlight still outranks it).
+- **Untracked** files rise as cyan "under construction" blocks sized by their
+  line count; **deleted** files leave a red vacant-lot marker on their plate.
 - The sidebar section groups the changes modified / untracked / deleted, each
   row clickable (select + fly), with a refresh button that re-reads git.
 - The toggle only appears once `/api/status` has answered, so a static export
@@ -506,7 +506,7 @@ the 5–10 locations that carry the idea, emit the `.cctour`, hand the user
 shared/types.ts           # the data.json contract, shared analyzer <-> viewer
 shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
 shared/tour.ts            # Tour SDK types + validateTour (the untrusted-input boundary)
-analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs]
+analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick]
 viewer/index.html         # HUD markup + CSS
 viewer/src/main.ts        # scene, interaction, overlays
 viewer/src/vtree.ts       # the viewer's augmented node type (layout, synthetic scopes)

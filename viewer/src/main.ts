@@ -1106,8 +1106,11 @@ function scopeExtent(root: VNode): { size: number; scale: number } {
   const total = Math.max(state.root?.loc ?? 0, 1);
   const share = Math.min(Math.max(root.loc, 1) / total, 1);
   const trueSize = CITY_SIZE * Math.sqrt(share);
-  const size = Math.max(trueSize, minScopeSize());
-  return { size, scale: size / trueSize };
+  // Clamp to the layout's scale ceiling and derive the size back from it: a
+  // plate laid out beyond what setWorldScale accepts would break uniformity
+  // (footprints inflated, heights not).
+  const scale = Math.min(Math.max(trueSize, minScopeSize()) / trueSize, 60);
+  return { size: trueSize * scale, scale };
 }
 
 /**
@@ -1521,7 +1524,9 @@ function applyStrataMode(): void {
   const index = strata.index;
   if (!index) return;
   strata.build = createStrata(
-    scope.fileNodes,
+    // Massed files already stand as aggregate blocks; a stack on the same
+    // footprint would interpenetrate it.
+    scope.fileNodes.filter((n) => !n.massed),
     index,
     (node) => realFileOf(node)?.path ?? null,
     { min: timeline.min, max: timeline.max }

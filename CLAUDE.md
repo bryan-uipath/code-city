@@ -12,7 +12,7 @@ motion probe, and looking at the city.
 ## Commands
 
 ```bash
-npm run analyze -- /path/to/repo            # -> viewer/public/data.json (analyzes ./packages by default)
+npm run analyze -- /path/to/repo            # -> viewer/public/data.json (analyzes the whole repo by default)
 npm run analyze -- /path/to/repo --roots src,lib --out other.json --no-prs
 npm run analyze -- .                        # required before the bundled welcome tour works
 npm run dev                                 # vite dev server (source/diff/status/search API live)

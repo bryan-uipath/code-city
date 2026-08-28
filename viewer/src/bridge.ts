@@ -23,8 +23,8 @@
  * is checked with `typeof` before it is used.
  */
 import type { CityData } from '../../shared/types.js';
-import { EMBEDDED } from './embed.js';
-import { loadUiSettings, saveUiSetting } from './uiSettings.js';
+import { EMBEDDED, isEditable } from './embed.js';
+import { CITY_SERVED, loadUiSettings, saveUiSetting } from './uiSettings.js';
 
 /**
  * Origins the shell may speak from. The dev shell serves the renderer on 5217;
@@ -40,18 +40,13 @@ const ALLOWED_PARENT_ORIGINS = ['http://localhost:5217', 'http://127.0.0.1:5217'
  * A `file://` document has an OPAQUE origin: its messages arrive with
  * `event.origin === 'null'` (the string), never 'file://'. Accepting 'null'
  * from arbitrary hosts would let any sandboxed frame through, so it is allowed
- * only when this frame itself is served over the shell's `city://` protocol —
- * there the parent can only be the Electron shell that registered the scheme.
+ * only when this frame itself is served over the shell's `city://` protocol
+ * (CITY_SERVED) — there the parent can only be the Electron shell.
  */
-const CITY_SERVED = window.location.protocol === 'city:';
-
 function allowedParent(origin: string): boolean {
   if (ALLOWED_PARENT_ORIGINS.includes(origin)) return true;
   return CITY_SERVED && origin === 'null';
 }
-
-/** How often the worktree layer re-reads `git status` while the shell is attached. */
-const AUTO_REFRESH_MS = 5000;
 
 /** Follow mode: whether shell context reveals (`follow: true`) move the camera.
  *  Toggled from the ☰ Layers drawer; explicit reveals are never gated. */
@@ -90,15 +85,10 @@ export interface Bridge {
 export function installBridge(internals: BridgeInternals): Bridge {
   if (window.parent === window) return { openSelection: () => {} };
 
-
-  /** Set once a well-formed parent message has arrived; gates the auto-refresh. */
-  let connected = false;
-
   window.addEventListener('message', (event: MessageEvent) => {
     if (!allowedParent(event.origin)) return;
     const msg = parseShellMessage(event.data);
     if (!msg) return;
-    connected = true;
     handle(msg, internals);
   });
 
@@ -143,12 +133,7 @@ export function installBridge(internals: BridgeInternals): Bridge {
     });
   }
 
-  window.setInterval(() => {
-    if (!connected) return;
-    if (document.visibilityState !== 'visible') return;
-    void internals.refreshWorktree();
-  }, AUTO_REFRESH_MS);
-
+  // No poller here: main.ts already re-reads `git status` on an interval.
   post({ source: 'aicode-city', type: 'ready', embedded: EMBEDDED });
   return { openSelection };
 }
@@ -329,8 +314,3 @@ function post(msg: CityMessage): void {
   }
 }
 
-function isEditable(el: EventTarget | null): boolean {
-  if (!(el instanceof HTMLElement) || !el.tagName) return false;
-  const tag = el.tagName.toLowerCase();
-  return tag === 'input' || tag === 'textarea' || el.isContentEditable === true;
-}

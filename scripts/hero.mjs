@@ -178,6 +178,11 @@ async function shoot(url) {
       if (e.message.includes('setPointerCapture')) return;
       console.error('hero: page error:', e.message);
     });
+    // The worktree layer defaults ON and ghosts the city while the tree is
+    // dirty — which it usually is when regenerating the hero. Keep it off.
+    await page.addInitScript(() => {
+      window.localStorage.setItem('city:ui-settings', JSON.stringify({ worktree: false }));
+    });
     await page.goto(url, { waitUntil: 'load' });
 
     await page.waitForFunction(() => document.getElementById('boot')?.classList.contains('hide'), null, {

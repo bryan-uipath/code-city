@@ -208,10 +208,12 @@ function parseArgs(argv: string[]): Options {
  * (not a git repo at all).
  */
 function discoverFiles(repoRoot: string, roots: string[]): string[] {
+  // An empty listing is not authoritative — a repo whose sources are all
+  // untracked/gitignored still deserves the fs-walk city it used to get.
   const headFiles = gitFiles(repoRoot, ['ls-tree', '-r', 'HEAD', '--name-only', '-z', '--', ...roots]);
-  if (headFiles !== null) return headFiles;
+  if (headFiles !== null && headFiles.length) return headFiles;
   const indexFiles = gitFiles(repoRoot, ['ls-files', '--cached', '-z', '--', ...roots]);
-  if (indexFiles !== null) return indexFiles;
+  if (indexFiles !== null && indexFiles.length) return indexFiles;
   const found: string[] = [];
   for (const root of roots) walk(path.join(repoRoot, root));
   return found.sort();
@@ -480,11 +482,15 @@ function collectHistory(repoRoot: string, files: string[], quick: boolean): Hist
       hit = true;
     }
   }
+  let truncated = false;
   if (!commits) {
     commits = readLog(repoRoot, files, null, FULL_COMMITS_MAX) ?? [];
     fresh = commits.length;
+    // At the cap the stream is cut mid-window; caching it would masquerade as
+    // the full 12 months forever (incremental runs only ever prepend).
+    truncated = commits.length >= FULL_COMMITS_MAX;
   }
-  if (head) writeCache(cachePath, { v: CACHE_VERSION, repoRoot, headHash: head, cutoffTs, files, commits });
+  if (head && !truncated) writeCache(cachePath, { v: CACHE_VERSION, repoRoot, headHash: head, cutoffTs, files, commits });
 
   return { churn: countChurn(commits, files), commits, cacheHit: hit, fresh, ms: Date.now() - started };
 }
@@ -901,9 +907,9 @@ const CHECK_RUNNING = new Set(['QUEUED', 'IN_PROGRESS', 'WAITING', 'PENDING', 'R
  * Derive the city's four-state PR color from whatever `gh` managed to say:
  * grey draft, red failing, yellow still running, green ready to merge.
  *
- * Every field is optional on purpose. An older `gh` that does not know
- * `statusCheckRollup` returns nothing for it, and "we cannot see the checks" is
- * honestly `pending` — never a green light the reviewer has not earned.
+ * Every field is optional on purpose: the checks fetch is best-effort (an old
+ * `gh` rejects the field; a huge rollup blows the buffer), and "we cannot see
+ * the checks" is honestly `pending` — never an unearned green light.
  */
 function prStatusOf(pr: GhPr): PrStatus {
   if (pr.isDraft) return 'draft';
@@ -945,15 +951,23 @@ async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]>
   // `statusCheckRollup` across 50 PRs returns tens of megabytes of check runs
   // and the query fails outright on a repo with a big CI matrix.
   const results = await pool(list, 8, async (pr): Promise<Pr | null> => {
-    let view: GhPrView | null = null;
-    try {
+    const ghView = async (fields: string): Promise<GhPrView | null> => {
       const { stdout } = await execFileAsync('gh',
-        ['pr', 'view', String(pr.number), '--repo', repoSlug,
-          '--json', 'files,mergeable,statusCheckRollup'],
+        ['pr', 'view', String(pr.number), '--repo', repoSlug, '--json', fields],
         { maxBuffer: 32 * 1024 * 1024 });
       const parsed: unknown = JSON.parse(stdout);
-      view = isRecord(parsed) ? (parsed as GhPrView) : null;
+      return isRecord(parsed) ? (parsed as GhPrView) : null;
+    };
+    let view: GhPrView | null = null;
+    try {
+      view = await ghView('files');
     } catch { return null; }
+    // Check state is best-effort: a rollup too big for the buffer (or a gh too
+    // old for the field) must not cost the PR its beam — just its color.
+    try {
+      const checks = await ghView('mergeable,statusCheckRollup');
+      if (checks) view = { ...view, ...checks };
+    } catch { /* status falls back to draft/pending */ }
     const files = (view?.files ?? [])
       .map((f) => String(f?.path ?? '').trim())
       .filter((s) => fileSet.has(s));

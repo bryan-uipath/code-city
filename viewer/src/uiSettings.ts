@@ -15,7 +15,8 @@ export interface UiSettings {
 }
 
 const KEY = 'city:ui-settings';
-const CITY_SERVED = window.location.protocol === 'city:';
+/** True when the shell serves this frame over its `city://` custom protocol. */
+export const CITY_SERVED = window.location.protocol === 'city:';
 
 /** Last loaded/saved snapshot: saveUiSetting PUTs the whole object. */
 let current: UiSettings = {};

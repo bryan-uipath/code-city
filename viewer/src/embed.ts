@@ -222,7 +222,7 @@ function buildChip(openSelection: (mode: OpenMode) => void): {
   };
 }
 
-function isEditable(el: EventTarget | null): boolean {
+export function isEditable(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement) || !el.tagName) return false;
   const tag = el.tagName.toLowerCase();
   return tag === 'input' || tag === 'textarea' || el.isContentEditable === true;
