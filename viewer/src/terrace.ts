@@ -20,9 +20,11 @@ const FULL_PX = 8;
 /**
  * Apparent height of the LETTERS a sign holds onto as the camera pulls back.
  * Sized on the wall alone, a top-level district name lands near 10px at the org
- * overview — legible only if you already know what it says.
+ * overview — legible only if you already know what it says. The second tier
+ * holds a smaller target: readable, but never shouting over its district.
  */
 const TARGET_PX = 15;
+const SUB_TARGET_PX = 11;
 /**
  * Fraction of the sign plane the letters actually ink: the texture is a 64px
  * font on a 96px canvas, so the plane is always taller than what you read.
@@ -31,9 +33,12 @@ const INK_RATIO = 0.5;
 /**
  * How far past its wall a sign may grow to reach that. Capped so the letters
  * stay signage on the terrace rather than a billboard over the city, and so a
- * close-up sign never balloons (up close the natural size already wins).
+ * close-up sign never balloons (up close the natural size already wins). The
+ * second tier's cap is tighter: its overgrowth rises in front of its own
+ * buildings, so it earns less headroom than the top tier's open edge.
  */
 const MAX_UPSCALE = 2.2;
+const SUB_MAX_UPSCALE = 1.6;
 
 export interface TerraceSigns {
   group: THREE.Group;
@@ -64,11 +69,15 @@ interface Sign {
   target: number;
   tier: number;
   /**
-   * Only the top tier is allowed to outgrow its wall: it is the signage you
-   * navigate the whole city by. A deeper sign that did the same would rise over
-   * the terrace above it and read as broken letters behind the buildings there.
+   * Apparent letter height this sign may grow toward (0 = wall-bound). The top
+   * tier is the signage you navigate the whole city by; the tier below it grows
+   * to a smaller target so sub-districts stay findable from the overview; any
+   * deeper sign outgrowing its wall would read as broken letters behind the
+   * buildings above it.
    */
-  upscale: boolean;
+  targetPx: number;
+  /** Growth ceiling as a multiple of the wall-bound size. */
+  maxUpscale: number;
 }
 
 /** Outward normal (XZ) and the plane yaw that points a sign along it. */
@@ -124,7 +133,10 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
     }
     let top = Infinity;
     for (const s of signs) top = Math.min(top, s.tier);
-    for (const s of signs) s.upscale = s.tier <= top;
+    for (const s of signs) {
+      s.targetPx = s.tier <= top ? TARGET_PX : s.tier === top + 1 ? SUB_TARGET_PX : 0;
+      s.maxUpscale = s.tier <= top ? MAX_UPSCALE : SUB_MAX_UPSCALE;
+    }
     acc = PICK_INTERVAL;
   }
 
@@ -167,7 +179,8 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
       aspect: tex.aspect,
       target: 0,
       tier,
-      upscale: false,
+      targetPx: 0,
+      maxUpscale: 1,
     };
   }
 
@@ -216,7 +229,7 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
       // idea the labeler uses, bounded so a close-up sign never balloons.
       const dist = Math.max(_cam.distanceTo(_sign.set(s.cx, s.y, s.cz)), 1);
       const perPx = (2 * dist * tanHalf) / vh;
-      if (s.upscale) h = Math.min(Math.max(h, (TARGET_PX / INK_RATIO) * perPx), h * MAX_UPSCALE);
+      if (s.targetPx) h = Math.min(Math.max(h, (s.targetPx / INK_RATIO) * perPx), h * s.maxUpscale);
       let w = h * s.aspect;
       const maxW = span * 0.96;
       if (w > maxW) {
@@ -269,7 +282,7 @@ PLANE.userData.shared = true;
 
 const SIGN_FONT = '700 64px "SFMono-Regular", "JetBrains Mono", Menlo, monospace';
 /** Tier 0/1 is the loudest signage in the city; deeper tiers step back. */
-const SIGN_COLOR = ['#e8fbff', '#e8fbff', '#9fd9ee'] as const;
+const SIGN_COLOR = ['#e8fbff', '#e8fbff', '#c6e9f6'] as const;
 
 /** Uppercase place-name plate. Returns the texture and its width/height ratio. */
 function signTexture(name: string, tier: number): { texture: THREE.CanvasTexture; aspect: number } {

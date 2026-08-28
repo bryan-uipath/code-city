@@ -122,8 +122,8 @@ export function streetWidth(depth: number): number {
  * is signed on (`terrace.ts`) — so it is sized for that name to stay readable
  * from the org overview, not only for the step to read as a step.
  */
-const TIER_LIFT = [13, 6, 3.4, 2, 1.3] as const;
-const TIER_LIFT_MIN = 0.9;
+const TIER_LIFT = [13, 8, 4.6, 2.6, 1.7] as const;
+const TIER_LIFT_MIN = 1.1;
 
 /** The rise from `tier` to `tier + 1`. */
 export function tierLift(tier: number): number {
