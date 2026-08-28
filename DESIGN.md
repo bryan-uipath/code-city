@@ -253,7 +253,7 @@ At repo scale it was hard to tell a top-level package from folders nested inside
 it. The fixes, layered:
 
 - **Elevated terraces** — plate elevation steps by hierarchy *tier*, not depth:
-  `TIER_LIFT = [10, 6, 3.4, 2, 1.3]` world units (0.9 beyond), and a plate's
+  `TIER_LIFT = [13, 8, 4.6, 2.6, 1.7]` world units (1.1 beyond), and a plate's
   side wall reaches all the way down to its parent's surface, so the stack reads
   as solid steps rather than floating slabs (`plateTop` / `plateThickness` in
   `layout.ts`). A folder with a single child (repo → packages) is a
