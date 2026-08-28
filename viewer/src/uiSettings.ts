@@ -1,7 +1,7 @@
 /**
  * uiSettings.ts — remember the drawer choices (mode + layer toggles) across
  * sessions. Under the shell (city:// origin) they live with all other app
- * config in ~/.aicode via /api/uiSettings; standalone falls back to
+ * config in the host shell via /api/uiSettings; standalone falls back to
  * localStorage, which can be absent (file://), so every access is guarded.
  */
 

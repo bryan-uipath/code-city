@@ -2,14 +2,16 @@
  * embed.ts — the viewer as an instrument inside a host shell.
  *
  * Standalone, the city is a whole application: it carries its own inspector,
- * source pane, search palette and keyboard cheat-sheet. Embedded in the aicode
- * Electron shell all of those jobs already belong to the shell, so the viewer
- * drops them and keeps only what it alone can do — the 3D scene, the overlay
- * controls, the strata timeline, the breadcrumb trail.
+ * source pane, search palette and keyboard cheat-sheet. Embedded in a host
+ * shell all of those jobs already belong to the host, so the viewer drops them
+ * and keeps only what it alone can do — the 3D scene, the overlay controls,
+ * the strata timeline, the breadcrumb trail.
  *
- * Activation: `?embed=1`, or simply being framed (so the shell cannot forget the
- * flag). Nothing in here runs when the viewer is top-level and unflagged, and
- * every rule it adds is scoped to `body.embedded`.
+ * Activation is EXPLICIT: `?embed=1`, the host's `city://` protocol, or a VS
+ * Code webview. Merely being framed does not count — an iframe of the static
+ * export on some docs page must get the full standalone viewer, not a chrome-
+ * stripped panel posting at a host that is not there. Every rule this module
+ * adds is scoped to `body.embedded`.
  *
  * What it puts on screen:
  *   - a ☰ button that slides open a drawer holding the overlay/layer/legend
@@ -20,6 +22,7 @@
  */
 import type { OpenMode } from './bridge.js';
 import type { Descriptor } from './sidebar.js';
+import { CITY_SERVED } from './uiSettings.js';
 
 /** True when the viewer is running as a panel inside a host shell. */
 export const EMBEDDED = detectEmbedded();
@@ -65,12 +68,13 @@ export function initEmbed(opts: { openSelection(mode: OpenMode): void }): EmbedU
 }
 
 function detectEmbedded(): boolean {
+  if (CITY_SERVED) return true;
+  if (typeof Reflect.get(window, 'acquireVsCodeApi') === 'function') return true;
   try {
-    if (new URLSearchParams(window.location.search).get('embed') === '1') return true;
+    return new URLSearchParams(window.location.search).get('embed') === '1';
   } catch {
-    /* an exotic location — fall through to the frame test */
+    return false; /* an exotic location — treat as standalone */
   }
-  return window.parent !== window;
 }
 
 // ---------------------------------------------------------------------------
