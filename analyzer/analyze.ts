@@ -8,13 +8,18 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import ts from 'typescript';
 import type {
-  CityData, Commit, Edge, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleMember, ModuleKind, Pr, TreeNode,
+  CityData, Commit, Edge, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleMember, ModuleKind, Pr, PrStatus, TreeNode,
 } from '../shared/types.js';
 
 const execFileAsync = promisify(execFile);
 
-const SOURCE_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs']);
+const SOURCE_EXT = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
 const MARKDOWN_EXT = new Set(['.md', '.mdx']);
+/** Config/data files render as plain massing (loc only, no module interior) —
+ *  without them a yaml-heavy repo (gitops, helm) is mostly invisible. */
+const CONFIG_EXT = new Set(['.yaml', '.yml', '.json', '.toml']);
+/** Machine-written files whose line counts would dwarf the real city. */
+const SKIP_FILES = new Set(['package-lock.json', 'pnpm-lock.yaml', 'bun.lock', 'flake.lock', 'Cargo.lock']);
 const SKIP_DIRS = new Set([
   'node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.turbo', '.next',
   'test-results', '__snapshots__', 'generated', '__generated__', 'gen', 'playwright-report',
@@ -24,6 +29,8 @@ const FIX_RE = /\b(fix|fixes|fixed|bug|bugfix|hotfix)\b/i;
 const HASH_RE = /^[0-9a-f]{7,40}$/;
 const DAY = 86400;
 const MAX_JSON_BYTES = 25 * 1024 * 1024;
+/** Committed blobs read individually before the analyzer stops bothering. */
+const MAX_HEAD_BLOBS = 4000;
 const SUBJECT_MAX = 100;
 /** Rolling history window; the cached stream is trimmed to it on every run. */
 const HISTORY_DAYS = 365;
@@ -74,7 +81,16 @@ interface Options {
   roots: string[];
   out: string;
   prs: boolean;
+  /** First-paint mode: cap the history pass, skip PRs, leave the cache alone. */
+  quick: boolean;
 }
+
+/** Commits the --quick pass reads — enough for churn heat and some strata. */
+const QUICK_COMMITS = 1000;
+/** Hard ceiling for the full pass: monorepos can hold 250k+ commits in the
+ *  12-month window, and an uncapped `git log --numstat` over that runs for
+ *  minutes and can overflow the exec buffer. */
+const FULL_COMMITS_MAX = 20000;
 
 /** A folder node while it is still being built (children are indexed by name). */
 interface FolderDraft extends FolderNode {
@@ -94,14 +110,25 @@ async function main(): Promise<void> {
   if (!files.length) throw new Error('no source files found under roots: ' + opts.roots.join(','));
   const fileSet = new Set(files);
 
+  // The dataset is HEAD, not the working tree (see `discoverFiles`), so some of
+  // these files may not exist on disk right now; `readSource` falls back to the
+  // committed blob for those.
   const parsed = new Map<string, ParsedFile>(); // relPath -> { loc, modules, imports: [specifier] }
-  for (const rel of files) parsed.set(rel, parseFile(path.join(repoRoot, rel), rel));
+  const fromHead = { count: 0, skipped: 0 };
+  for (const rel of files) {
+    const abs = path.join(repoRoot, rel);
+    parsed.set(rel, parseFile(abs, rel, readSource(repoRoot, rel, abs, fromHead)));
+  }
+  if (fromHead.count || fromHead.skipped) {
+    console.log(`base: ${fromHead.count} file(s) read from HEAD (absent from the working tree)` +
+      `${fromHead.skipped ? `, ${fromHead.skipped} skipped over the blob budget` : ''}`);
+  }
 
-  const history = collectHistory(repoRoot, files);
+  const history = collectHistory(repoRoot, files, opts.quick);
   const commits = history.commits;
   const edges = buildEdges(repoRoot, opts.roots, parsed, fileSet);
   const tree = buildTree(repoRoot, files, parsed, history.churn);
-  const prs = opts.prs ? await collectPRs(repoRoot, fileSet) : [];
+  const prs = opts.prs && !opts.quick ? await collectPRs(repoRoot, fileSet) : [];
 
   const data: CityData = {
     repo: {
@@ -146,27 +173,45 @@ function parseArgs(argv: string[]): Options {
   let roots: string[] | null = null;
   let out = 'viewer/public/data.json';
   let prs = true;
+  let quick = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === undefined) continue;
     if (a === '--roots') roots = (argv[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     else if (a === '--out') out = argv[++i] ?? out;
     else if (a === '--no-prs') prs = false;
+    else if (a === '--quick') quick = true;
     else if (!a.startsWith('--')) repoPath = a;
     else throw new Error(`unknown flag: ${a}`);
   }
   if (!repoPath) repoPath = '.';
-  // Default roots: a `packages/` monorepo dir when present, else the repo root.
-  if (!roots) {
-    const hasPackages = fs.existsSync(path.join(path.resolve(repoPath), 'packages'));
-    roots = hasPackages ? ['packages'] : ['.'];
-  }
-  return { repoPath, roots, out, prs };
+  // Default: the whole repo. A narrower scope is an explicit --roots choice —
+  // a "helpful" packages/ heuristic silently hid sibling dirs like src/.
+  if (!roots) roots = ['.'];
+  return { repoPath, roots, out, prs, quick };
 }
 
 // ---------- discovery ----------
 
+/**
+ * The dataset's base is the LAST COMMIT, not the working tree.
+ *
+ * This is what makes the working-tree layer able to say anything about a
+ * deletion: a file enumerated from the current tree simply is not there once it
+ * has been `rm`ed, so its plot would vanish from the city and `git status` would
+ * have nothing to mark. Enumerating HEAD keeps the mass standing and lets the
+ * status overlay demolish it. The other side of the same coin: untracked files
+ * are deliberately NOT in the base — they reach the city only as the overlay's
+ * net-new "under construction" buildings.
+ *
+ * Falls back to the index (a repo with no commit yet) and then to an fs walk
+ * (not a git repo at all).
+ */
 function discoverFiles(repoRoot: string, roots: string[]): string[] {
+  const headFiles = gitFiles(repoRoot, ['ls-tree', '-r', 'HEAD', '--name-only', '-z', '--', ...roots]);
+  if (headFiles !== null) return headFiles;
+  const indexFiles = gitFiles(repoRoot, ['ls-files', '--cached', '-z', '--', ...roots]);
+  if (indexFiles !== null) return indexFiles;
   const found: string[] = [];
   for (const root of roots) walk(path.join(repoRoot, root));
   return found.sort();
@@ -181,28 +226,93 @@ function discoverFiles(repoRoot: string, roots: string[]): string[] {
         walk(full);
       } else if (e.isFile()) {
         const ext = path.extname(e.name);
-        if (!SOURCE_EXT.has(ext) && !MARKDOWN_EXT.has(ext)) continue;
-        if (e.name.endsWith('.d.ts')) continue;
+        if (!SOURCE_EXT.has(ext) && !MARKDOWN_EXT.has(ext) && !CONFIG_EXT.has(ext)) continue;
+        if (e.name.endsWith('.d.ts') || SKIP_FILES.has(e.name)) continue;
         found.push(toPosix(path.relative(repoRoot, full)));
       }
     }
   }
 }
 
+/**
+ * Source text for one dataset file.
+ *
+ * The working-tree copy wins whenever it exists: it is what the developer is
+ * looking at, it is free to read, and for massing purposes the difference from
+ * HEAD is a rounding error. A file the base has but the worktree does not — the
+ * deletions this whole arrangement exists to keep visible — is read from the
+ * commit instead, so its buildings still stand for the overlay to demolish.
+ */
+function readSource(repoRoot: string, rel: string, absPath: string, budget: { count: number; skipped: number }): string {
+  try {
+    return fs.readFileSync(absPath, 'utf8');
+  } catch { /* not in the working tree — fall through to HEAD */ }
+  if (budget.count >= MAX_HEAD_BLOBS) {
+    budget.skipped++;
+    return '';
+  }
+  try {
+    const text = execFileSync('git', ['show', `HEAD:${rel}`], {
+      cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+    });
+    budget.count++;
+    return text;
+  } catch {
+    budget.skipped++;
+    return ''; // loc 0: the plate still exists, it just has no massing
+  }
+}
+
+/**
+ * Run a NUL-separated git listing and apply the walk's own filters (extensions,
+ * `SKIP_DIRS`, hidden and `dist-` directories). Enumerating through git is also
+ * what keeps .gitignore honored — an fs walk drags in generated output.
+ *
+ * @returns null when the command fails (no git, no HEAD, …), so the caller can
+ *          fall through to the next enumeration strategy.
+ */
+function gitFiles(repoRoot: string, args: string[]): string[] | null {
+  let out: string;
+  try {
+    out = execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 });
+  } catch {
+    return null;
+  }
+  const found: string[] = [];
+  for (const rel of out.split('\0')) {
+    if (!rel) continue;
+    const base = path.basename(rel);
+    if (base.endsWith('.d.ts') || SKIP_FILES.has(base)) continue;
+    const ext = path.extname(base);
+    if (!SOURCE_EXT.has(ext) && !MARKDOWN_EXT.has(ext) && !CONFIG_EXT.has(ext)) continue;
+    // Keep the walk's exclusions: SKIP_DIRS and hidden directories. Also skip
+    // build-output variants like dist-viewer/ that repos forget to gitignore.
+    const dirs = rel.split('/').slice(0, -1);
+    if (dirs.some((d) => SKIP_DIRS.has(d) || d.startsWith('.') || d.startsWith('dist-'))) continue;
+    found.push(toPosix(rel));
+  }
+  return found.sort();
+}
+
 // ---------- TS parsing ----------
 
-function parseFile(absPath: string, rel: string): ParsedFile {
-  let text = '';
-  try { text = fs.readFileSync(absPath, 'utf8'); } catch { /* unreadable */ }
+/**
+ * Parse one dataset file. `text` is supplied rather than read here because the
+ * base is HEAD: a file may have to come from the committed blob (see
+ * `readSource`), and `absPath` is then only a name for the TS source file.
+ */
+function parseFile(absPath: string, rel: string, text: string): ParsedFile {
   const loc = text ? text.split('\n').length : 0;
   const jsx = rel.endsWith('.tsx') || rel.endsWith('.jsx');
   const modules: ModuleInfo[] = [];
   const imports: string[] = [];
   if (!text) return { loc, modules, imports };
   if (MARKDOWN_EXT.has(path.extname(rel))) return parseMarkdown(text, loc);
+  // Config/data files: massing only — no TS parse, no module interior.
+  if (CONFIG_EXT.has(path.extname(rel))) return { loc, modules, imports };
 
   const sf = ts.createSourceFile(absPath, text, ts.ScriptTarget.Latest, true,
-    jsx ? ts.ScriptKind.TSX : rel.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+    jsx ? ts.ScriptKind.TSX : /\.[mc]?ts$/.test(rel) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
 
   const lineOf = (pos: number) => sf.getLineAndCharacterOfPosition(pos).line;
   const spanLoc = (node: ts.Node) => Math.max(1, lineOf(node.getEnd()) - lineOf(node.getStart(sf)) + 1);
@@ -345,8 +455,14 @@ function parseMarkdown(text: string, loc: number): ParsedFile {
  * pass — or, when the cache still lines up with HEAD, from the cached stream plus
  * a pass over `<cachedHead>..HEAD` only.
  */
-function collectHistory(repoRoot: string, files: string[]): History {
+function collectHistory(repoRoot: string, files: string[], quick: boolean): History {
   const started = Date.now();
+  // Quick pass: a capped log read, no cache involvement — a truncated stream
+  // written to the cache would masquerade as the full one on the next run.
+  if (quick) {
+    const commits = readLog(repoRoot, files, null, QUICK_COMMITS) ?? [];
+    return { churn: countChurn(commits, files), commits, cacheHit: false, fresh: commits.length, ms: Date.now() - started };
+  }
   const cutoffTs = Math.floor(Date.now() / 1000) - HISTORY_DAYS * DAY;
   const head = gitHead(repoRoot);
   const cachePath = cachePathFor(repoRoot);
@@ -365,7 +481,7 @@ function collectHistory(repoRoot: string, files: string[]): History {
     }
   }
   if (!commits) {
-    commits = readLog(repoRoot, files, null) ?? [];
+    commits = readLog(repoRoot, files, null, FULL_COMMITS_MAX) ?? [];
     fresh = commits.length;
   }
   if (head) writeCache(cachePath, { v: CACHE_VERSION, repoRoot, headHash: head, cutoffTs, files, commits });
@@ -378,8 +494,9 @@ function collectHistory(repoRoot: string, files: string[]): History {
  * @param range  a revision range (incremental) or null for the 12-month window
  * @returns null when git itself failed — the caller falls back to a full pass
  */
-function readLog(repoRoot: string, files: string[], range: string | null): Commit[] | null {
+function readLog(repoRoot: string, files: string[], range: string | null, limit?: number): Commit[] | null {
   const args = ['-C', repoRoot, 'log', '--numstat', '--pretty=format:%x01%h%x09%ct%x09%an%x09%s'];
+  if (limit !== undefined) args.push('-n', String(limit));
   args.push(range ?? '--since=12.months');
   try {
     const out = execFileSync('git', args, { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 });
@@ -708,7 +825,6 @@ function buildTree(repoRoot: string, files: string[], parsed: Map<string, Parsed
     });
   }
 
-  for (const child of root.children) collapse(child); // keep the repo root node itself intact
   sum(root);
   strip(root);
   root.name = path.basename(repoRoot);
@@ -718,19 +834,6 @@ function buildTree(repoRoot: string, files: string[], parsed: Map<string, Parsed
   function folder(p: string, name: string): FolderDraft {
     return { type: 'folder', name, path: p, loc: 0, churn: 0, fixChurn: 0, recentChurn: 0, children: [], childMap: new Map() };
   }
-}
-
-// Collapse chains of single-child folders: name joins with "/", path = deepest folder path.
-function collapse(node: TreeNode): void {
-  if (node.type !== 'folder') return;
-  for (;;) {
-    const only = node.children.length === 1 ? node.children[0] : null;
-    if (!only || only.type !== 'folder') break;
-    node.name = node.name ? `${node.name}/${only.name}` : only.name;
-    node.path = only.path;
-    node.children = only.children;
-  }
-  for (const child of node.children) collapse(child);
 }
 
 function sum(node: TreeNode): TreeNode {
@@ -764,6 +867,62 @@ interface GhPr {
   updatedAt?: string;
   additions?: number;
   deletions?: number;
+  /** `MERGEABLE` | `CONFLICTING` | `UNKNOWN`, when gh reports it. */
+  mergeable?: string;
+  /** Mixed CheckRun / StatusContext nodes; shape varies by CI provider. */
+  statusCheckRollup?: GhCheck[];
+}
+
+/** `gh pr view --json files,mergeable,statusCheckRollup` for one PR. */
+interface GhPrView {
+  files?: Array<{ path?: string }>;
+  mergeable?: string;
+  statusCheckRollup?: GhCheck[];
+}
+
+/** A single check as `gh` reports it — CheckRun and StatusContext in one shape. */
+interface GhCheck {
+  /** CheckRun: QUEUED | IN_PROGRESS | COMPLETED | WAITING | PENDING | REQUESTED. */
+  status?: string;
+  /** CheckRun: SUCCESS | FAILURE | NEUTRAL | SKIPPED | CANCELLED | TIMED_OUT | … */
+  conclusion?: string;
+  /** StatusContext: SUCCESS | FAILURE | ERROR | PENDING | EXPECTED. */
+  state?: string;
+}
+
+/** Check outcomes that make a PR red. */
+const CHECK_FAILED = new Set([
+  'FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE', 'ERROR',
+]);
+/** Check states that make a PR yellow. */
+const CHECK_RUNNING = new Set(['QUEUED', 'IN_PROGRESS', 'WAITING', 'PENDING', 'REQUESTED', 'EXPECTED']);
+
+/**
+ * Derive the city's four-state PR color from whatever `gh` managed to say:
+ * grey draft, red failing, yellow still running, green ready to merge.
+ *
+ * Every field is optional on purpose. An older `gh` that does not know
+ * `statusCheckRollup` returns nothing for it, and "we cannot see the checks" is
+ * honestly `pending` — never a green light the reviewer has not earned.
+ */
+function prStatusOf(pr: GhPr): PrStatus {
+  if (pr.isDraft) return 'draft';
+  const rollup = pr.statusCheckRollup;
+  if (!Array.isArray(rollup)) return 'pending';
+  let running = false;
+  for (const check of rollup) {
+    const conclusion = (check?.conclusion || '').toUpperCase();
+    const state = (check?.state || '').toUpperCase();
+    if (CHECK_FAILED.has(conclusion) || CHECK_FAILED.has(state)) return 'failing';
+    const status = (check?.status || '').toUpperCase();
+    if (CHECK_RUNNING.has(status) || CHECK_RUNNING.has(state)) running = true;
+    else if (!conclusion && !state && !status) running = true; // unrecognizable node
+  }
+  if (running) return 'pending';
+  // Checks are green (or there are none). A conflicting branch is still not
+  // something you can merge, so it keeps the red light rather than the green.
+  if ((pr.mergeable || '').toUpperCase() === 'CONFLICTING') return 'failing';
+  return 'ready';
 }
 
 async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]> {
@@ -782,14 +941,22 @@ async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]>
     return [];
   }
 
+  // Files AND check state come from the per-PR view: asking `pr list` for
+  // `statusCheckRollup` across 50 PRs returns tens of megabytes of check runs
+  // and the query fails outright on a repo with a big CI matrix.
   const results = await pool(list, 8, async (pr): Promise<Pr | null> => {
-    let files: string[] = [];
+    let view: GhPrView | null = null;
     try {
       const { stdout } = await execFileAsync('gh',
-        ['pr', 'view', String(pr.number), '--repo', repoSlug, '--json', 'files', '-q', '.files[].path'],
+        ['pr', 'view', String(pr.number), '--repo', repoSlug,
+          '--json', 'files,mergeable,statusCheckRollup'],
         { maxBuffer: 32 * 1024 * 1024 });
-      files = stdout.split('\n').map((s) => s.trim()).filter((s) => fileSet.has(s));
+      const parsed: unknown = JSON.parse(stdout);
+      view = isRecord(parsed) ? (parsed as GhPrView) : null;
     } catch { return null; }
+    const files = (view?.files ?? [])
+      .map((f) => String(f?.path ?? '').trim())
+      .filter((s) => fileSet.has(s));
     if (!files.length) return null;
     const login = pr.author?.login || 'unknown';
     return {
@@ -798,6 +965,7 @@ async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]>
       author: login,
       avatarUrl: pr.author?.avatarUrl || `https://github.com/${login}.png`,
       isDraft: !!pr.isDraft,
+      status: prStatusOf({ ...pr, ...view }),
       updatedAt: pr.updatedAt ?? '',
       additions: pr.additions ?? 0,
       deletions: pr.deletions ?? 0,

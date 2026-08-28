@@ -16,12 +16,14 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { CityHost } from '../../shared/host.js';
 import { HttpHost } from '../../shared/host.js';
 import type { CityData, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr } from '../../shared/types.js';
-import { layoutCity, plateTop, buildingHeight } from './layout.js';
+import { layoutCity, plateTop, buildingHeight, streetWidth, setWorldScale, worldScale } from './layout.js';
 import {
   buildCity, buildEnvironment, disposeObject,
   buildCouplingArcs, buildArcFlow, buildPrMarker, buildScaffolding, makeSelectionBox, frameNodeBox, makeLabelSprite,
+  buildConstructionSites, buildVacantLots, prStatus,
   heatColor, walk, KIND_COLORS, KIND_ORDER, MEMBER_ORDER, PALETTE,
-  type Arc, type ArcFlow, type CityBuild, type ModuleRecord,
+  PR_STATUS_COLORS, PR_STATUS_LABELS, PR_STATUS_ORDER,
+  type Arc, type ArcFlow, type CityBuild, type ModuleRecord, type Site,
 } from './city.js';
 import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
 import { createTerraceSigns, type TerraceSigns } from './terrace.js';
@@ -35,6 +37,9 @@ import type { TourTarget } from '../../shared/tour.js';
 import { validateCheckpoints } from '../../shared/tour.js';
 import { createTour, type TourPlayer } from './tour.js';
 import { createCheckpoints, type Checkpoints } from './checkpoints.js';
+import { installBridge } from './bridge.js';
+import { EMBEDDED, initEmbed, type EmbedUi } from './embed.js';
+import { loadUiSettings, saveUiSetting, type UiSettings } from './uiSettings.js';
 import {
   buildStrataIndex, createStrata, commitTypePaint, commitTypeKey,
   COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
@@ -112,6 +117,11 @@ function cityExtent(fileCount: number): number {
   return Math.min(Math.max(Math.sqrt(fileCount) * 15, 260), 900);
 }
 let CITY_SIZE = 900;
+/**
+ * Smallest world extent an isolated scope may occupy before the uniform
+ * legibility scale kicks in (see `scopeExtent`).
+ */
+const MIN_SCOPE_SIZE = 240;
 
 // ---------------------------------------------------------------------------
 // State
@@ -245,6 +255,8 @@ let sidebar: Sidebar;
 let timeline: Timeline;
 let search: SearchPalette | null = null;
 let tour: TourPlayer | null = null;
+/** The embed chrome; a no-op sink until (and unless) the viewer is embedded. */
+let embed: EmbedUi = { setSelection: () => {} };
 let checkpoints: Checkpoints;
 /** A tour step asked for a slow orbit; suspended while the camera is flying. */
 let orbitWanted = false;
@@ -470,16 +482,89 @@ async function main(): Promise<void> {
   bindEvents();
   tour = createTourPlayer();
   installScriptHooks();
+  const bridge = installBridge({
+    refreshWorktree,
+    setWorktree,
+    revealPath,
+    hasPath: (path) => index.filesByPath.has(path) || index.nodesByPath.get(path)?.type === 'folder',
+    resolveDir: (path) => folderNodeFor(path)?.path ?? null,
+    getSelection: () => {
+      const sel = state.selection;
+      if (!sel || sel.type === 'pr') return null;
+      const real = realFileOf(sel.rec?.file ?? sel.node);
+      return real ? { path: real.path, line: sel.rec?.mod.line } : null;
+    },
+    selectedPath: () => {
+      const sel = state.selection;
+      if (!sel || sel.type === 'pr') return null;
+      const node = sel.rec?.file ?? sel.node;
+      return realFileOf(node)?.path ?? node?.path ?? null;
+    },
+    getData: () => state.data,
+  });
+  embed = initEmbed({ openSelection: (mode) => bridge.openSelection(mode) });
+  if (state.selection) showSelection(describe(state.selection));
   animate();
 
   requestAnimationFrame(() => dom.boot.classList.add('hide'));
   if (state.usingFake) showNotice('No data.json — showing synthetic demo city');
 
+  const settings = loadUiSettings();
+  void settings.then(applyUiSettings);
+
   // The Working-tree layer needs a live git; on a static export there is none,
-  // so the toggle only appears once the endpoint has answered.
-  void host.getStatus().then((res) => {
-    if (res) dom.worktreeBtn.style.display = '';
+  // so the toggle only appears once the endpoint has answered. Where git IS
+  // reachable the layer comes up ON — a clean tree renders a normal city, so
+  // there is nothing to opt out of until there is something to see — and the
+  // drawer toggle stays as the opt-out (remembered across sessions).
+  void Promise.all([host.getStatus(), settings]).then(([res, s]) => {
+    if (!res) return;
+    dom.worktreeBtn.style.display = '';
+    setWorktree(s.worktree ?? true);
+    startWorktreePolling();
   });
+}
+
+/** Re-apply remembered drawer choices; mirrors the click handlers in bindEvents. */
+function applyUiSettings(s: UiSettings): void {
+  for (const key of ['coupling', 'people', 'fx'] as const) {
+    const want = s[key];
+    if (want === undefined || want === state[key]) continue;
+    state[key] = want;
+    dom.toggles.querySelector(`button[data-toggle="${key}"]`)?.classList.toggle('active', want);
+    if (key === 'coupling') rebuildArcs();
+    if (key === 'fx') {
+      bloom.enabled = state.fx;
+      const crt = document.getElementById('crt');
+      if (crt) crt.style.display = state.fx ? 'block' : 'none';
+    }
+    if (key === 'people') {
+      peopleGroup.visible = state.people;
+      scaffoldGroup.visible = state.people;
+      refreshPickables();
+    }
+  }
+  if (isMode(s.mode) && s.mode !== state.mode) {
+    state.mode = s.mode;
+    for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) {
+      b.classList.toggle('active', b.dataset.mode === state.mode);
+    }
+    applyOverlay();
+    renderLegend();
+  }
+}
+
+/**
+ * Re-read `git status` while the layer is up, so an edit made outside the viewer
+ * shows up on its own. The shell polls over the bridge as well; `refreshWorktree`
+ * collapses concurrent calls, so the two pollers cannot stack up.
+ */
+function startWorktreePolling(): void {
+  window.setInterval(() => {
+    if (!state.worktree) return;
+    if (document.visibilityState !== 'visible') return;
+    void refreshWorktree();
+  }, WORKTREE_POLL_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -806,7 +891,11 @@ function rebuildScene(
 
   const root = makeScopeRoot(focus);
   scope.root = root;
-  layoutCity(root, { size: stageSize(root) });
+  // The scale must be in force BEFORE the layout runs: every world constant the
+  // layout and the geometry builders read goes through it.
+  const extent = scopeExtent(root);
+  setWorldScale(extent.scale);
+  layoutCity(root, { size: extent.size });
   city = buildCity(root);
   stage.add(city.group);
 
@@ -999,15 +1088,36 @@ function rehomeStage(): void {
 }
 
 /**
- * Stage extent for a scope. Buildings are capped at 60 world units tall, so a
- * file or module scope laid out at the full org extent would read as a pancake;
- * shrink the stage to the number of buildings it actually contains.
+ * Stage extent for a scope, in CITY-WIDE units.
+ *
+ * Footprint area per LOC is a property of the city, not of the level you happen
+ * to be looking at: a scope holding a tenth of the repo's lines gets a tenth of
+ * the root plate's AREA (so a linear factor of √0.1), and the camera moves in to
+ * fill the screen with it. Heights are absolute for the same reason, so a file's
+ * stack has the same silhouette isolated as it does from the org overview.
+ *
+ * A scope small enough to fall under `minScopeSize` is the one exception: it is
+ * scaled up UNIFORMLY, footprints and heights by the same linear factor, so it
+ * becomes legible without any of its proportions changing. That factor is the
+ * layout's world scale (`setWorldScale`), and every world constant — street
+ * widths, terrace lifts, building heights, strata slabs — runs through it.
  */
-function stageSize(root: VNode): number {
-  if (!root.synth) return CITY_SIZE;
-  let buildings = 0;
-  walk(root, (n) => { if (n.type === 'file') buildings += (n.modules || []).length; });
-  return Math.min(Math.max(Math.sqrt(Math.max(buildings, 1)) * 55, 60), CITY_SIZE);
+function scopeExtent(root: VNode): { size: number; scale: number } {
+  const total = Math.max(state.root?.loc ?? 0, 1);
+  const share = Math.min(Math.max(root.loc, 1) / total, 1);
+  const trueSize = CITY_SIZE * Math.sqrt(share);
+  const size = Math.max(trueSize, minScopeSize());
+  return { size, scale: size / trueSize };
+}
+
+/**
+ * The legibility floor. Absolute in world units, but never more than a third of
+ * the whole city: in a small repo the root plate is itself only a few hundred
+ * units across, and a floor at the city's own size would flatten every level
+ * back onto the full square — the exact behaviour this replaces.
+ */
+function minScopeSize(): number {
+  return Math.min(MIN_SCOPE_SIZE, CITY_SIZE * 0.33);
 }
 
 function indexScope(): void {
@@ -1064,6 +1174,7 @@ function buildHud(): void {
     const asFixFilter = clicked === 'fix' && strata.build !== null;
     const mode = asFixFilter ? 'strata' : clicked;
     state.mode = mode;
+    saveUiSetting('mode', mode);
     for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) {
       b.classList.toggle('active', b.dataset.mode === mode);
     }
@@ -1103,10 +1214,12 @@ function buildHud(): void {
     const key = btn.dataset.toggle;
     if (key === 'worktree') {
       setWorktree(!state.worktree);
+      saveUiSetting('worktree', state.worktree);
       return;
     }
     if (key !== 'coupling' && key !== 'people' && key !== 'fx') return;
     state[key] = !state[key];
+    saveUiSetting(key, state[key]);
     btn.classList.toggle('active', state[key]);
     if (key === 'coupling') rebuildArcs();
     if (key === 'fx') {
@@ -1187,7 +1300,46 @@ function renderLegend(): void {
       rows.push(filterControlsHtml());
     }
   }
+  rows.push(...worktreeLegendRows());
+  rows.push(...prLegendRows());
   dom.legend.innerHTML = rows.join('');
+}
+
+/**
+ * The working-tree block, present exactly while the tree is dirty — a clean tree
+ * renders a normal city and has nothing to explain. Three treatments, in the
+ * order the eye meets them: what changed, what is new, what is gone.
+ */
+function worktreeLegendRows(): string[] {
+  if (!workDirty()) return [];
+  const swatch = (css: string, label: string) =>
+    `<div class="row"><i class="sw" style="${css}"></i><span>${label}</span></div>`;
+  const glow = (hex: string) => `background:${hex};box-shadow:0 0 8px ${hex}`;
+  return [
+    `<div class="panel-title">Working tree</div>`,
+    swatch(
+      'background:linear-gradient(90deg,#ef4444,#4ade80);box-shadow:0 0 8px #fbbf24',
+      'modified · removed &#8596; added'
+    ),
+    swatch(glow('#7df9ff'), 'new file · under construction'),
+    swatch(glow('#ef4444'), 'deleted · vacant lot'),
+    `<div class="row"><i class="sw" style="background:#1b2432"></i><span>unchanged · ghosted</span></div>`,
+    `<div class="row"><span>brightness = lines changed</span></div>`,
+  ];
+}
+
+/** The PR traffic light, present while the People layer is showing PRs. */
+function prLegendRows(): string[] {
+  if (!state.people || !peopleGroup.children.length) return [];
+  const rows = [`<div class="panel-title">Pull requests</div>`];
+  for (const status of PR_STATUS_ORDER) {
+    const hex = '#' + PR_STATUS_COLORS[status].toString(16).padStart(6, '0');
+    rows.push(
+      `<div class="row"><i class="sw" style="background:${hex};box-shadow:0 0 8px ${hex}"></i>` +
+      `<span>${PR_STATUS_LABELS[status]}</span></div>`
+    );
+  }
+  return rows;
 }
 
 /** The "only" / "clear" pair — present exactly while a filter is. */
@@ -1473,7 +1625,7 @@ function applyStrataFilter(rebuild: boolean): void {
   }
   renderLegend();
   // The SELECTED block carries the per-file "N of M match" line, so it restates.
-  if (state.selection) sidebar.setSelection(describe(state.selection));
+  if (state.selection) showSelection(describe(state.selection));
 }
 
 function toggleFilterType(type: string): void {
@@ -1521,8 +1673,11 @@ function paintStrata(): void {
     return;
   }
   searchPaint.pulseStrata.length = 0;
-  const base = state.mode === 'strata' ? commitTypePaint : metricStrataPaint();
-  build.recolor(filterActive() ? ghostedPaint(base) : base);
+  let base = state.mode === 'strata' ? commitTypePaint : metricStrataPaint();
+  if (filterActive()) base = ghostedPaint(base);
+  // The working-tree layer is the outermost wrapper: a dirty tree is a statement
+  // about the city as a whole, and it overrides every mode's own paint.
+  build.recolor(workDirty() ? worktreeStrataPaint(base) : base);
 }
 
 /**
@@ -1540,16 +1695,9 @@ function metricStrataPaint(): StrataPaint {
   const denom = Math.sqrt(Math.max(maxV, 1));
   const green = new THREE.Color(PALETTE.green);
   const scrubbing = mode === 'recent' && state.timeCursor !== null;
-  const worktreeOn = state.worktree && worktree.byPath.size > 0;
 
   return (record, _age, target) => {
     const file = record.file;
-    // The working-tree layer rides on top of a uniform paint exactly as it does
-    // on the buildings; Strata mode keeps its bands and opts out.
-    if (worktreeOn) {
-      const real = realFileOf(file);
-      if (real && worktree.byPath.get(real.path) === 'modified') return target.copy(WORKTREE_AMBER);
-    }
     if (mode === 'structure') return target.copy(dominantKindColor(file));
     if (mode === 'recent') {
       const r = recentValue(file);
@@ -1751,7 +1899,7 @@ function createTourPlayer(): TourPlayer {
     setView: (view) => sidebar.setTour(view),
     getDiff: (path, hash) => host.getDiff(path, hash),
     notice: showNotice,
-    onExit: () => { sidebar.setSelection(state.selection ? describe(state.selection) : null); },
+    onExit: () => { showSelection(state.selection ? describe(state.selection) : null); },
   });
 }
 
@@ -1861,36 +2009,113 @@ function tourHighlight(targets: TourTarget[] | null): void {
 // Working-tree layer — the "now" end of the time spectrum
 // ---------------------------------------------------------------------------
 
-const WORKTREE_AMBER = new THREE.Color(0xfbbf24);
-const WORKTREE_UNTRACKED = 0x4ade80;
-const WORKTREE_DELETED = 0xef4444;
+/**
+ * The layer's palette. A modified file is placed on a single green↔red axis by
+ * the BALANCE of its edit (all-additions green, all-deletions red, a wash in
+ * between) and brightened by its MAGNITUDE, so the two questions a diff answers
+ * — which way, and how much — are two independent visual channels.
+ */
+const WORK_ADDED = new THREE.Color(0x4ade80);
+const WORK_REMOVED = new THREE.Color(0xef4444);
+/** Net-new files: the "under construction" cyan-white, not on the diff axis. */
+const WORK_NEW = 0x7df9ff;
+const WORK_DELETED = 0xef4444;
+/** A deleted file's remaining mass — present, but rubble. */
+const WORK_RUBBLE = new THREE.Color(0x3d1013);
+/**
+ * How far the unchanged city drops while the tree is dirty. The same depth the
+ * strata filter ghosts to (`FILTER_GHOST`): color gone, silhouette intact — you
+ * still need to see the city the change is happening inside of.
+ */
+const WORK_GHOST = FILTER_GHOST;
+/** Lines changed at which a modified file is at full brightness. */
+const WORK_MAGNITUDE_FULL = 400;
+/** Construction sites drawn per refresh; beyond this the street is a wall. */
+const MAX_SITES = 80;
+/** How often the layer re-reads `git status` on its own (matches the bridge's). */
+const WORKTREE_POLL_MS = 5000;
+
+/** One path's difference from HEAD, as the layer paints it. */
+interface WorkEntry {
+  kind: WorkKind;
+  added: number;
+  removed: number;
+}
 
 /** Uncommitted changes, from `git status --porcelain` via the host. */
-const worktree: { changes: WorkChange[]; byPath: Map<string, WorkKind> } = {
+const worktree: {
+  changes: WorkChange[];
+  byPath: Map<string, WorkEntry>;
+  /** Non-null while a request is in flight, so polls cannot pile up. */
+  inFlight: Promise<void> | null;
+  /**
+   * Identity of the change set the current geometry was built for. The paint
+   * pass is cheap and always re-runs; the invented geometry is only rebuilt when
+   * the set of paths actually moved, which is what makes a 5s poll free.
+   */
+  sig: string;
+} = {
   changes: [],
   byPath: new Map(),
+  inFlight: null,
+  sig: '',
 };
 
+/** Is the working tree dirty — i.e. is the layer showing anything at all? */
+function workDirty(): boolean {
+  return state.worktree && worktree.changes.length > 0;
+}
+
+/** The entry for a scope node's real file, or null when it is unchanged. */
+function workEntry(node: VNode | null | undefined): WorkEntry | null {
+  const real = realFileOf(node);
+  return real ? worktree.byPath.get(real.path) ?? null : null;
+}
+
+/**
+ * Where a modified file sits on the green↔red axis, and how loudly it says so.
+ * A file with no numbers (a binary, or a dev API too old to report them) reads
+ * as a neutral mid-axis edit rather than pretending to a direction it has not
+ * earned.
+ */
+function workColor(entry: WorkEntry, target: THREE.Color): THREE.Color {
+  const total = entry.added + entry.removed;
+  const balance = total > 0 ? entry.added / total : 0.5;
+  const magnitude = Math.min(Math.log2(1 + total) / Math.log2(1 + WORK_MAGNITUDE_FULL), 1);
+  return target.copy(WORK_REMOVED).lerp(WORK_ADDED, balance).multiplyScalar(0.5 + 0.85 * magnitude);
+}
+
 async function refreshWorktree(): Promise<void> {
-  const res = await host.getStatus();
-  if (!res) {
-    showNotice('Working tree needs the dev server');
-    setWorktree(false);
-    return;
-  }
-  worktree.changes = [];
-  worktree.byPath.clear();
-  for (const c of res.changes) {
-    const kind: WorkKind = c.untracked ? 'untracked'
-      : c.x === 'D' || c.y === 'D' ? 'deleted'
-      : 'modified';
-    const inCity = index.filesByPath.has(c.path);
-    worktree.changes.push({ path: c.path, kind, inCity });
-    if (inCity) worktree.byPath.set(c.path, kind);
-  }
-  pushWorktreeToSidebar();
-  applyWorktreeLayer();
-  applyOverlay();
+  if (worktree.inFlight) return worktree.inFlight;
+  const run = (async () => {
+    const res = await host.getStatus();
+    if (!res) {
+      showNotice('Working tree needs the dev server');
+      setWorktree(false);
+      return;
+    }
+    worktree.changes = [];
+    worktree.byPath.clear();
+    for (const c of res.changes) {
+      // Porcelain deletions arrive as 'D ' (staged) or ' D' (unstaged); an
+      // `rm -rf` of a tracked directory produces a wall of the latter.
+      const kind: WorkKind = c.untracked ? 'untracked'
+        : c.x === 'D' || c.y === 'D' ? 'deleted'
+        : 'modified';
+      const added = Number(c.added) || 0;
+      const removed = Number(c.removed) || 0;
+      const inCity = index.filesByPath.has(c.path);
+      worktree.changes.push({ path: c.path, kind, inCity, added, removed });
+      // Net-new files are NOT in the city — they get invented geometry instead —
+      // so the map has to carry them too, keyed by the path they will occupy.
+      worktree.byPath.set(c.path, { kind, added, removed });
+    }
+    pushWorktreeToSidebar();
+    applyWorktreeLayer();
+    applyOverlay();
+  })().finally(() => { worktree.inFlight = null; });
+  worktree.inFlight = run;
+  return run;
 }
 
 function setWorktree(on: boolean): void {
@@ -1905,6 +2130,7 @@ function setWorktree(on: boolean): void {
   pushWorktreeToSidebar();
   applyWorktreeLayer();
   applyOverlay(); // restore whatever overlay was underneath
+  renderLegend();
 }
 
 function pushWorktreeToSidebar(): void {
@@ -1919,57 +2145,192 @@ function pushWorktreeToSidebar(): void {
   );
 }
 
-/** Ghost outlines for the files that are not simply "modified in place". */
+/**
+ * The geometry half of the layer: mass the analyzed city does not have.
+ *
+ * Deliberately NOT a rebuild. The city is laid out once per scope and a status
+ * tick never touches it — the fade and the green/red paint are recolor passes on
+ * the instanced meshes that are already standing (`paintWorktree`), and only the
+ * two treatments with no home in the dataset get geometry: net-new files, which
+ * have no plot, and deletions, which need a marker over the plot they vacated.
+ * Both live in `worktreeGroup` and are rebuilt only when the change SET moves.
+ */
 function applyWorktreeLayer(): void {
+  worktreeGroup.visible = workDirty() && !searchPaint.on;
+  // Empty signature = nothing to invent, which is also the state a clean tree
+  // and a switched-off layer report — so turning the layer off releases the
+  // geometry through the same path that rebuilds it.
+  const sig = worktreeSignature();
+  if (sig === worktree.sig) return;
+  worktree.sig = sig;
   clearGroup(worktreeGroup);
-  worktreeGroup.visible = state.worktree && !searchPaint.on;
-  if (!state.worktree) return;
-
-  const untracked: VNode[] = [];
-  const deleted: VNode[] = [];
-  for (const [path, kind] of worktree.byPath) {
-    if (kind === 'modified') continue;
-    const node = scope.byRealPath.get(path);
-    if (!node || !node.rect) continue;
-    (kind === 'untracked' ? untracked : deleted).push(node);
+  if (!sig) {
+    renderLegend();
+    return;
   }
-  const green = buildScaffolding(untracked, WORKTREE_UNTRACKED);
-  if (green) { green.userData.pulseRate = 1.5; worktreeGroup.add(green); }
-  const red = buildScaffolding(deleted, WORKTREE_DELETED);
-  if (red) { red.userData.pulseRate = 3.4; worktreeGroup.add(red); }
+
+  const sites = constructionSites();
+  const rising = buildConstructionSites(sites, WORK_NEW);
+  if (rising) worktreeGroup.add(rising);
+
+  const deleted: VNode[] = [];
+  for (const [path, entry] of worktree.byPath) {
+    if (entry.kind !== 'deleted') continue;
+    const node = scope.byRealPath.get(path);
+    if (node && node.rect) deleted.push(node);
+  }
+  const lots = buildVacantLots(deleted, WORK_DELETED);
+  if (lots) worktreeGroup.add(lots);
+
+  renderLegend();
 }
 
 /**
- * A recolor pass on top of the active overlay: only the modified files change,
- * so churn/recent/structure still read underneath. Search highlight outranks it.
+ * Identity of what the geometry would be built from: the scope it is laid out
+ * against plus every path that needs invented mass. Modified files are excluded
+ * on purpose — their line counts change constantly and change nothing geometric.
+ */
+function worktreeSignature(): string {
+  if (!workDirty()) return '';
+  const keys: string[] = [];
+  for (const [path, entry] of worktree.byPath) {
+    if (entry.kind === 'modified') continue;
+    keys.push(entry.kind[0] + path);
+  }
+  keys.sort();
+  return (scope.root?.path ?? '') + ' ' + String(scope.fileNodes.length) + ' ' + keys.join('\n');
+}
+
+/**
+ * Invent a plot for every net-new file: a construction site in the STREET of
+ * the nearest block that does exist, packed along its near edge. The street is
+ * the one part of the layout guaranteed to be empty, so the sites can never sit
+ * on top of a building — and "new work happening at the edge of the block it
+ * belongs to" is the right sentence about an untracked file anyway.
+ */
+function constructionSites(): Site[] {
+  const sites: Site[] = [];
+  const byHost = new Map<VNode, Array<{ path: string; loc: number }>>();
+  for (const [path, entry] of worktree.byPath) {
+    if (entry.kind !== 'untracked') continue;
+    const hostNode = nearestScopeFolder(path);
+    if (!hostNode) continue;
+    let list = byHost.get(hostNode);
+    if (!list) byHost.set(hostNode, (list = []));
+    list.push({ path, loc: entry.added });
+  }
+
+  const s = worldScale();
+  for (const [hostNode, files] of byHost) {
+    const r = hostNode.rect;
+    if (!r) continue;
+    const depth = hostNode.depth ?? 0;
+    // The same street the layout reserved for this folder — see `layoutNode`.
+    const band = Math.min(streetWidth(depth), r.w * 0.14, r.h * 0.14);
+    const tier = hostNode.tier ?? depth;
+    const top = hostNode.top ?? plateTop(tier, false);
+    const n = Math.min(files.length, MAX_SITES - sites.length);
+    if (n <= 0) break;
+    const pitch = Math.min(band, (r.w - band * 0.4) / n);
+    const side = Math.max(pitch * 0.72, 0.4 * s);
+    const inset = Math.max((band - side) / 2, 0);
+    for (let i = 0; i < n; i++) {
+      const f = files[i];
+      if (!f) continue;
+      sites.push({
+        x: r.x + band * 0.2 + i * pitch,
+        z: r.z + r.h - band + inset,
+        w: side,
+        h: side,
+        top: top + 0.05 * s,
+        height: buildingHeight(f.loc),
+      });
+    }
+  }
+  return sites;
+}
+
+/**
+ * The deepest folder in the CURRENT scope that contains `path`. A brand-new file
+ * in a brand-new directory has no block of its own, so it moves in with the
+ * nearest ancestor that does; a path outside the scope entirely lands on the
+ * scope root, which is where "somewhere else in the repo" belongs.
+ */
+function nearestScopeFolder(path: string): VNode | null {
+  const parts = path.split('/');
+  for (let i = parts.length - 1; i > 0; i--) {
+    const node = index.nodesByPath.get(parts.slice(0, i).join('/'));
+    if (node && node.type === 'folder' && node.rect && scope.nodes.has(node)) return node;
+  }
+  const root = scope.root;
+  return root && root.rect && !root.synth ? root : null;
+}
+
+/**
+ * The paint half of the layer, riding on top of whatever overlay is underneath.
+ *
+ * With a clean tree this does nothing at all and the city renders normally. The
+ * moment anything is uncommitted, the whole city ghosts back and only the
+ * changes are lit: modified files on the green↔red balance axis, deleted files
+ * dimmed to rubble over their vacant lot. Search highlight still outranks it.
  */
 function paintWorktree(): void {
-  if (!city || !state.worktree || !worktree.byPath.size) return;
-  // Where the stacks stand there are no visible buildings, and the amber is
-  // already part of their paint (`metricStrataPaint`); only the plates below
-  // still need it, which the second half of this pass does.
+  if (!city || !workDirty()) return;
+
+  // Where the stacks stand there are no visible buildings; the stacks get the
+  // same treatment through `worktreeStrataPaint`.
   if (!strata.build) {
-    let touched = false;
     for (const rec of city.moduleRecords) {
-      const real = realFileOf(rec.file);
-      if (!real || worktree.byPath.get(real.path) !== 'modified') continue;
-      rec.mesh.setColorAt(rec.instanceId, WORKTREE_AMBER);
-      touched = true;
+      const entry = workEntry(rec.file);
+      if (entry) workPaint(entry, _color);
+      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST);
+      rec.mesh.setColorAt(rec.instanceId, _color);
     }
-    if (touched) for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }
 
   const filePlates = city.filePlates;
-  if (!filePlates) return;
-  let plateTouched = false;
-  for (const rec of city.fileRecords) {
-    const real = realFileOf(rec.node);
-    if (!real || worktree.byPath.get(real.path) !== 'modified') continue;
-    _color.copy(WORKTREE_AMBER).multiplyScalar(0.34);
-    filePlates.setColorAt(rec.instanceId, _color);
-    plateTouched = true;
+  if (filePlates) {
+    for (const rec of city.fileRecords) {
+      const entry = workEntry(rec.node);
+      // Plates sit under the mass, so a changed one reads a shade quieter than it.
+      if (entry) workPaint(entry, _color).multiplyScalar(0.42);
+      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST);
+      filePlates.setColorAt(rec.instanceId, _color);
+    }
+    if (filePlates.instanceColor) filePlates.instanceColor.needsUpdate = true;
   }
-  if (plateTouched && filePlates.instanceColor) filePlates.instanceColor.needsUpdate = true;
+
+  const folderPlates = city.folderPlates;
+  if (folderPlates) {
+    for (const rec of city.folderRecords) {
+      folderPlates.setColorAt(rec.instanceId, _dim.copy(rec.baseColor).multiplyScalar(WORK_GHOST * 3));
+    }
+    if (folderPlates.instanceColor) folderPlates.instanceColor.needsUpdate = true;
+  }
+}
+
+/** The layer's verdict on one changed instance. */
+function workPaint(entry: WorkEntry, target: THREE.Color): THREE.Color {
+  if (entry.kind === 'deleted') return target.copy(WORK_RUBBLE);
+  // An untracked file has no instance here — its mass is invented geometry — so
+  // anything reaching this point with that kind is a plate under a new plot.
+  if (entry.kind === 'untracked') return target.setHex(WORK_NEW).multiplyScalar(0.6);
+  return workColor(entry, target);
+}
+
+/**
+ * The same verdict, wrapped around whatever paint the stacks were using — the
+ * strata mirror of `paintWorktree`, and the reason the fade reaches the stacked
+ * massing without either pass knowing about the other's geometry.
+ */
+function worktreeStrataPaint(base: StrataPaint): StrataPaint {
+  return (record, age, target) => {
+    const entry = workEntry(record.file);
+    if (entry) return workPaint(entry, target);
+    base(record, age, target);
+    return target.multiplyScalar(WORK_GHOST);
+  };
 }
 
 /**
@@ -1980,6 +2341,9 @@ function paintWorktree(): void {
 function revealPath(path: string, opts: { module?: string | null; line?: number } = {}): boolean {
   const real = index.filesByPath.get(path);
   if (!real) {
+    // Folders reveal too (the shell's follow mode names directories).
+    const folder = index.nodesByPath.get(path);
+    if (folder && folder.type === 'folder') return revealFolder(path);
     showNotice('Not in this city: ' + path);
     return false;
   }
@@ -2010,11 +2374,73 @@ function revealPath(path: string, opts: { module?: string | null; line?: number 
     if (desc) {
       desc.span = { start: Math.max(1, line - 12), end: line + 60 };
       desc.deep = true;
-      sidebar.setSelection(desc);
+      showSelection(desc);
     }
   }
   if (node.rect) flyTo(node);
   return true;
+}
+
+/**
+ * Select + fly to a folder without isolating it. Folders outside the current
+ * scope pop back to the root city, where every district has a plate.
+ */
+function revealFolder(path: string): boolean {
+  let node = scopeFolder(path);
+  if (!node) {
+    focusNode(state.root);
+    node = scopeFolder(path);
+  }
+  if (!node) {
+    showNotice('No footprint for ' + path);
+    return false;
+  }
+  setSelection({ type: 'folder', node, rec: null });
+  if (node.rect) flyTo(node);
+  return true;
+}
+
+/**
+ * Best folder node for a directory path: exact, shortest descendant, or the
+ * nearest recorded ancestor. Fuzzy on purpose — this serves the shell's follow
+ * mode, where a cwd with no analyzed files should land on the nearest real
+ * district rather than vanish.
+ */
+function folderNodeFor(path: string): VNode | null {
+  let p = path;
+  for (;;) {
+    const exact = index.nodesByPath.get(p);
+    if (exact && exact.type === 'folder') return exact;
+    let best: VNode | null = null;
+    for (const [np, n] of index.nodesByPath) {
+      if (n.type !== 'folder' || !np.startsWith(p + '/')) continue;
+      if (best === null || np.length < best.path.length) best = n;
+    }
+    if (best) return best;
+    const cut = p.lastIndexOf('/');
+    if (cut <= 0) return null;
+    p = p.slice(0, cut);
+  }
+}
+
+/** The scope node for a path, walking up to the nearest PLACED ancestor. */
+function placedNodeFor(path: string): VNode | undefined {
+  let p = path;
+  for (;;) {
+    const n = scope.byRealPath.get(p);
+    if (n && n.rect) return n;
+    const cut = p.lastIndexOf('/');
+    if (cut <= 0) return undefined;
+    p = p.slice(0, cut);
+  }
+}
+
+/** The current scope's node for a folder path, or null when out of scope. */
+function scopeFolder(path: string): VNode | null {
+  for (const n of scope.nodes) {
+    if (n.type === 'folder' && n.path === path) return n;
+  }
+  return null;
 }
 
 /** Scrubbing the timeline implies the Recent Focus overlay. */
@@ -2227,7 +2653,9 @@ function buildPeopleLayer(): void {
   for (const pr of prs) maxWeight = Math.max(maxWeight, Math.log2(1 + prSize(pr)));
 
   for (const pr of prs) {
-    const nodes = uniq(pr.files.map((p) => scope.byRealPath.get(p)).filter(hasRect));
+    // A file too small to place at this scope anchors its beam to the nearest
+    // PLACED ancestor instead — a PR over stripped yaml must not vanish.
+    const nodes = uniq(pr.files.map((p) => placedNodeFor(p)).filter(hasRect));
     if (!nodes.length) continue;
 
     let cx = 0, cz = 0, top = 0;
@@ -2309,9 +2737,18 @@ function tallest(node: VNode): number {
 function setSelection(target: Target | null, opts: { keepSidebar?: boolean } = {}): void {
   state.selection = target;
   refreshSelectionBox();
-  if (!opts.keepSidebar) sidebar.setSelection(target ? describe(target) : null);
+  if (!opts.keepSidebar) showSelection(target ? describe(target) : null);
   rebuildArcs();
   updateLabelCandidates();
+}
+
+/**
+ * Where a pinned selection is shown. Standalone that is the inspector; embedded
+ * the inspector is the shell's job, so the descriptor goes to the chip instead.
+ */
+function showSelection(desc: Descriptor | null): void {
+  if (EMBEDDED) embed.setSelection(desc);
+  else sidebar.setSelection(desc);
 }
 
 function refreshSelectionBox(): void {
@@ -2338,12 +2775,13 @@ function boxAroundInstance(box: THREE.LineSegments, rec: ModuleRecord): void {
 }
 
 function boxHeightFor(node: VNode): number {
+  const s = worldScale();
   const build = strata.build;
-  if (build && node.type === 'file') return Math.max(build.heightOf(node) + 4, 10);
-  if (node.type === 'file') return Math.max(tallest(node) + 4, 10);
+  if (build && node.type === 'file') return Math.max(build.heightOf(node) + 4 * s, 10 * s);
+  if (node.type === 'file') return Math.max(tallest(node) + 4 * s, 10 * s);
   const r = node.rect;
-  if (!r) return 18;
-  return Math.max(Math.min(r.w, r.h) * 0.28, 18);
+  if (!r) return 18 * s;
+  return Math.max(Math.min(r.w, r.h) * 0.28, 18 * s);
 }
 
 /**
@@ -2368,7 +2806,7 @@ function focusNode(node: VNode | null | undefined, opts: { instant?: boolean } =
     viaUpFrom: !opts.instant && !down && prev ? prev : null,
   });
 
-  if (state.selection) sidebar.setSelection(describe(state.selection));
+  if (state.selection) showSelection(describe(state.selection));
   else setSelection({ type: node.type, node, rec: null });
 }
 
@@ -2383,7 +2821,10 @@ function framingFor(node: VNode): Framing | null {
   if (!r) return null;
   const target = new THREE.Vector3(r.x + r.w / 2, plateTop(node.tier ?? node.depth ?? 0, node.type === 'file'), r.z + r.h / 2)
     .add(stageHome);
-  const extent = Math.max(r.w, r.h, 12);
+  // An isolated scope keeps its true city-wide size, so it is the FRAMING that
+  // has to close the distance — the geometry is not stretched to meet the camera.
+  const s = worldScale();
+  const extent = Math.max(r.w, r.h, 12 * s);
   // Framings are computed at the base FOV: a flight that is mid-breath must
   // still aim at where the destination will sit once the breath is over.
   const vFov = (BASE_FOV * Math.PI) / 180;
@@ -2401,7 +2842,7 @@ function framingFor(node: VNode): Framing | null {
   const shift = (freeCenter / window.innerWidth) * 2 - 1;
 
   const fit = Math.min(Math.tan(vFov / 2), Math.tan(hFov / 2) * (freeWidth / window.innerWidth));
-  const dist = (extent / 2) / fit * 1.05 + 18;
+  const dist = (extent / 2) / fit * 1.05 + 18 * s;
 
   _v3.copy(camera.position).sub(controls.target);
   if (_v3.lengthSq() < 1e-6) _v3.set(0.4, 0.8, 0.9);
@@ -3197,7 +3638,22 @@ function clearCallout(): void {
   }
 }
 
-function showCallout(hit: NodeTarget, name: string): void {
+/**
+ * The callout's second line: where the hovered thing lives, repo-relative. A
+ * module names a symbol, so it keeps the whole file path; anything else already
+ * names its own last segment, so it shows the directory above it.
+ */
+function calloutSub(hit: NodeTarget, desc: Descriptor): string {
+  const path = desc.path || '';
+  const cut = path.lastIndexOf('/');
+  const dir = hit.type === 'module' ? path : cut > 0 ? path.slice(0, cut) : '';
+  // Front-truncate: the tail (the nearest folders) is the part that locates it.
+  return dir.length > CALLOUT_SUB_MAX ? `…${dir.slice(dir.length - (CALLOUT_SUB_MAX - 1))}` : dir;
+}
+
+const CALLOUT_SUB_MAX = 64;
+
+function showCallout(hit: NodeTarget, name: string, sub: string): void {
   clearCallout();
   if (hit.type === 'module' && hit.rec) {
     hit.rec.mesh.getMatrixAt(hit.rec.instanceId, _m4);
@@ -3209,7 +3665,7 @@ function showCallout(hit: NodeTarget, name: string): void {
     const top = plateTop(hit.node.tier ?? hit.node.depth ?? 0, hit.node.type === 'file');
     callout.anchor.set(r.x + r.w / 2, top + boxHeightFor(hit.node), r.z + r.h / 2).add(stageHome);
   }
-  const sprite = makeLabelSprite(name, { color: '#eafcff', worldHeight: 10 });
+  const sprite = makeLabelSprite(name, { color: '#eafcff', worldHeight: 10 * worldScale(), sub });
   callout.aspect = sprite.scale.y > 0 ? sprite.scale.x / sprite.scale.y : 1;
   sprite.renderOrder = 12;
   scene.add(sprite);
@@ -3280,7 +3736,7 @@ function setHover(hit: Target | null): void {
   else frameNodeBox(hoverBox, hit.node, boxHeightFor(hit.node));
 
   const desc = describe(hit);
-  if (hit.type !== 'pr' && desc) showCallout(hit, desc.name);
+  if (hit.type !== 'pr' && desc) showCallout(hit, desc.name, calloutSub(hit, desc));
   else clearCallout();
   sidebar.setHover(desc);
 }
@@ -3397,11 +3853,16 @@ function animate(): void {
   updateCallout();
   if (arcFlow) arcFlow.update(t);
 
+  // Only the parts that asked to breathe do: the working-tree layer nests solid
+  // volumes next to its wireframes, and pulsing those would read as a flicker.
   for (const group of [scaffoldGroup, worktreeGroup]) {
     for (const c of group.children) {
-      const rate = c.userData.pulseRate || 2.4;
-      const mat = 'material' in c ? c.material : null;
-      if (mat instanceof THREE.Material) mat.opacity = 0.42 + 0.34 * (0.5 + 0.5 * Math.sin(t * rate));
+      for (const target of c.userData.pulseRate ? [c] : c.children) {
+        const rate = target.userData.pulseRate;
+        if (!rate) continue;
+        const mat = 'material' in target ? target.material : null;
+        if (mat instanceof THREE.Material) mat.opacity = 0.42 + 0.34 * (0.5 + 0.5 * Math.sin(t * rate));
+      }
     }
   }
   pulseSearchCursor(t);

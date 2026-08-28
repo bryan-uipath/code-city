@@ -20,6 +20,7 @@
  * query) is escaped before it reaches innerHTML.
  */
 import type { SearchMatch, SearchResponse } from '../../shared/types.js';
+import { EMBEDDED } from './embed.js';
 import { escapeHtml, markHtml, type SearchFileHits } from './sidebar.js';
 import type { VNode } from './vtree.js';
 
@@ -188,6 +189,8 @@ export function createSearch(host: SearchHost): SearchPalette {
   // --- keys ----------------------------------------------------------------
 
   function onWindowKey(e: KeyboardEvent): void {
+    // Embedded, ⌘P / ⌘F belong to the shell's own file finder and search.
+    if (EMBEDDED) return;
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     const k = e.key.toLowerCase();
     if (k !== 'p' && k !== 'f') return;

@@ -569,6 +569,84 @@
     border: 1px solid rgba(250,70,22,0.55); background: rgba(38,12,6,0.8);
     color: #ffc7b5; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; display: none;
   }
+
+  /* ------------------------------------------------------- embedded mode */
+  /* The viewer as a panel inside the aicode shell (see src/embed.ts). The
+     shell owns the editor, the file tree, search and diffs, so the city stops
+     duplicating them: no inspector, no source pane, no title bar, no stats, no
+     palette hints. What survives is what only the city can do — the scene, the
+     breadcrumb trail, the strata timeline, and the overlay controls, those last
+     tucked into a drawer so the resting view is pure city.
+     Every rule below is scoped to body.embedded; standalone is untouched. */
+  body.embedded #brand,
+  body.embedded #stats,
+  body.embedded #help,
+  body.embedded #sidebar,
+  body.embedded #palette { display: none !important; }
+
+  /* The ☰ rides in the topbar strip (see src/embed.ts), so the breadcrumb keeps
+     the full lane and the two share one height. */
+  body.embedded #breadcrumb { padding: 7px 10px; }
+
+  /* No sidebar to clear, so the timeline may use the full width. */
+  body.embedded #timeline,
+  body.embedded #checkpoint { left: 14px; right: 14px; }
+
+  /* Embedded, the timeline is opt-in: a panel inside a shell rests as pure
+     city. The ☰ drawer's TIMELINE row puts `tl-on` on the body (see
+     src/embed.ts); the timeline's own `.on` state is untouched. */
+  body.embedded:not(.tl-on) #timeline,
+  body.embedded:not(.tl-on) #checkpoint { display: none !important; }
+
+  /* --- ☰ drawer holding the overlay / layer / legend controls */
+  /* Last child of #topbar: `align-self: stretch` is what keeps it exactly as
+     tall as the breadcrumb beside it, whatever that row's padding becomes. */
+  #embed-menu {
+    flex: none; align-self: stretch;
+    appearance: none; cursor: pointer; font-family: var(--mono); font-size: 13px; line-height: 1;
+    width: 34px; color: var(--foreground-muted);
+    background: var(--panel); border: 1px solid var(--border);
+    backdrop-filter: blur(9px) saturate(1.2); transition: 120ms;
+  }
+  #embed-menu:hover { color: var(--foreground); border-color: var(--brand); }
+  #embed-menu.on { color: #ffd9cd; border-color: var(--orange); background: rgba(250,70,22,0.16); }
+
+  #embed-drawer {
+    position: fixed; z-index: 46; top: 50px; right: 14px; width: 226px;
+    max-height: calc(100vh - 82px); overflow-y: auto; scrollbar-width: thin;
+    display: none;
+  }
+  #embed-drawer.on { display: block; }
+  #embed-drawer::-webkit-scrollbar { width: 6px; }
+  #embed-drawer::-webkit-scrollbar-thumb { background: var(--border); }
+  /* #controls is moved into the drawer, so it stops being its own fixed layer. */
+  body.embedded #controls { position: static; left: auto; top: auto; width: auto; }
+
+  /* --- selection chip (the inspector's embedded stand-in) */
+  #embed-chip {
+    position: fixed; z-index: 45; bottom: 14px; left: 14px; right: 14px;
+    display: none; align-items: center; gap: 10px; width: fit-content;
+    max-width: calc(100vw - 28px); margin: 0 auto;
+    padding: 6px 8px 6px 11px;
+    background: var(--panel-solid); border: 1px solid var(--border);
+    backdrop-filter: blur(9px) saturate(1.2);
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 0 20px rgba(8,145,178,0.12);
+  }
+  #embed-chip.on { display: flex; }
+  /* Lift clear of the timeline only while the timeline is actually on screen. */
+  body.embedded.tl-on:has(#timeline.on) #embed-chip { bottom: 96px; }
+  /* Data-derived: a path is an identifier, so no uppercase transform. */
+  #embed-chip .txt {
+    color: var(--foreground-secondary); font-size: 10.5px; letter-spacing: 0.04em;
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #embed-chip .open {
+    appearance: none; cursor: pointer; flex: none; font-family: var(--mono);
+    font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--accent-muted); background: var(--surface-overlay);
+    border: 1px solid var(--border); padding: 3px 7px; transition: 120ms;
+  }
+  #embed-chip .open:hover { color: var(--foreground); background: var(--surface-hover); border-color: var(--brand); }
 </style>
 </head>
 <body>
@@ -609,6 +687,7 @@
         <button class="toggle active" data-toggle="people">People / PRs<i class="led"></i></button>
         <button class="toggle" data-toggle="fx">FX / hologram<i class="led"></i></button>
         <button class="toggle" data-toggle="worktree" id="toggle-worktree" style="display:none">Working tree<i class="led"></i></button>
+        <button class="toggle active" data-toggle="follow" id="toggle-follow" style="display:none">Follow<i class="led"></i></button>
       </div>
     </div>
 

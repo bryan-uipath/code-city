@@ -26,6 +26,9 @@ export interface WorkChange {
   kind: WorkKind;
   /** False when the path has no plate in the city (new file, ignored root…). */
   inCity: boolean;
+  /** Lines added / removed against HEAD; 0 when git could not say. */
+  added?: number;
+  removed?: number;
 }
 
 /** The Working-tree layer's sidebar section; null hides it. */
@@ -481,12 +484,23 @@ export function createSidebar(
         parts.push(
           `<div class="sb-work ${kind}${c.inCity ? '' : ' ghost'}" data-path="${escapeHtml(c.path)}">` +
           `<span class="nm">${escapeHtml(baseName(c.path))}</span>` +
-          `<span class="dir">${escapeHtml(dirName(c.path))}</span></div>`
+          `<span class="dir">${escapeHtml(dirName(c.path))}${lineBalance(c)}</span></div>`
         );
       }
       if (rows.length > 60) parts.push(`<div class="sb-hint">+${rows.length - 60} more</div>`);
     }
     secWork.innerHTML = head + parts.join('');
+  }
+
+  /** ` +12 −3`, or nothing when the numbers are absent or both zero. */
+  function lineBalance(c: WorkChange): string {
+    const added = Number(c.added) || 0;
+    const removed = Number(c.removed) || 0;
+    if (!added && !removed) return '';
+    const parts = [];
+    if (added) parts.push('+' + added);
+    if (removed) parts.push('\u2212' + removed);
+    return ' \u00b7 ' + parts.join(' ');
   }
 
   function commitsFor(d: Descriptor): LogCommit[] {

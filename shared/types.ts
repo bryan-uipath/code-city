@@ -84,12 +84,23 @@ export interface Edge {
   n: number;
 }
 
+/**
+ * How close a PR is to landing, as the city colors it:
+ * `ready` green, `pending` yellow (checks running), `failing` red, `draft` grey.
+ */
+export type PrStatus = 'ready' | 'pending' | 'failing' | 'draft';
+
 export interface Pr {
   number: number;
   title: string;
   author: string;
   avatarUrl: string | null;
   isDraft: boolean;
+  /**
+   * Absent in data.json written by an analyzer older than the status pass (and
+   * whenever `gh` could not answer) — the viewer then falls back to draft/pending.
+   */
+  status?: PrStatus;
   updatedAt: string;
   additions: number;
   deletions: number;
@@ -141,6 +152,13 @@ export interface StatusChange {
   x: string;
   y: string;
   untracked: boolean;
+  /**
+   * Lines added / removed against HEAD — staged and unstaged hunks summed. An
+   * untracked file reports its own length as `added`. Absent when the dev API
+   * predates the numstat pass, in which case the city paints magnitude-neutral.
+   */
+  added?: number;
+  removed?: number;
 }
 
 export interface StatusResponse {
