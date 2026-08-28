@@ -68,7 +68,9 @@ export function initEmbed(opts: { openSelection(mode: OpenMode): void }): EmbedU
 }
 
 function detectEmbedded(): boolean {
-  if (CITY_SERVED) return true;
+  // city:// counts only when actually framed: the shell can also open the city
+  // top-level, and there the full standalone viewer is the right thing.
+  if (CITY_SERVED && window.parent !== window) return true;
   if (typeof Reflect.get(window, 'acquireVsCodeApi') === 'function') return true;
   try {
     return new URLSearchParams(window.location.search).get('embed') === '1';

@@ -81,16 +81,37 @@ interface ShellTransport {
   onMessage(handler: (data: unknown) => void): void;
 }
 
-/** The best transport for wherever the viewer finds itself, or null standalone. */
+/**
+ * The best transport for wherever the viewer finds itself, or null standalone.
+ * Inside a webview the VS Code transport is EXCLUSIVE: falling through to the
+ * frame transport there would swallow the host's ⌘ keys and post at origins
+ * that are not listening.
+ */
 function createTransport(): ShellTransport | null {
-  return vscodeTransport() ?? frameTransport();
+  if (typeof Reflect.get(window, 'acquireVsCodeApi') === 'function') return vscodeTransport();
+  return frameTransport();
 }
+
+/** Shared slot for the one-shot VS Code API: a host bootstrap that acquired it
+ *  first can park it here; we park ours for the same reason. */
+const VSCODE_API_SLOT = '__cityVsCodeApi';
 
 /** VS Code webview: the API global exists only inside a webview panel. */
 function vscodeTransport(): ShellTransport | null {
-  const acquire: unknown = Reflect.get(window, 'acquireVsCodeApi');
-  if (typeof acquire !== 'function') return null;
-  const api: unknown = acquire.call(window);
+  let api: unknown = Reflect.get(window, VSCODE_API_SLOT);
+  if (api === undefined) {
+    const acquire: unknown = Reflect.get(window, 'acquireVsCodeApi');
+    if (typeof acquire !== 'function') return null;
+    // acquireVsCodeApi is one-shot per session: a second call throws. If the
+    // webview's HTML bootstrap already took it (and did not share it via the
+    // slot), the bridge stays off rather than killing the viewer.
+    try {
+      api = acquire.call(window);
+    } catch {
+      return null;
+    }
+    Reflect.set(window, VSCODE_API_SLOT, api);
+  }
   if (typeof api !== 'object' || api === null) return null;
   const postFn: unknown = Reflect.get(api, 'postMessage');
   if (typeof postFn !== 'function') return null;
