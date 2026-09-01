@@ -347,7 +347,7 @@ export function createSkyline(opts: SkylineOptions): Skyline {
       if (!bar.levels.length) {
         // Untouched inside the range — one plinth, the 2D twin of the 3D stub.
         bar.levels.push({
-          record: { file: bar.node, commit: null, level: 0 },
+          record: { file: bar.node, commit: null, band: null, level: 0 },
           ratio: 1,
           age: 0,
           stub: true,
@@ -394,7 +394,7 @@ export function createSkyline(opts: SkylineOptions): Skyline {
         }
       }
       out.push({
-        record: { file: node, commit, level: out.length },
+        record: { file: node, commit, band: null, level: out.length },
         ratio: head.ratio,
         age: head.age,
         stub: false,
