@@ -106,6 +106,9 @@ async function main(): Promise<void> {
   const tree = buildTree(repoRoot, files, parsed, history.churn);
   const prs = opts.prs ? await collectPRs(repoRoot, fileSet) : [];
   const diff = opts.diff ? collectDiffScope(repoRoot, opts.diff) : null;
+  if (diff && diff.head !== gitHead(repoRoot)) {
+    console.warn(`warn: --diff head ${diff.head.slice(0, 7)} is not the checkout's HEAD; files the range adds may be missing from the city`);
+  }
 
   const data: CityData = {
     repo: {

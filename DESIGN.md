@@ -151,6 +151,11 @@ runs one `git diff --color=always --color-moved=zebra
 - Both diff sides are tracked (`--- a/…` as well as `+++ b/…`): a deleted file's
   hunk says `+++ /dev/null`, and attributing its deletions to the previously
   seen file is the easy bug.
+- Renames are off (`--no-renames`) and the palette is pinned with `-c color.diff.*`:
+  a detected rename hides its unchanged lines from the diff, and those are
+  exactly the verbatim mass (PR 3532's renamed test file: +1459 at 98%).
+- Blank and punctuation-only lines (`}`, `*/`) are counted in no bucket, so the
+  shares describe lines someone would read — totals run below GitHub's `+N`.
 
 The paint is a **ramp, not a mix**: one number — `(reshaped/2 + new) / added`,
 "how much of this file must I actually read" — walks the three legend swatches
@@ -159,12 +164,12 @@ was tried first and turned the interesting middle to mauve. The ramp is
 interpolated in *sRGB*: in the renderer's linear space violet → orange detours
 through magenta. A file the diff only removed lines from goes dark red.
 
-Worked example (PR "split MfeEditorProvider.ts into 11 files", +1963 lines:
-60% verbatim · 8% reshaped · 32% new): `MfeDebugHandler.ts` +449 at 87% verbatim
-reads calm cyan (skip it), `MfeProjectDocumentStateObject.ts` +445 at 44/14/42
-reads violet (check it), `MfeActivePanelOwnerObject.ts` +72 at 7% verbatim burns
-orange (read it). The inspector carries the same line per file and per folder
-(`+445 · 44% verbatim · 14% reshaped · 42% new`), summed over subtrees.
+Worked example (PR "split MfeEditorProvider.ts into 11 files", +2918 substantive
+lines: 80% verbatim · 5% reshaped · 14% new): `MfeDebugHandler.ts` +353 at 86%
+verbatim reads calm cyan (skip it), `MfeProjectDocumentStateObject.ts` +347 at
+44/18/38 reads violet (check it), `MfeActivePanelOwnerObject.ts` +43 at 9%
+verbatim burns orange (read it). The inspector carries the same line per file and
+per folder (`+347 · 44% verbatim · 18% reshaped · 38% new`), summed over subtrees.
 
 Notes and limits:
 - The mode button is hidden until `data.diff` indexes at least one file the city
@@ -172,7 +177,7 @@ Notes and limits:
   they cannot serve. With a diff baked in, the static export works — no dev API
   is involved.
 - The reshaped bucket is capped by git's leftovers: only *unmatched* deletions
-  can be an origin (339 of 1475 in PR 3532), which is the honest ceiling.
+  can be an origin (a few hundred of 1475 in PR 3532), which is the honest ceiling.
 - A line edited in place counts as reshaped, not new. That is the intended
   reading ("moved or rewritten, not fresh logic").
 - Live `git diff` against a branch would be a `/api/diff-scope` route behind
