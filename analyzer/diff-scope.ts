@@ -59,7 +59,7 @@ interface Loose {
  * not resolve.
  */
 export function collectDiffScope(repoRoot: string, range: string): DiffScope {
-  const { base, head } = resolveRange(repoRoot, range);
+  const { base, head, baseRef, headRef } = resolveRange(repoRoot, range);
   // Colors pinned and renames off: the parser reads the palette, so a user's
   // color.diff.* must not leak in; a detected rename would hide its unchanged
   // lines from the diff, and those are exactly the verbatim mass to count.
@@ -116,6 +116,8 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
   return {
     base,
     head,
+    baseRef,
+    headRef,
     files: [...files].map(([path, b]) => ({ path, ...b }))
       .sort((x, y) => (y.verbatim + y.reshaped + y.new) - (x.verbatim + x.reshaped + x.new)),
   };
@@ -194,7 +196,9 @@ function pathOf(raw: string, prefix: string): string | null {
   return p.startsWith(prefix) ? p.slice(prefix.length) : p;
 }
 
-function resolveRange(repoRoot: string, range: string): { base: string; head: string } {
+function resolveRange(
+  repoRoot: string, range: string
+): { base: string; head: string; baseRef: string; headRef: string } {
   const threeDot = range.includes('...');
   const sep = threeDot ? '...' : '..';
   const parts = range.includes('..') ? range.split(sep) : [range, 'HEAD'];
@@ -205,7 +209,7 @@ function resolveRange(repoRoot: string, range: string): { base: string; head: st
   const base = threeDot
     ? git(repoRoot, ['merge-base', revParse(repoRoot, left), head]).trim()
     : revParse(repoRoot, left);
-  return { base, head };
+  return { base, head, baseRef: left, headRef: right };
 }
 
 function revParse(repoRoot: string, rev: string): string {
