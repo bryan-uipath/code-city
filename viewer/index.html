@@ -112,7 +112,7 @@
 
   #brand {
     padding: 9px 14px; display: flex; align-items: center; gap: 10px;
-    text-transform: uppercase; white-space: nowrap;
+    text-transform: uppercase; white-space: nowrap; flex: none;
   }
   #brand .dot {
     width: 7px; height: 7px; background: var(--orange); border-radius: 50%;
@@ -120,6 +120,14 @@
   }
   #brand b { color: var(--foreground); font-weight: 600; letter-spacing: 0.2em; }
   #brand span { color: var(--foreground-muted); font-size: 10px; letter-spacing: 0.16em; }
+  /* The diff chip: says which range the city is showing, in every mode. */
+  #diff-chip {
+    flex: none; display: flex; align-items: center; padding: 9px 14px; cursor: pointer;
+    white-space: nowrap; font-size: 10px; letter-spacing: 0.08em; color: var(--accent-muted);
+    border-color: rgba(34,211,238,0.45); background: rgba(34,211,238,0.06);
+  }
+  #diff-chip:hover { border-color: var(--accent-muted); background: rgba(34,211,238,0.14); }
+  #diff-chip b { color: var(--accent-muted); font-weight: 500; margin: 0 4px; }
 
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }
 
@@ -581,6 +589,7 @@
     <div id="brand" class="panel">
       <i class="dot"></i><b>CODE&nbsp;CITY</b><span id="repo-name">—</span>
     </div>
+    <div id="diff-chip" class="panel" title="This city carries a diff — click for Provenance" style="display:none"></div>
     <nav id="breadcrumb" class="panel"></nav>
     <div id="stats" class="panel">
       <div>FILES <b id="stat-files">0</b></div>

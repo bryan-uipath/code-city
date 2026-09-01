@@ -120,7 +120,11 @@ A split/extract refactor is mostly *relocation*, so the review question is not
 The city answers it in two layers.
 
 **Layer 1 — the diff scope** (`viewer/src/main.ts`, "Diff scope" section) is the
-changed-file set, and it borrows the strata filter's two states exactly:
+changed-file set. A city that carries one says so in every mode: the top-bar
+**diff chip** (`⑂ origin/develop → feat/x · 14 files · +2,918`, refs as the user
+named them, click = Provenance) is the always-on tell that this is a diff and
+not the plain tree. Membership then borrows the strata filter's two states
+exactly:
 
 - **Highlight (default)**: files outside the scope keep their footprint and go
   dormant. The skyline stays standing on purpose — you have to see *where in the

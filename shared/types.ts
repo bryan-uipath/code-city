@@ -122,6 +122,9 @@ export interface DiffScope {
   /** Resolved commit hashes of the compared range. */
   base: string;
   head: string;
+  /** The range as the user named it (`develop`, `feat/x`, a short hash) — for display. */
+  baseRef?: string;
+  headRef?: string;
   /** Changed files, biggest added-line count first. */
   files: DiffFile[];
 }

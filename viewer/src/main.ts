@@ -205,6 +205,7 @@ const dom = {
   toggles: requireEl('toggles'),
   worktreeBtn: requireEl('toggle-worktree'),
   provBtn: requireEl('mode-prov'),
+  diffChip: requireEl('diff-chip'),
 };
 
 // Index structures (built once, over the real tree)
@@ -1174,8 +1175,7 @@ function renderLegend(): void {
     rows.push(
       `<div class="row"><i class="sw" style="background:#1b2432"></i><span>untouched by the diff</span></div>`,
       `<div class="row"><span>file hue = its share of lines to read</span></div>`,
-      diffScopeControlHtml(),
-      `<div class="row"><span>+${fmt(adds)} lines · ${escapeHtml(diffScope.base.slice(0, 7))}..${escapeHtml(diffScope.head.slice(0, 7))}</span></div>`
+      diffScopeControlHtml()
     );
   } else if (state.mode === 'strata') {
     // One level per commit, hue = the kind of change that commit was — and each
@@ -1966,6 +1966,16 @@ function initDiffScope(data: CityData): void {
   sumDiffScope(root);
   if (!diffAvailable()) return; // the diff touched nothing the city knows about
   dom.provBtn.style.display = '';
+  // The chip is the always-on tell that this city is a diff, whatever the mode.
+  const t = diffScope.total;
+  const files = [...diffScope.byNode.keys()].filter((n) => n.type === 'file').length;
+  const ref = (name: string | undefined, hash: string): string => (name && name !== hash ? name : hash.slice(0, 7));
+  dom.diffChip.innerHTML =
+    `&#x2442; <b>${escapeHtml(ref(diff.baseRef, diffScope.base))}</b> &rarr; ` +
+    `<b>${escapeHtml(ref(diff.headRef, diffScope.head))}</b>` +
+    ` &middot; ${fmt(files)} files &middot; +${fmt(t.verbatim + t.reshaped + t.new)}`;
+  dom.diffChip.style.display = '';
+  dom.diffChip.addEventListener('click', () => dom.provBtn.click());
 }
 
 /** Post-order subtree sums; nodes with nothing changed stay out of the map. */
