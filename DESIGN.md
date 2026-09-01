@@ -104,7 +104,9 @@ Emitted only for `npm run analyze -- <repo> --diff <base>..<head>`
     { "path": "packages/a/x.ts",
       "verbatim": 392, "reshaped": 12, "new": 45, // added lines, by origin
       "deleted": 0, "movedOut": 0 }               // removed lines, and the moved subset
-  ]
+  ],
+  "commits": ["4503fbb…", "0d8f748…"],           // git rev-list base..head, FULL hashes
+  "baseTs": 1788186324, "headTs": 1788278773      // committer times, same unit as Commit.ts
 }
 ```
 
@@ -175,6 +177,75 @@ verbatim reads calm cyan (skip it), `MfeProjectDocumentStateObject.ts` +347 at
 verbatim burns orange (read it). The inspector carries the same line per file and
 per folder (`+347 · 44% verbatim · 18% reshaped · 38% new`), summed over subtrees.
 
+### Provenance massing
+
+Provenance takes the "height may change" half of the revised massing rule
+(see "Strata as the shared massing"). It has to: with 12-month strata mass under
+it, `packages/vsix/src/extension/index.ts` — a **3-line** change to a 1,441-LOC,
+89-commit file — was the tallest, reddest object in the PR view, while the
+445-line file the reviewer actually has to read was a step in the plaza. Hue was
+a *ratio* and height was somebody else's question.
+
+So in Provenance a file in the diff is **a stack of up to three slabs on its own
+unchanged footprint**: verbatim (bottom, cyan), reshaped (violet), new (top,
+orange), each slab's height ∝ that bucket's substantive added lines. A file the
+diff only deleted from gets one thin dark-red slab; **everything the diff did not
+touch is a dormant plinth** — so the PR *is* the skyline, and every plate is
+still exactly where it was.
+
+- **Scale.** There is no lines→height scale to borrow (strata spends height on
+  commit count and footprint on LOC), so it comes from the diff's own maximum:
+  the biggest file in the diff stands `40 × LEVEL_HEIGHT` = 64 units, i.e. about
+  as tall as a 40-commit strata tower. PR 3532: 0.044 units/line, so the +1459
+  test file is 64 units, `MfeProjectDocumentStateObject.ts` (+347) is 15, and
+  `index.ts` (+3) is a 0.35 floor — a stub. Bands below a few lines would be
+  invisible, hence that floor.
+- **One mesh, one seam.** No second geometry system: `createStrata` takes an
+  optional `BandSource` and `update({ bands: true })` fills the *same* instanced
+  mesh from it, so band slabs flow through the same records, hover/selection,
+  `heightOf` framing and legend machinery as commit levels
+  (`StrataRecord.band` is what a slab carries instead of a commit).
+- **The commit-type filter goes inert**, not armed: bands have no commits to
+  query, so entering Provenance clears the filter and its swatches are not shown.
+  "Only the diff" is moot here too (untouched files are already plinths) and is
+  hidden; the other modes keep it.
+- **Morph, not pop.** Because footprint and position are stable, crossing the
+  band boundary animates: `rise` scales slab heights and stacking offsets 0→1
+  over 300ms, ease-out, as a per-frame *refill* (the same call a range drag
+  makes; `update()` reapplies the stored paint, so nothing allocates). It is a
+  rise out of the plates rather than a true height-lerp between the two massings:
+  the two have different slab counts and no per-slab correspondence to lerp
+  along, and growing from the plate reads as the massing changing rather than
+  swapping.
+- **Known limit.** Seen from steeply above, the *top face* is whichever band is
+  on top (usually `new`), so a 98%-verbatim file reads orange from directly
+  overhead; the cyan mass is on the sides. It reads correctly at the oblique
+  angles the city is normally flown at, and worst inside a folder isolate, where
+  footprints are re-laid out to full extent while heights stay in world units.
+
+### The timeline shows the diff
+
+`DiffScope` also carries the branch's own commits and its endpoints in time
+(`commits`, `baseTs`, `headTs`), which makes the timeline say where the PR *is*:
+
+- The `#tl-spark` histogram draws the diff span as a translucent cyan band with
+  end ticks, labelled with the two refs (short hashes when a ref is unwieldy),
+  and the whole 12-month histogram goes muted grey with **the branch's own
+  commits drawn as the accent portion of each bar**. Floors on both the band
+  width (5px) and the accent height (3px): a 3-commit, one-day PR inside a year
+  of a busy monorepo is otherwise sub-pixel.
+- `Commit.h` is `%h` (abbreviated) while `commits` are full hashes, so membership
+  is a 7-char prefix test.
+- **Clicking the diff chip, or entering Provenance, snaps the range to the diff**
+  (start = `baseTs + 1s` — the base commit is not the branch's — cursor =
+  `headTs`). Switch to Strata with that range up and the levels standing are
+  exactly the branch's commits: the delta, in place, in the city. The legend and
+  `#tl-meta` say `range = diff · N commits`, and it releases like every other
+  query of its kind — dragging either handle, or Escape one step after the
+  diff-scope collapse.
+- No `diff.commits` (older data.json) degrades to the band alone, no tinting; no
+  `data.diff` at all leaves the timeline exactly as it was.
+
 Notes and limits:
 - The mode button is hidden until `data.diff` indexes at least one file the city
   knows about, so plain data.json and a static export of it never show a control
@@ -215,11 +286,18 @@ Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippe
 
 ## Strata as the shared massing (implemented)
 
-Strata is no longer one mode's geometry: **at every folder scope, in every mode,
-a file is its stack of commits.** The silhouette carries the history and the
-mode carries the metric, so switching modes is a pure recolor — the city never
-reshuffles under you, and comparing "where is the churn" with "where is the
-recent work" is comparing two paints of one shape.
+Strata is no longer one mode's geometry: **at every folder scope a file is its
+stack of commits** — in Structure, Churn, Fix and Recent alike. The silhouette
+carries the history and the mode carries the metric, so switching between those
+four is a pure recolor.
+
+**The rule (revised).** It used to read "the mode never changes the massing".
+It now reads: **footprint and position never change across modes; height may.**
+Height-as-commit-history is *one* massing, not the only one — Provenance answers
+a different question and gets its own heights (see "Provenance massing"). What
+must never move is where a file *is*: the plate you learned stays the plate you
+learned, so a mode switch is legible instead of a relayout. Because only heights
+move, a switch across that boundary can also be animated (`rise`).
 
 - `strataActive()` = a commit stream exists **and** the scope root is a real
   folder. Mode is not part of it. Without a stream (v1 data) the city falls back
@@ -239,6 +317,7 @@ recent work" is comparing two paints of one shape.
   there are no stacks.
 - The legend gains the massing footnote (`level = commit · area = loc`) in the
   non-strata modes, and Structure notes that kinds resolve inside a file.
+  Provenance replaces it with its own (`band = origin · height = added lines`).
 - Cost: one `InstancedMesh` for the whole city, allocated for the widest range.
   flow-workbench (3.7k files / 17.7k levels) holds 60fps at org level, including
   timeline playback, which rewrites every matrix ~8×/s.

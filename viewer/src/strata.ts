@@ -11,6 +11,10 @@
  *
  * LOC-at-commit is reconstructed client-side from the stream's per-commit
  * `[adds, dels]` deltas, walking newest → oldest away from today's line count.
+ *
+ * The same mesh also serves ALTERNATIVE massings: an optional `BandSource` fills
+ * it from caller-supplied slabs instead of commits (Provenance's origin bands),
+ * on the same footprints and through the same records.
  */
 import * as THREE from 'three';
 import type { CityData } from '../../shared/types.js';
@@ -30,6 +34,8 @@ export const MAX_LEVELS = 120;
 const MIN_AREA = 0.06;
 /** Files with no commit in range still get a base slab, this thin. */
 const STUB_HEIGHT = 0.4;
+/** Dormant plinth of a band massing: the footprint, with no mass on it. */
+const PLINTH_HEIGHT = 0.25;
 
 const FIX_RE = /\b(fix|fixes|fixed|bug|bugfix|hotfix)\b/i;
 /** Conventional commits: `type(scope)!: subject`. */
@@ -105,8 +111,41 @@ export interface StrataRecord {
   file: VNode;
   /** null for the stub slab of a file with no commits in range. */
   commit: StrataCommit | null;
+  /** The band this slab stands for, when the massing came from a `BandSource`. */
+  band: StrataBand | null;
   /** 0 = base (most recent). */
   level: number;
+}
+
+/**
+ * One slab of an ALTERNATIVE massing: a named band with its own height, stacked
+ * on the file's unchanged footprint. Height-as-commit-history is one massing,
+ * not the only one — provenance stacks its three origin buckets this way (see
+ * DESIGN.md "Provenance massing"). The key is opaque here: the caller's paint
+ * and legend own what it means.
+ */
+export interface StrataBand {
+  key: string;
+  /** World height of the slab. */
+  height: number;
+  /** What the band counts (added lines, for provenance) — for the inspector. */
+  n: number;
+}
+
+/**
+ * Levels for a file from somewhere other than the commit stream. `null` = this
+ * file has no band massing: it gets the dormant plinth.
+ */
+export type BandSource = (node: VNode) => StrataBand[] | null;
+
+/** What one `update()` builds. */
+export interface StrataUpdate {
+  keep?: LevelFilter | null;
+  keepFile?: FileFilter | null;
+  /** Take heights from the `BandSource` given at creation instead of commits. */
+  bands?: boolean;
+  /** 0…1 vertical growth, for the mode-switch rise. Heights reported stay full. */
+  rise?: number;
 }
 
 /**
@@ -140,11 +179,7 @@ export interface StrataBuild {
   /** Indexed by instance id; length tracks the live instance count. */
   records: StrataRecord[];
   /** Rebuild the stacks for a time range; cheap enough to call while dragging. */
-  update(
-    range: { start: number; cursor: number | null },
-    keep?: LevelFilter | null,
-    keepFile?: FileFilter | null
-  ): void;
+  update(range: { start: number; cursor: number | null }, opts?: StrataUpdate): void;
   /** Repaint the existing levels; omit `paint` to reapply the current one. */
   recolor(paint?: StrataPaint): void;
   /** Tallest stack in world units — used to frame selections. */
@@ -195,21 +230,25 @@ export function buildStrataIndex(data: CityData): StrataIndex {
  * @param realPath the repo-relative path whose history a node stands for
  * @param bounds   the stream's full time span, used to normalize the age
  *                 gradient when a range handle sits at its extreme
+ * @param bands    optional alternative massing, selected per `update()`; the
+ *                 instance buffer is sized for whichever of the two is taller
  */
 export function createStrata(
   files: VNode[],
   index: StrataIndex,
   realPath: (node: VNode) => string | null,
-  bounds: { min: number; max: number }
+  bounds: { min: number; max: number },
+  bands?: BandSource | null
 ): StrataBuild | null {
-  const stacks: Array<{ node: VNode; history: StrataCommit[] }> = [];
+  const stacks: Array<{ node: VNode; history: StrataCommit[]; bands: StrataBand[] | null }> = [];
   let capacity = 0;
   for (const node of files) {
     if (!node.rect) continue;
     const path = realPath(node);
     const history = (path ? index.get(path) : null) ?? [];
-    stacks.push({ node, history });
-    capacity += Math.max(Math.min(history.length, MAX_LEVELS), 1);
+    const nodeBands = bands ? bands(node) : null;
+    stacks.push({ node, history, bands: nodeBands });
+    capacity += Math.max(Math.min(history.length, MAX_LEVELS), nodeBands?.length ?? 0, 1);
   }
   if (!capacity) return null;
 
@@ -264,11 +303,11 @@ export function createStrata(
   update({ start: -Infinity, cursor: null });
   return build;
 
-  function update(
-    range: { start: number; cursor: number | null },
-    keep?: LevelFilter | null,
-    keepFile?: FileFilter | null
-  ): void {
+  function update(range: { start: number; cursor: number | null }, opts?: StrataUpdate): void {
+    const keep = opts?.keep;
+    const keepFile = opts?.keepFile;
+    const useBands = opts?.bands === true;
+    const rise = Math.min(Math.max(opts?.rise ?? 1, 0), 1);
     const cursorTs = range.cursor ?? Infinity;
     const startTs = Number.isFinite(range.start) ? range.start : bounds.min;
     // Age is normalized over the visible range, so the gradient always uses its
@@ -279,7 +318,8 @@ export function createStrata(
     heights.clear();
     let n = 0;
 
-    for (const { node, history } of stacks) {
+    for (const stack of stacks) {
+      const { node, history } = stack;
       const rect = node.rect;
       if (!rect) continue;
       // Filtered-out files leave bare ground: the plate still says where they are.
@@ -290,6 +330,40 @@ export function createStrata(
       const baseH = Math.max(rect.h - inset * 2, 0.25);
       const cx = rect.x + rect.w / 2;
       const cz = rect.z + rect.h / 2;
+
+      if (useBands) {
+        // Band massing: full footprint, heights from the caller's buckets. A
+        // file with no bands keeps its place as a dormant plinth.
+        const list = stack.bands;
+        let y = 0;
+        let level = 0;
+        if (list) {
+          for (const band of list) {
+            if (n >= capacity) break;
+            const bh = Math.max(band.height, 0.01) * rise;
+            pos.set(cx, top + y, cz);
+            scale.set(baseW, bh, baseH);
+            m.compose(pos, q, scale);
+            mesh.setMatrixAt(n, m);
+            ages[n] = 1;
+            records[n] = { file: node, commit: null, band, level };
+            n++;
+            level++;
+            y += bh;
+          }
+        }
+        if (level === 0 && n < capacity) {
+          pos.set(cx, top, cz);
+          scale.set(baseW, PLINTH_HEIGHT, baseH);
+          m.compose(pos, q, scale);
+          mesh.setMatrixAt(n, m);
+          ages[n] = 0;
+          records[n] = { file: node, commit: null, band: null, level: 0 };
+          n++;
+        }
+        heights.set(node, list ? list.reduce((sum, b) => sum + b.height, 0) : PLINTH_HEIGHT);
+        continue;
+      }
 
       // The current handle is a snapshot: rewind today's LOC past every commit
       // that happened after it, then stack the commits inside the range.
@@ -313,12 +387,12 @@ export function createStrata(
         if (!keep || keep(c)) {
           const ratio = Math.min(Math.max(loc / baseLoc, MIN_AREA), 1);
           const k = Math.sqrt(ratio); // ratio is an area, the slab scales by its side
-          pos.set(cx, top + level * LEVEL_HEIGHT, cz);
-          scale.set(baseW * k, SLAB_HEIGHT, baseH * k);
+          pos.set(cx, top + level * LEVEL_HEIGHT * rise, cz);
+          scale.set(baseW * k, SLAB_HEIGHT * rise, baseH * k);
           m.compose(pos, q, scale);
           mesh.setMatrixAt(n, m);
           ages[n] = Math.min(Math.max((c.ts - startTs) / span, 0), 1);
-          records[n] = { file: node, commit: c, level };
+          records[n] = { file: node, commit: c, band: null, level };
           n++;
           level++;
         }
@@ -328,11 +402,11 @@ export function createStrata(
       if (level === 0 && n < capacity) {
         // Untouched inside the range — a thin plinth, so the file still reads.
         pos.set(cx, top, cz);
-        scale.set(baseW, STUB_HEIGHT, baseH);
+        scale.set(baseW, STUB_HEIGHT * rise, baseH);
         m.compose(pos, q, scale);
         mesh.setMatrixAt(n, m);
         ages[n] = 0;
-        records[n] = { file: node, commit: null, level: 0 };
+        records[n] = { file: node, commit: null, band: null, level: 0 };
         n++;
         heights.set(node, STUB_HEIGHT);
       } else {
