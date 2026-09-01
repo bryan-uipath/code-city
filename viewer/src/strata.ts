@@ -14,10 +14,14 @@
  */
 import * as THREE from 'three';
 import type { CityData } from '../../shared/types.js';
-import { plateTop } from './layout.js';
+import { plateTop, worldScale } from './layout.js';
 import type { VNode } from './vtree.js';
 
-/** World height of one commit level. */
+/**
+ * World height of one commit level, in city units. Multiplied by the layout's
+ * uniform world scale (`worldScale`) exactly as building heights and footprints
+ * are, so a stack keeps its proportions at every drill level.
+ */
 export const LEVEL_HEIGHT = 1.6;
 /** Slab thickness — the gap to the next level is what makes the strata legible. */
 const SLAB_HEIGHT = 1.15;
@@ -202,6 +206,13 @@ export function createStrata(
   }
   if (!capacity) return null;
 
+  // Captured once: the layout's scale is fixed for the lifetime of a build, and
+  // a range drag must not silently re-scale the stacks it is redrawing.
+  const scale3d = worldScale();
+  const levelHeight = LEVEL_HEIGHT * scale3d;
+  const slabHeight = SLAB_HEIGHT * scale3d;
+  const stubHeight = STUB_HEIGHT * scale3d;
+
   const geom = new THREE.BoxGeometry(1, 1, 1);
   geom.translate(0, 0.5, 0); // base sits at y = 0
   const material = new THREE.MeshStandardMaterial({
@@ -248,7 +259,7 @@ export function createStrata(
     records,
     update,
     recolor,
-    heightOf: (file) => heights.get(file) ?? LEVEL_HEIGHT,
+    heightOf: (file) => heights.get(file) ?? levelHeight,
   };
   update({ start: -Infinity, cursor: null });
   return build;
@@ -268,9 +279,9 @@ export function createStrata(
       const rect = node.rect;
       if (!rect) continue;
       const top = plateTop(node.tier ?? node.depth ?? 0, node.type === 'file');
-      const inset = Math.min(0.8, rect.w * 0.08, rect.h * 0.08);
-      const baseW = Math.max(rect.w - inset * 2, 0.25);
-      const baseH = Math.max(rect.h - inset * 2, 0.25);
+      const inset = Math.min(0.8 * scale3d, rect.w * 0.08, rect.h * 0.08);
+      const baseW = Math.max(rect.w - inset * 2, 0.25 * scale3d);
+      const baseH = Math.max(rect.h - inset * 2, 0.25 * scale3d);
       const cx = rect.x + rect.w / 2;
       const cz = rect.z + rect.h / 2;
 
@@ -296,8 +307,8 @@ export function createStrata(
         if (!keep || keep(c)) {
           const ratio = Math.min(Math.max(loc / baseLoc, MIN_AREA), 1);
           const k = Math.sqrt(ratio); // ratio is an area, the slab scales by its side
-          pos.set(cx, top + level * LEVEL_HEIGHT, cz);
-          scale.set(baseW * k, SLAB_HEIGHT, baseH * k);
+          pos.set(cx, top + level * levelHeight, cz);
+          scale.set(baseW * k, slabHeight, baseH * k);
           m.compose(pos, q, scale);
           mesh.setMatrixAt(n, m);
           ages[n] = Math.min(Math.max((c.ts - startTs) / span, 0), 1);
@@ -311,15 +322,15 @@ export function createStrata(
       if (level === 0 && n < capacity) {
         // Untouched inside the range — a thin plinth, so the file still reads.
         pos.set(cx, top, cz);
-        scale.set(baseW, STUB_HEIGHT, baseH);
+        scale.set(baseW, stubHeight, baseH);
         m.compose(pos, q, scale);
         mesh.setMatrixAt(n, m);
         ages[n] = 0;
         records[n] = { file: node, commit: null, level: 0 };
         n++;
-        heights.set(node, STUB_HEIGHT);
+        heights.set(node, stubHeight);
       } else {
-        heights.set(node, level * LEVEL_HEIGHT);
+        heights.set(node, level * levelHeight);
       }
     }
 

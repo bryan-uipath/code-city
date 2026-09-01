@@ -4,8 +4,8 @@
  * Everything that touches Three.js geometry lives here; main.ts owns state.
  */
 import * as THREE from 'three';
-import type { Pr } from '../../shared/types.js';
-import { buildingHeight, plateTop, plateThickness, PLATE_THICKNESS } from './layout.js';
+import type { Pr, PrStatus } from '../../shared/types.js';
+import { buildingHeight, plateTop, plateThickness, worldScale, PLATE_THICKNESS } from './layout.js';
 import type { AnyKind, VMod, VNode } from './vtree.js';
 
 // ---------------------------------------------------------------------------
@@ -126,8 +126,10 @@ export function buildCity(root: VNode): CityBuild {
 
   const folders: VNode[] = [];
   const files: VNode[] = [];
+  const massed: VNode[] = [];
   walk(root, (node) => {
     if (!node.rect) return;
+    if (node.massed) massed.push(node);
     if (node.type === 'file') files.push(node);
     else folders.push(node);
   });
@@ -135,11 +137,13 @@ export function buildCity(root: VNode): CityBuild {
   const folderPart = buildPlates(folders, false);
   const filePart = buildPlates(files, true);
   const buildings = buildBuildings(files);
+  const massedMesh = buildMassedBlocks(massed);
   const outlines = buildOutlines(folders, files);
 
   if (folderPart.mesh) group.add(folderPart.mesh);
   if (filePart.mesh) group.add(filePart.mesh);
   for (const m of buildings.meshes) group.add(m);
+  if (massedMesh) group.add(massedMesh);
   if (outlines) group.add(outlines);
 
   const pickables: THREE.Object3D[] = [...buildings.meshes];
@@ -219,6 +223,50 @@ function buildPlates(nodes: VNode[], isFile: boolean): { mesh: THREE.InstancedMe
   return { mesh, records };
 }
 
+// --- massed blocks ---------------------------------------------------------
+
+/**
+ * One translucent block per node that was placed but not opened (too small to
+ * lay out its interior). Height approximates the total loc underneath, so a
+ * district full of tiny files reads as real mass instead of an empty plate;
+ * clicks still land on the node's plate for selection and drill-down.
+ */
+function buildMassedBlocks(nodes: VNode[]): THREE.InstancedMesh | null {
+  if (!nodes.length) return null;
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x3b4a5c,
+    roughness: 0.7,
+    metalness: 0.05,
+    transparent: true,
+    opacity: 0.55,
+    emissive: 0x22d3ee,
+    emissiveIntensity: 0.05,
+    depthWrite: false,
+  });
+  const mesh = new THREE.InstancedMesh(UNIT_BOX, material, nodes.length);
+  mesh.name = 'massedBlocks';
+  mesh.frustumCulled = false;
+
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const pos = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    const r = n?.rect;
+    if (!n || !r) continue;
+    const h = buildingHeight(Math.max(n.loc, 1));
+    const top = n.top ?? plateTop(n.tier ?? n.depth ?? 0, n.type === 'file');
+    pos.set(r.x + r.w / 2, top + h / 2, r.z + r.h / 2);
+    scale.set(r.w * 0.86, h, r.h * 0.86);
+    m.compose(pos, q, scale);
+    mesh.setMatrixAt(i, m);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.computeBoundingSphere();
+  return mesh;
+}
+
 // --- buildings -------------------------------------------------------------
 
 function buildingMaterial(kind: AnyKind): THREE.MeshStandardMaterial {
@@ -262,6 +310,7 @@ function buildBuildings(files: VNode[]): { meshes: THREE.InstancedMesh[]; record
   const geom = new THREE.BoxGeometry(1, 1, 1);
   geom.translate(0, 0.5, 0); // base sits at y = 0
 
+  const s = worldScale();
   const meshes: THREE.InstancedMesh[] = [];
   const records: ModuleRecord[] = [];
   const m = new THREE.Matrix4();
@@ -288,7 +337,7 @@ function buildBuildings(files: VNode[]): { meshes: THREE.InstancedMesh[]; record
       const top = file.top ?? 0;
       const h = buildingHeight(plot.mod.loc) * (KIND_HEIGHT_SCALE[kind] ?? 1);
       pos.set(plot.x + plot.w / 2, top, plot.z + plot.h / 2);
-      scale.set(Math.max(plot.w, 0.25), h, Math.max(plot.h, 0.25));
+      scale.set(Math.max(plot.w, 0.25 * s), h, Math.max(plot.h, 0.25 * s));
       m.compose(pos, q, scale);
       mesh.setMatrixAt(i, m);
       mesh.setColorAt(i, color);
@@ -375,44 +424,66 @@ function buildOutlines(folders: VNode[], files: VNode[]): THREE.LineSegments | n
 // ---------------------------------------------------------------------------
 
 const LABEL_FONT = '600 44px "SFMono-Regular", "JetBrains Mono", Menlo, monospace';
+const SUBLABEL_FONT = '500 28px "SFMono-Regular", "JetBrains Mono", Menlo, monospace';
 
 /**
  * Canvas-texture text sprite. `worldHeight` is the on-screen cap height in
- * world units. Returns a Sprite whose material opacity main.ts animates.
+ * world units. `sub` adds a second, smaller and dimmer line under the name —
+ * the hover callout uses it for the directory a building sits in. Returns a
+ * Sprite whose material opacity main.ts animates.
  */
 export function makeLabelSprite(
   text: string,
-  { color = '#a8f4ff', worldHeight = 12, glow = true }: { color?: string; worldHeight?: number; glow?: boolean } = {}
+  {
+    color = '#a8f4ff',
+    worldHeight = 12,
+    glow = true,
+    sub = '',
+  }: { color?: string; worldHeight?: number; glow?: boolean; sub?: string } = {}
 ): THREE.Sprite {
   // Case is the caller's call: place names are uppercase city signage, but
   // identifiers (files, modules) must read exactly as they are written.
   const label = String(text || '');
+  const subLabel = String(sub || '');
   const canvas = document.createElement('canvas');
   const ctx = ctx2d(canvas);
-  ctx.font = LABEL_FONT;
   const pad = 26;
-  const w = Math.ceil(ctx.measureText(label).width) + pad * 2;
-  const h = 96;
+  ctx.font = LABEL_FONT;
+  let textW = ctx.measureText(label).width;
+  if (subLabel) {
+    ctx.font = SUBLABEL_FONT;
+    textW = Math.max(textW, ctx.measureText(subLabel).width);
+  }
+  const w = Math.ceil(textW) + pad * 2;
+  // Two lines need a taller pill; one line keeps the historical 96px box.
+  const h = subLabel ? 140 : 96;
+  const mainY = subLabel ? 52 : h / 2;
   canvas.width = Math.max(w, 8);
   canvas.height = h;
 
   const c2 = ctx2d(canvas);
-  c2.font = LABEL_FONT;
   c2.textAlign = 'center';
   c2.textBaseline = 'middle';
   // Dark backing pill so labels stay readable over bright plates.
   c2.fillStyle = 'rgba(3, 6, 18, 0.78)';
   c2.beginPath();
-  c2.roundRect(4, h / 2 - 34, canvas.width - 8, 68, 30);
+  c2.roundRect(4, subLabel ? 8 : h / 2 - 34, canvas.width - 8, subLabel ? h - 16 : 68, subLabel ? 34 : 30);
   c2.fill();
+  c2.font = LABEL_FONT;
   if (glow) {
     c2.shadowColor = color;
     c2.shadowBlur = 22;
   }
   c2.fillStyle = color;
-  c2.fillText(label, canvas.width / 2, h / 2);
+  c2.fillText(label, canvas.width / 2, mainY);
   c2.shadowBlur = 0;
-  c2.fillText(label, canvas.width / 2, h / 2);
+  c2.fillText(label, canvas.width / 2, mainY);
+  if (subLabel) {
+    c2.font = SUBLABEL_FONT;
+    c2.globalAlpha = 0.55;
+    c2.fillText(subLabel, canvas.width / 2, 100);
+    c2.globalAlpha = 1;
+  }
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -679,6 +750,41 @@ function dotTexture(): THREE.CanvasTexture {
 const AVATAR_PX = 160;
 
 /**
+ * The PR traffic light: green ready to merge, yellow checks still running, red
+ * failing checks, grey draft. It drives the beam, the ground pad and the ring
+ * burned into the avatar, so the state is legible from across the city — before
+ * you are close enough to read a single label.
+ */
+export const PR_STATUS_COLORS: Record<PrStatus, number> = {
+  ready: 0x4ade80,
+  pending: 0xfbbf24,
+  failing: 0xef4444,
+  draft: 0x94a3b8,
+};
+
+/** Legend order — worst news first, so the eye lands on what needs attention. */
+export const PR_STATUS_ORDER = ['failing', 'pending', 'ready', 'draft'] as const;
+
+/** Status labels for the legend, in `PR_STATUS_ORDER`. */
+export const PR_STATUS_LABELS: Record<PrStatus, string> = {
+  ready: 'ready to merge',
+  pending: 'checks running',
+  failing: 'checks failing',
+  draft: 'draft',
+};
+
+/**
+ * A PR's status, tolerating data.json from an analyzer that never wrote one:
+ * a draft is still obviously a draft, and anything else is `pending` — the
+ * honest answer when the checks were never looked at.
+ */
+export function prStatus(pr: Pr): PrStatus {
+  const status = pr.status;
+  if (status === 'ready' || status === 'pending' || status === 'failing' || status === 'draft') return status;
+  return pr.isDraft ? 'draft' : 'pending';
+}
+
+/**
  * Avatar sprite + light beam for one PR, with a thin light-line and glowing
  * ring on every file the PR touches so the connection is unmistakable.
  *
@@ -698,11 +804,12 @@ export function buildPrMarker(
   const group = new THREE.Group();
   group.name = `pr:${pr.number}`;
 
-  const accent = pr.isDraft ? PALETTE.orange : PALETTE.cyan;
+  const status = prStatus(pr);
+  const accent = PR_STATUS_COLORS[status];
 
   // --- light beam (radius + glow scale with the PR's size)
   // Drafts render extra transparent — work under construction, not landed.
-  const draftFade = pr.isDraft ? 0.4 : 1;
+  const draftFade = status === 'draft' ? 0.4 : 1;
   const beamH = hover;
   const rTop = 0.8 + weight * 4.5;
   const beamGeom = new THREE.CylinderGeometry(rTop, rTop * 2.6, beamH, 12, 1, true);
@@ -969,17 +1076,18 @@ function loadAvatarTexture(url: string, accentHex: number): Promise<THREE.Canvas
  */
 export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.orange): THREE.LineSegments | null {
   const positions: number[] = [];
+  const s = worldScale();
   for (const n of fileNodes) {
     if (!n.rect) continue;
     const r = n.rect;
-    const grow = 2.2;
+    const grow = 2.2 * s;
     const x0 = r.x - grow;
     const x1 = r.x + r.w + grow;
     const z0 = r.z - grow;
     const z1 = r.z + r.h + grow;
     const tier = n.tier ?? n.depth ?? 0;
-    const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1;
-    const y1 = y0 + Math.max(tallestBuilding(n) + 6, 14);
+    const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1 * s;
+    const y1 = y0 + Math.max(tallestBuilding(n) + 6 * s, 14 * s);
 
     const c: Array<[number, number]> = [
       [x0, z0], [x1, z0], [x1, z1], [x0, z1],
@@ -1024,6 +1132,183 @@ function tallestBuilding(fileNode: VNode): number {
 }
 
 // ---------------------------------------------------------------------------
+// Working-tree geometry — mass the analyzed city does not have
+// ---------------------------------------------------------------------------
+
+/** A plot the working-tree layer invents for a file that is not in the city. */
+export interface Site {
+  /** World-space footprint (min corner + extent) and the surface it stands on. */
+  x: number;
+  z: number;
+  w: number;
+  h: number;
+  top: number;
+  height: number;
+}
+
+/**
+ * "Under construction": a net-new file has no mass in the analyzed city — it did
+ * not exist when the dataset was written — so the layer has to raise its own.
+ * A translucent volume with a bright wireframe cage reads as a building that is
+ * planned rather than standing, which is exactly what an uncommitted file is.
+ *
+ * @returns a group whose CAGE carries `pulseRate`, so the frame breathes and the
+ *          volume behind it stays steady.
+ */
+export function buildConstructionSites(sites: Site[], color = 0x7df9ff): THREE.Group | null {
+  if (!sites.length) return null;
+  const group = new THREE.Group();
+  group.name = 'constructionSites';
+
+  const geom = new THREE.BoxGeometry(1, 1, 1);
+  geom.translate(0, 0.5, 0); // base sits at y = 0
+  const mesh = new THREE.InstancedMesh(
+    geom,
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.16,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+    sites.length
+  );
+  mesh.name = 'constructionVolumes';
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 5;
+
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const pos = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  const positions: number[] = [];
+
+  for (let i = 0; i < sites.length; i++) {
+    const s = sites[i];
+    if (!s) continue;
+    pos.set(s.x + s.w / 2, s.top, s.z + s.h / 2);
+    scale.set(s.w, s.height, s.h);
+    m.compose(pos, q, scale);
+    mesh.setMatrixAt(i, m);
+    pushBoxEdges(positions, s.x, s.top, s.z, s.w, s.height, s.h);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.computeBoundingSphere();
+  group.add(mesh);
+
+  const cage = additiveLines(positions, color, 0.8);
+  if (cage) {
+    cage.name = 'constructionCage';
+    cage.userData.pulseRate = 1.6;
+    group.add(cage);
+  }
+  return group;
+}
+
+/**
+ * A deleted file's plot, as a vacant lot: the ground goes dark, a red rim burns
+ * around the footprint it used to fill, and a cross is struck through it. The
+ * file's own mass is still standing (the dataset remembers it) — the paint pass
+ * dims it to rubble, and this is the marker underneath saying why.
+ *
+ * @returns a group whose RIM carries `pulseRate`.
+ */
+export function buildVacantLots(nodes: VNode[], color = 0xef4444): THREE.Group | null {
+  const lots = nodes.filter((n) => !!n.rect);
+  if (!lots.length) return null;
+  const s = worldScale();
+  const group = new THREE.Group();
+  group.name = 'vacantLots';
+
+  const floor: number[] = [];
+  const rim: number[] = [];
+  for (const n of lots) {
+    const r = n.rect;
+    if (!r) continue;
+    const tier = n.tier ?? n.depth ?? 0;
+    // Just clear of the plate it replaces, so the two do not fight for the pixel.
+    const y = (n.top ?? plateTop(tier, n.type === 'file')) + 0.06 * s;
+    const x0 = r.x;
+    const x1 = r.x + r.w;
+    const z0 = r.z;
+    const z1 = r.z + r.h;
+    floor.push(x0, y, z0, x1, y, z0, x1, y, z1);
+    floor.push(x0, y, z0, x1, y, z1, x0, y, z1);
+    rim.push(x0, y, z0, x1, y, z0);
+    rim.push(x1, y, z0, x1, y, z1);
+    rim.push(x1, y, z1, x0, y, z1);
+    rim.push(x0, y, z1, x0, y, z0);
+    // Struck through: the lot is not just empty, it was cleared.
+    rim.push(x0, y, z0, x1, y, z1);
+    rim.push(x1, y, z0, x0, y, z1);
+    // Hoarding posts: a flat rim vanishes at overview zoom, where a deletion is
+    // exactly the thing you most need to see without hunting for it.
+    const post = Math.max(Math.min(r.w, r.h) * 0.55, 3 * s);
+    for (const [px, pz] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]] as const) {
+      rim.push(px, y, pz, px, y + post, pz);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(floor, 3));
+  const ground = new THREE.Mesh(
+    g,
+    new THREE.MeshBasicMaterial({
+      color: 0x2a0509,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    })
+  );
+  ground.name = 'vacantGround';
+  ground.frustumCulled = false;
+  ground.renderOrder = 4;
+  group.add(ground);
+
+  const edges = additiveLines(rim, color, 0.85);
+  if (edges) {
+    edges.name = 'vacantRim';
+    edges.userData.pulseRate = 3.4;
+    group.add(edges);
+  }
+  return group;
+}
+
+/** The 12 edges of an axis-aligned box, appended as line-segment pairs. */
+function pushBoxEdges(out: number[], x: number, y: number, z: number, w: number, h: number, d: number): void {
+  const x1 = x + w;
+  const y1 = y + h;
+  const z1 = z + d;
+  const rect = (ry: number) => {
+    out.push(x, ry, z, x1, ry, z, x1, ry, z, x1, ry, z1, x1, ry, z1, x, ry, z1, x, ry, z1, x, ry, z);
+  };
+  rect(y);
+  rect(y1);
+  out.push(x, y, z, x, y1, z, x1, y, z, x1, y1, z, x1, y, z1, x1, y1, z1, x, y, z1, x, y1, z1);
+}
+
+function additiveLines(positions: number[], color: number, opacity: number): THREE.LineSegments | null {
+  if (!positions.length) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const lines = new THREE.LineSegments(
+    g,
+    new THREE.LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    })
+  );
+  lines.frustumCulled = false;
+  lines.renderOrder = 7;
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
 // Selection highlight
 // ---------------------------------------------------------------------------
 
@@ -1052,12 +1337,13 @@ export function frameNodeBox(box: THREE.LineSegments, node: VNode | null, height
     return;
   }
   const r = node.rect;
+  const s = worldScale();
   const isFile = node.type === 'file';
   const tier = node.tier ?? node.depth ?? 0;
   const top = plateTop(tier, isFile);
-  const h = Math.max(height, 6);
-  box.position.set(r.x + r.w / 2, top + h / 2 - PLATE_THICKNESS, r.z + r.h / 2);
-  box.scale.set(r.w + 1.5, h, r.h + 1.5);
+  const h = Math.max(height, 6 * s);
+  box.position.set(r.x + r.w / 2, top + h / 2 - PLATE_THICKNESS * s, r.z + r.h / 2);
+  box.scale.set(r.w + 1.5 * s, h, r.h + 1.5 * s);
   box.visible = true;
 }
 

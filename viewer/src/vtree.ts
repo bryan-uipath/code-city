@@ -70,6 +70,8 @@ export interface VNode {
 
   /** null when the node was too small to place at this extent. */
   rect?: Rect | null;
+  /** Placed as one aggregate massing block; the interior is not laid out. */
+  massed?: boolean;
   depth?: number;
   /** Terrace tier — depth minus pass-through (single-child) levels. */
   tier?: number;

@@ -18,6 +18,35 @@ export interface Cell extends Rect {
 }
 
 // ---------------------------------------------------------------------------
+// World scale
+// ---------------------------------------------------------------------------
+
+/**
+ * The city is laid out in ONE set of units at every drill level: a file's stack
+ * reads the same isolated as it does from the org overview, because footprint
+ * area per LOC and building height are both absolute (`layoutCity` is handed a
+ * `size` proportional to the scope's share of the repo, and the camera moves in
+ * instead of the geometry being re-stretched).
+ *
+ * The one exception is legibility: a scope small enough to be unreadable at its
+ * true size is scaled up UNIFORMLY — every world length, footprints and heights
+ * alike, multiplied by the same linear factor — so the proportions stay honest
+ * even though the absolute size does not. This is that factor, and every world
+ * constant in the layout runs through it.
+ */
+let SCALE = 1;
+
+/** Set the uniform world scale for the layouts and heights built after it. */
+export function setWorldScale(scale: number): void {
+  SCALE = Math.min(Math.max(Number(scale) || 1, 1), 60);
+}
+
+/** The uniform world scale in force — 1 whenever the scope is big enough. */
+export function worldScale(): number {
+  return SCALE;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -68,15 +97,19 @@ export function treemap(items: Weighted[], rect: Rect): Cell[] {
   return out;
 }
 
-/** Vertical extent of a building for a given LOC count. */
+/**
+ * Vertical extent of a building for a given LOC count. Absolute in city units:
+ * the same module is the same height at every drill level (up to the uniform
+ * legibility scale, which stretches footprints by exactly as much).
+ */
 export function buildingHeight(loc: number): number {
   const h = 2 + 6 * Math.log2(1 + Math.max(loc, 0) / 10);
-  return Math.min(Math.max(h, 2), 60);
+  return Math.min(Math.max(h, 2), 60) * SCALE;
 }
 
 /** Street width (padding) inside a folder at a given depth, in world units. */
 export function streetWidth(depth: number): number {
-  return Math.min(Math.max(14 - depth * 3, 2), 14);
+  return Math.min(Math.max(14 - depth * 3, 2), 14) * SCALE;
 }
 
 /**
@@ -94,7 +127,7 @@ const TIER_LIFT_MIN = 0.9;
 
 /** The rise from `tier` to `tier + 1`. */
 export function tierLift(tier: number): number {
-  return TIER_LIFT[Math.max(tier, 0)] ?? TIER_LIFT_MIN;
+  return (TIER_LIFT[Math.max(tier, 0)] ?? TIER_LIFT_MIN) * SCALE;
 }
 
 /** How much higher a file plate rides than the folder terrace it sits on. */
@@ -104,7 +137,7 @@ const FILE_RISE = 0.5;
 export function plateTop(tier: number, isFile: boolean): number {
   let y = 0;
   for (let i = 0; i < tier; i++) y += tierLift(i);
-  return y + (isFile ? FILE_RISE : 0);
+  return y + (isFile ? FILE_RISE * SCALE : 0);
 }
 
 /**
@@ -113,8 +146,8 @@ export function plateTop(tier: number, isFile: boolean): number {
  * gives the side-wall signage a face to live on).
  */
 export function plateThickness(tier: number, isFile: boolean): number {
-  const wall = tier <= 0 ? PLATE_THICKNESS : tierLift(tier - 1);
-  return wall + (isFile ? FILE_RISE : 0) + 0.02;
+  const wall = tier <= 0 ? PLATE_THICKNESS * SCALE : tierLift(tier - 1);
+  return wall + (isFile ? FILE_RISE * SCALE : 0) + 0.02;
 }
 
 export const PLATE_THICKNESS = 0.55;
@@ -126,6 +159,13 @@ const PLATE_EPSILON = 0.012;
 // Recursive city layout
 // ---------------------------------------------------------------------------
 
+/**
+ * Smallest placeable footprint, in ABSOLUTE world units — deliberately not
+ * multiplied by the legibility scale: scaling a small scope up would grow the
+ * strip threshold by the same factor and its files could never re-appear.
+ * Kept absolute, drilling into a scaled-up scope places what the parent
+ * scope had to strip.
+ */
 const MIN_RECT = 1.2;
 
 interface Entry {
@@ -139,9 +179,10 @@ function layoutNode(node: VNode, rect: Rect, depth: number, tier: number): void 
   node.rect = rect;
   node.depth = depth;
   node.tier = tier;
+  node.massed = false;
   // Pass-through levels share a tier, so nudge each depth by a hair: without it
   // a repo -> packages wrapper would be exactly coplanar with its child.
-  node.top = plateTop(tier, node.type === 'file') + depth * PLATE_EPSILON;
+  node.top = plateTop(tier, node.type === 'file') + depth * PLATE_EPSILON * SCALE;
 
   if (node.type === 'file') {
     node.plots = layoutModules(node, rect);
@@ -154,7 +195,9 @@ function layoutNode(node: VNode, rect: Rect, depth: number, tier: number): void 
   // terrace of its own: it would spend a whole tier step on no information.
   const childTier = kids.length === 1 ? tier : tier + 1;
   if (rect.w < MIN_RECT * 2 || rect.h < MIN_RECT * 2) {
-    // Too small to subdivide meaningfully — leave children unplaced.
+    // Too small to subdivide meaningfully — the folder itself becomes one
+    // massing block approximating everything underneath.
+    node.massed = true;
     for (const k of kids) stripLayout(k);
     return;
   }
@@ -167,7 +210,7 @@ function layoutNode(node: VNode, rect: Rect, depth: number, tier: number): void 
     w: Math.max(rect.w - street * 2, MIN_RECT),
     h: Math.max(rect.h - street * 2, MIN_RECT),
   };
-  const gutter = Math.min(Math.max(street * 0.5, 1), 6);
+  const gutter = Math.min(Math.max(street * 0.5, 1 * SCALE), 6 * SCALE);
 
   const items = kids.map((k) => ({ weight: Math.max(k.loc || 0, 1) }));
   const cells = treemap(items, inner);
@@ -177,11 +220,31 @@ function layoutNode(node: VNode, rect: Rect, depth: number, tier: number): void 
     if (!child) continue;
     const shrunk = insetRect(cell, gutter / 2);
     if (shrunk.w < MIN_RECT || shrunk.h < MIN_RECT) {
-      stripLayout(child);
+      // Too small to open, but not invisible: keep the treemap cell and mark
+      // the child as one opaque block whose height approximates its loc.
+      massLayout(child, cell, depth + 1, childTier);
       continue;
     }
     layoutNode(child, shrunk, depth + 1, childTier);
   }
+}
+
+/** Cells this small stay unplaced even as blocks — sub-pixel clutter. */
+const MASS_MIN = 0.35;
+
+/** Place a too-small node as a single aggregate massing block. */
+function massLayout(node: VNode, rect: Rect, depth: number, tier: number): void {
+  if (rect.w < MASS_MIN || rect.h < MASS_MIN) {
+    stripLayout(node);
+    return;
+  }
+  node.rect = rect;
+  node.depth = depth;
+  node.tier = tier;
+  node.massed = true;
+  node.top = plateTop(tier, node.type === 'file') + depth * PLATE_EPSILON * SCALE;
+  node.plots = [];
+  if (node.children) for (const k of node.children) stripLayout(k);
 }
 
 /** Mini-treemap of a file's modules inside the file's plate. */
@@ -189,14 +252,14 @@ function layoutModules(fileNode: VNode, rect: Rect): Plot[] {
   const mods = fileNode.modules;
   if (!mods || !mods.length) return [];
 
-  const pad = Math.min(1.6, rect.w * 0.12, rect.h * 0.12);
+  const pad = Math.min(1.6 * SCALE, rect.w * 0.12, rect.h * 0.12);
   const inner = {
     x: rect.x + pad,
     z: rect.z + pad,
-    w: Math.max(rect.w - pad * 2, 0.4),
-    h: Math.max(rect.h - pad * 2, 0.4),
+    w: Math.max(rect.w - pad * 2, 0.4 * SCALE),
+    h: Math.max(rect.h - pad * 2, 0.4 * SCALE),
   };
-  const gap = Math.min(0.8, inner.w * 0.06, inner.h * 0.06);
+  const gap = Math.min(0.8 * SCALE, inner.w * 0.06, inner.h * 0.06);
 
   const cells = treemap(
     mods.map((m) => ({ weight: Math.max(m.loc || 0, 1) })),
@@ -208,7 +271,7 @@ function layoutModules(fileNode: VNode, rect: Rect): Plot[] {
     const mod: VMod | undefined = mods[cell.index];
     if (!mod) continue;
     const r = insetRect(cell, gap / 2);
-    if (r.w <= 0.05 || r.h <= 0.05) continue;
+    if (r.w <= 0.05 * SCALE || r.h <= 0.05 * SCALE) continue;
     plots.push({ mod, x: r.x, z: r.z, w: r.w, h: r.h });
   }
   return plots;
@@ -216,6 +279,7 @@ function layoutModules(fileNode: VNode, rect: Rect): Plot[] {
 
 function stripLayout(node: VNode): void {
   node.rect = null;
+  node.massed = false;
   if (node.children) for (const k of node.children) stripLayout(k);
 }
 
