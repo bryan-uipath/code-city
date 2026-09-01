@@ -7,7 +7,8 @@
  *
  * A split/extract refactor is mostly *relocation*: the review question is not
  * "what changed" but "which of these 3000 added lines is actually new logic".
- * So each added line lands in one of three buckets:
+ * So each added line with any identifier on it lands in one of three buckets
+ * (blank and punctuation-only lines are counted nowhere):
  *
  * - **verbatim** — git's own `--color-moved=zebra` matched it to a deleted line
  *   somewhere else in the diff, unchanged (indentation aside).
@@ -26,6 +27,11 @@ import type { DiffFile, DiffScope } from '../shared/types.js';
 /** zebra palette: newMoved 1;36 / alt 1;33, oldMoved 1;35 / alt 1;34. */
 const MOVED_NEW = new Set(['1;36', '36;1', '1;33', '33;1']);
 const MOVED_OLD = new Set(['1;35', '35;1', '1;34', '34;1']);
+const COLOR_PINS = [
+  '-c', 'color.diff.new=green', '-c', 'color.diff.old=red',
+  '-c', 'color.diff.newMoved=bold cyan', '-c', 'color.diff.newMovedAlternative=bold yellow',
+  '-c', 'color.diff.oldMoved=bold magenta', '-c', 'color.diff.oldMovedAlternative=bold blue',
+];
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const SIGN_RE = /^\x1b\[([0-9;]+)m([+-])/;
 
@@ -54,8 +60,12 @@ interface Loose {
  */
 export function collectDiffScope(repoRoot: string, range: string): DiffScope {
   const { base, head } = resolveRange(repoRoot, range);
+  // Colors pinned and renames off: the parser reads the palette, so a user's
+  // color.diff.* must not leak in; a detected rename would hide its unchanged
+  // lines from the diff, and those are exactly the verbatim mass to count.
   const raw = git(repoRoot, [
-    'diff', '--color=always', '--no-ext-diff',
+    ...COLOR_PINS,
+    'diff', '--color=always', '--no-ext-diff', '--no-renames',
     '--src-prefix=a/', '--dst-prefix=b/',
     '--color-moved=zebra', '--color-moved-ws=allow-indentation-change',
     base, head,
@@ -68,15 +78,17 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
   // attributing its deletions to the previous file was the original bug.
   let aPath: string | null = null;
   let bPath: string | null = null;
+  // `---`/`+++` are headers only between `diff --git` and the first hunk; a
+  // deleted `-- sql comment` line is content that happens to start the same way.
+  let inHeader = false;
 
   for (const line of raw.split('\n')) {
     const plain = line.replace(ANSI_RE, '');
-    if (plain.startsWith('--- ')) {
-      aPath = pathOf(plain.slice(4), 'a/');
-      continue;
-    }
-    if (plain.startsWith('+++ ')) {
-      bPath = pathOf(plain.slice(4), 'b/');
+    if (plain.startsWith('diff --git ')) { inHeader = true; aPath = bPath = null; continue; }
+    if (inHeader) {
+      if (plain.startsWith('--- ')) aPath = pathOf(plain.slice(4), 'a/');
+      else if (plain.startsWith('+++ ')) bPath = pathOf(plain.slice(4), 'b/');
+      else if (plain.startsWith('@@')) inHeader = false;
       continue;
     }
     const m = SIGN_RE.exec(line);
@@ -85,14 +97,18 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
     const color = m ? m[1] ?? '' : '';
     const path = sign === '+' ? bPath ?? aPath : aPath ?? bPath;
     if (!path) continue;
+    // Blank and punctuation-only lines (`}`, `});`) are not logic anyone reads;
+    // they stay out of every bucket so the shares describe substantive lines.
+    const tokens = tokenize(plain.slice(1));
+    if (tokens.size === 0) continue;
     const bucket = bucketsFor(files, path);
     if (sign === '+') {
       if (MOVED_NEW.has(color)) bucket.verbatim++;
-      else looseAdds.push({ path, tokens: tokenize(plain.slice(1)) });
+      else looseAdds.push({ path, tokens });
     } else {
       bucket.deleted++;
       if (MOVED_OLD.has(color)) bucket.movedOut++;
-      else looseDels.push({ path, tokens: tokenize(plain.slice(1)) });
+      else looseDels.push({ path, tokens });
     }
   }
 
