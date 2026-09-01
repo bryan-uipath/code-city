@@ -25,7 +25,7 @@ const MAX_UNTRACKED_TOTAL_BYTES = 16 * 1024 * 1024;
 
 export default ({ command }) => ({
   // Relative asset URLs so the bundle works wherever it is mounted: a static
-  // host, and the aicode shell's `city://viewer/` custom protocol. Build only —
+  // host, and a host shell's `city://viewer/` custom protocol. Build only —
   // vite's dev server does not support a relative base.
   base: command === 'build' ? './' : '/',
   plugins: [devApiPlugin()],
