@@ -37,6 +37,8 @@ export interface Timeline {
    */
   start: number;
   playing: boolean;
+  /** True while the range is pinned to the diff span (see `setRange`). */
+  rangeIsDiff: boolean;
   min: number;
   max: number;
   commits: TimelineCommit[];
@@ -48,6 +50,8 @@ export interface Timeline {
   tick(dt: number): void;
   /** Reveal (or hide) the range start handle. */
   setRangeMode(on: boolean): void;
+  /** Pin both handles; `asDiff` makes the readout say the range IS the diff. */
+  setRange(start: number, cursor: number | null, asDiff?: boolean): void;
 }
 
 /**
@@ -64,6 +68,7 @@ export function createTimeline(
   } = {}
 ): Timeline {
   const commits = normalizeCommits(data);
+  const diff = diffMarks(data);
   const bar = document.getElementById('timeline');
   const range = element('tl-range', HTMLInputElement);
   const startRange = element('tl-start', HTMLInputElement);
@@ -80,6 +85,7 @@ export function createTimeline(
     cursor: null,
     start: 0,
     playing: false,
+    rangeIsDiff: false,
     min: 0,
     max: 0,
     commits,
@@ -90,6 +96,7 @@ export function createTimeline(
     commitsNear,
     tick,
     setRangeMode,
+    setRange,
   };
 
   if (!tl.enabled || !first || !last || !bar || !range || !play || !date || !meta || !spark || !startRange) {
@@ -114,15 +121,17 @@ export function createTimeline(
   tl.start = tl.min;
 
   dom.bar.classList.add('on');
-  drawSparkline(dom.spark, commits, tl.min, tl.max);
+  drawSparkline(dom.spark, commits, tl.min, tl.max, diff);
   dom.meta.textContent = `${commits.length} COMMITS · 12MO`;
   renderReadout();
 
   dom.range.addEventListener('input', () => {
+    tl.rangeIsDiff = false; // dragging a handle releases the pin, like the filters
     const f = Number(dom.range.value) / 1000;
     setCursor(f >= 0.999 ? null : tl.min + f * (tl.max - tl.min));
   });
   dom.startRange.addEventListener('input', () => {
+    tl.rangeIsDiff = false;
     const f = Number(dom.startRange.value) / 1000;
     const at = tl.min + f * (tl.max - tl.min);
     // The start handle can never pass the cursor: the range would be empty.
@@ -137,7 +146,7 @@ export function createTimeline(
     dom.play.innerHTML = tl.playing ? '&#10073;&#10073;' : '&#9654;';
     if (tl.playing && tl.cursor === null) setCursor(tl.min);
   });
-  window.addEventListener('resize', () => drawSparkline(dom.spark, commits, tl.min, tl.max));
+  window.addEventListener('resize', () => drawSparkline(dom.spark, commits, tl.min, tl.max, diff));
 
   return tl;
 
@@ -223,9 +232,24 @@ export function createTimeline(
     renderRangeReadout();
   }
 
+  /** Pin the range to an arbitrary span — the diff chip's snap. */
+  function setRange(start: number, cursor: number | null, asDiff = false): void {
+    if (!tl.enabled) return;
+    const ceiling = (cursor ?? tl.max) - DAY;
+    tl.start = Math.min(Math.max(start, tl.min), Math.max(ceiling, tl.min));
+    dom.startRange.value = String(Math.round(((tl.start - tl.min) / (tl.max - tl.min)) * 1000));
+    tl.rangeIsDiff = asDiff;
+    setCursor(cursor === null ? null : Math.min(Math.max(cursor, tl.min), tl.max));
+    handlers.onRange?.(tl.start);
+  }
+
   function renderRangeReadout(): void {
     if (!dom.bar.classList.contains('ranged')) {
       dom.meta.textContent = `${commits.length} COMMITS · 12MO`;
+      return;
+    }
+    if (tl.rangeIsDiff && diff) {
+      dom.meta.textContent = `RANGE = DIFF · ${diff.own.size} COMMITS`;
       return;
     }
     const from = new Date(tl.start * 1000).toISOString().slice(0, 10).toUpperCase();
@@ -306,8 +330,40 @@ function upperBound(arr: TimelineCommit[], t: number): number {
   return lo;
 }
 
+/**
+ * The diff as the timeline draws it: the branch's span, its two refs, and which
+ * of the stream's commits belong to it. `Commit.h` is abbreviated while
+ * `DiffScope.commits` are full hashes, so membership is a 7-char prefix test.
+ */
+interface DiffMarks {
+  baseTs: number;
+  headTs: number;
+  baseLabel: string;
+  headLabel: string;
+  own: Set<string>;
+}
+
+function diffMarks(data: CityData): DiffMarks | null {
+  const d = data.diff;
+  if (!d) return null;
+  const baseTs = Number(d.baseTs);
+  const headTs = Number(d.headTs);
+  if (!Number.isFinite(baseTs) || !Number.isFinite(headTs) || headTs <= baseTs) return null;
+  const label = (ref: string | undefined, hash: string): string =>
+    ref && ref !== hash && ref.length <= 18 ? ref : hash.slice(0, 7);
+  return {
+    baseTs,
+    headTs,
+    baseLabel: label(d.baseRef, String(d.base ?? '')),
+    headLabel: label(d.headRef, String(d.head ?? '')),
+    own: new Set((d.commits ?? []).map((h) => String(h).slice(0, 7))),
+  };
+}
+
 /** Commits-per-week histogram painted into the slider track. */
-function drawSparkline(canvas: HTMLCanvasElement, commits: TimelineCommit[], min: number, max: number): void {
+function drawSparkline(
+  canvas: HTMLCanvasElement, commits: TimelineCommit[], min: number, max: number, diff: DiffMarks | null = null
+): void {
   const w = Math.max(canvas.clientWidth, 1);
   const h = Math.max(canvas.clientHeight, 1);
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -320,9 +376,14 @@ function drawSparkline(canvas: HTMLCanvasElement, commits: TimelineCommit[], min
 
   const weeks = Math.max(Math.ceil((max - min) / WEEK), 1);
   const bins = new Float64Array(weeks);
+  // The branch's own commits, binned alongside: they are drawn as the accent
+  // portion of each bar, so the delta reads inside the whole history.
+  const mine = new Float64Array(weeks);
+  const own = diff && diff.own.size > 0 ? diff.own : null;
   for (const c of commits) {
     const i = Math.min(Math.floor((c.ts - min) / WEEK), weeks - 1);
     bins[i] = (bins[i] ?? 0) + 1;
+    if (own && own.has(c.h.slice(0, 7))) mine[i] = (mine[i] ?? 0) + 1;
   }
   let peak = 1;
   for (const v of bins) peak = Math.max(peak, v);
@@ -332,12 +393,52 @@ function drawSparkline(canvas: HTMLCanvasElement, commits: TimelineCommit[], min
     const v = bins[i] ?? 0;
     const bh = Math.max((v / peak) * (h - 2), v > 0 ? 1 : 0);
     const t = v / peak;
-    ctx.fillStyle = `rgba(${34 + t * 200}, ${211 - t * 90}, ${238 - t * 180}, ${0.28 + t * 0.6})`;
-    ctx.fillRect(i * bw, h - bh, Math.max(bw - 0.5, 0.5), bh);
+    const x = i * bw;
+    const bwi = Math.max(bw - 0.5, 0.5);
+    ctx.fillStyle = own
+      ? `rgba(120, 150, 170, ${0.18 + t * 0.22})` // muted: the branch is the signal
+      : `rgba(${34 + t * 200}, ${211 - t * 90}, ${238 - t * 180}, ${0.28 + t * 0.6})`;
+    ctx.fillRect(x, h - bh, bwi, bh);
+    const mv = mine[i] ?? 0;
+    if (mv > 0) {
+      // Floor of 3px: a 3-commit branch against a busy month is otherwise
+      // sub-pixel, and the delta is the one thing this bar has to show.
+      const mh = Math.max((mv / peak) * (h - 2), 3);
+      ctx.fillStyle = 'rgba(250,70,22,0.95)';
+      ctx.fillRect(x, h - mh, bwi, mh);
+    }
   }
+  if (diff) drawDiffBand(ctx, w, h, min, max, diff);
   ctx.strokeStyle = 'rgba(34,211,238,0.25)';
   ctx.lineWidth = 1;
   ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+}
+
+/** The diff span: translucent cyan band, end ticks, and the two refs. */
+function drawDiffBand(
+  ctx: CanvasRenderingContext2D, w: number, h: number, min: number, max: number, diff: DiffMarks
+): void {
+  const at = (ts: number): number => ((Math.min(Math.max(ts, min), max) - min) / Math.max(max - min, 1)) * w;
+  const x0 = at(diff.baseTs);
+  // A one-day PR inside a year of history is sub-pixel; the band has a floor so
+  // it still reads, at the cost of overstating a very short span.
+  const x1 = Math.min(Math.max(at(diff.headTs), x0 + 5), w);
+  ctx.fillStyle = 'rgba(34,211,238,0.16)';
+  ctx.fillRect(x0, 0, x1 - x0, h);
+  ctx.fillStyle = 'rgba(34,211,238,0.75)';
+  ctx.fillRect(x0, 0, 1, h);
+  ctx.fillRect(x1 - 1, 0, 1, h);
+
+  ctx.font = '8px ui-monospace, SFMono-Regular, monospace';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(34,211,238,0.9)';
+  // Labels go outside the band when there is room, inside it otherwise.
+  const bw = ctx.measureText(diff.baseLabel).width;
+  ctx.textAlign = x0 - bw - 4 > 0 ? 'right' : 'left';
+  ctx.fillText(diff.baseLabel, x0 - bw - 4 > 0 ? x0 - 3 : x0 + 3, 2);
+  const hw = ctx.measureText(diff.headLabel).width;
+  ctx.textAlign = x1 + hw + 4 < w ? 'left' : 'right';
+  ctx.fillText(diff.headLabel, x1 + hw + 4 < w ? x1 + 3 : x1 - 3, h - 11);
 }
 
 /** `document.getElementById` narrowed to an expected element type. */
