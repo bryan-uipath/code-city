@@ -127,6 +127,14 @@ export interface DiffScope {
   headRef?: string;
   /** Changed files, biggest added-line count first. */
   files: DiffFile[];
+  /**
+   * The branch's own commits (`git rev-list base..head`), full hashes — the
+   * stream's `Commit.h` is abbreviated, so match on a prefix.
+   */
+  commits?: string[];
+  /** Committer timestamps of base and head, unix seconds like `Commit.ts`. */
+  baseTs?: number;
+  headTs?: number;
 }
 
 export interface DiffFile {

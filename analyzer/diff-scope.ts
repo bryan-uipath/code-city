@@ -113,11 +113,17 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
   }
 
   pairReshaped(looseAdds, looseDels, files);
+  // The branch's own commits and its two endpoints in time — what the viewer's
+  // timeline needs to mark the delta inside the 12-month stream.
+  const revs = git(repoRoot, ['rev-list', `${base}..${head}`]).split('\n').map((l) => l.trim()).filter(Boolean);
   return {
     base,
     head,
     baseRef,
     headRef,
+    commits: revs,
+    baseTs: commitTs(repoRoot, base),
+    headTs: commitTs(repoRoot, head),
     files: [...files].map(([path, b]) => ({ path, ...b }))
       .sort((x, y) => (y.verbatim + y.reshaped + y.new) - (x.verbatim + x.reshaped + x.new)),
   };
@@ -210,6 +216,11 @@ function resolveRange(
     ? git(repoRoot, ['merge-base', revParse(repoRoot, left), head]).trim()
     : revParse(repoRoot, left);
   return { base, head, baseRef: left, headRef: right };
+}
+
+/** Committer timestamp, unix seconds — same clock as the commit stream's `ts`. */
+function commitTs(repoRoot: string, hash: string): number {
+  return Number(git(repoRoot, ['show', '-s', '--format=%ct', hash]).trim()) || 0;
 }
 
 function revParse(repoRoot: string, rev: string): string {
