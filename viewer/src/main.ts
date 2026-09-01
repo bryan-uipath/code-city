@@ -15,7 +15,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 import type { CityHost } from '../../shared/host.js';
 import { HttpHost } from '../../shared/host.js';
-import type { CityData, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr } from '../../shared/types.js';
+import type { CityData, DiffFile, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr } from '../../shared/types.js';
 import { layoutCity, plateTop, buildingHeight, streetWidth, setWorldScale, worldScale } from './layout.js';
 import {
   buildCity, buildEnvironment, disposeObject,
@@ -44,7 +44,7 @@ import {
   buildStrataIndex, createStrata, commitTypePaint, commitTypeKey,
   COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
   type StrataBuild, type StrataCommit, type StrataIndex, type StrataPaint, type StrataRecord,
-  type LevelFilter,
+  type FileFilter, type LevelFilter,
 } from './strata.js';
 import { createSkyline, type Skyline, type SkyHit } from './skyline.js';
 import { asVNode, type AnyKind, type VMod, type VNode } from './vtree.js';
@@ -133,8 +133,10 @@ const MIN_SCOPE_SIZE = 240;
  * by all five at folder scope (see `strataActive`). It only changes the PAINT:
  * `strata` colors each level by its commit type, the other four color a file's
  * whole stack by that file's metric.
+ *
+ * `prov` only exists when the analyzer ran with `--diff` (see "PR provenance").
  */
-type Mode = 'structure' | 'churn' | 'fix' | 'recent' | 'strata';
+type Mode = 'structure' | 'churn' | 'fix' | 'recent' | 'strata' | 'prov';
 
 /**
  * Which renderer is on stage. A view is not a mode: the mode says how the
@@ -223,6 +225,7 @@ const dom = {
   views: requireEl('views'),
   toggles: requireEl('toggles'),
   worktreeBtn: requireEl('toggle-worktree'),
+  provBtn: requireEl('mode-prov'),
 };
 
 // Index structures (built once, over the real tree)
@@ -469,6 +472,7 @@ async function main(): Promise<void> {
 
   normalizeTree(state.root);
   buildIndex(data);
+  initDiffScope(data);
   CITY_SIZE = cityExtent(index.filesByPath.size);
 
   initScene();
@@ -1200,6 +1204,10 @@ function buildHud(): void {
     // filter it lands you in Strata with the fix swatch selected, which says the
     // same thing per commit instead of per file. The old flat heat ramp is only
     // the fallback for a city with no stacks (v1 data, or inside an isolate).
+    if (clicked === 'prov' && !diffAvailable()) {
+      showNotice('Provenance needs a diff — re-run the analyzer with --diff <base>..<head>');
+      return;
+    }
     const asFixFilter = clicked === 'fix' && strata.build !== null;
     const mode = asFixFilter ? 'strata' : clicked;
     state.mode = mode;
@@ -1237,6 +1245,7 @@ function buildHud(): void {
     if (ctl) {
       if (ctl.dataset.filter === 'clear') clearStrataFilter();
       else if (ctl.dataset.filter === 'collapse') toggleFilterCollapse();
+      else if (ctl.dataset.filter === 'diff-only') toggleDiffCollapse();
       return;
     }
     const type = closest(e.target, '.row.f')?.dataset.type;
@@ -1274,7 +1283,7 @@ function buildHud(): void {
 
 function isMode(value: string | undefined): value is Mode {
   return value === 'structure' || value === 'churn' || value === 'fix'
-    || value === 'recent' || value === 'strata';
+    || value === 'recent' || value === 'strata' || value === 'prov';
 }
 
 function renderLegend(): void {
@@ -1293,6 +1302,28 @@ function renderLegend(): void {
     rows.push(
       `<div class="row"><i class="sw" style="background:#4ade80;box-shadow:0 0 8px #4ade80"></i><span>touched &lt; 30d</span></div>`,
       `<div class="row"><i class="sw" style="background:#1b2432"></i><span>dormant</span></div>`
+    );
+  } else if (state.mode === 'prov') {
+    // Three buckets over the whole diff — the same shares the buildings mix.
+    const t = diffScope.total;
+    const adds = Math.max(t.verbatim + t.reshaped + t.new, 1);
+    const buckets: Array<[string, THREE.Color, number]> = [
+      ['verbatim · skip', PROV_VERBATIM, t.verbatim],
+      ['reshaped · check', PROV_RESHAPED, t.reshaped],
+      ['new · read', PROV_NEW, t.new],
+    ];
+    for (const [label, color, n] of buckets) {
+      const hex = '#' + color.getHexString();
+      rows.push(
+        `<div class="row"><i class="sw" style="background:${hex};box-shadow:0 0 8px ${hex}"></i>` +
+        `<span>${label} · ${Math.round((100 * n) / adds)}%</span></div>`
+      );
+    }
+    rows.push(
+      `<div class="row"><i class="sw" style="background:#1b2432"></i><span>untouched by the diff</span></div>`,
+      `<div class="row"><span>file hue = its share of lines to read</span></div>`,
+      diffScopeControlHtml(),
+      `<div class="row"><span>+${fmt(adds)} lines · ${escapeHtml(diffScope.base.slice(0, 7))}..${escapeHtml(diffScope.head.slice(0, 7))}</span></div>`
     );
   } else if (state.mode === 'strata') {
     // One level per commit, hue = the kind of change that commit was — and each
@@ -1335,6 +1366,12 @@ function renderLegend(): void {
     if (filterActive()) {
       rows.push(`<div class="row"><span>filter · ${[...strata.filter.types].join(' ')}</span></div>`);
       rows.push(filterControlsHtml());
+    }
+    // Same rule for the diff scope: it changes the shared massing, so whichever
+    // mode you are in has to say so and be able to undo it.
+    if (diffScope.collapse && state.mode !== 'prov') {
+      rows.push(`<div class="row"><span>diff scope · ${fmt(diffScope.byPath.size)} files only</span></div>`);
+      rows.push(diffScopeControlHtml());
     }
   }
   rows.push(...worktreeLegendRows());
@@ -1386,6 +1423,17 @@ function prLegendRows(): string[] {
  */
 function massingNote(): string {
   return state.view === 'skyline' ? 'level = commit · width = loc' : 'level = commit · area = loc';
+}
+
+/** The diff scope's "only" — the same control the commit-type filter gets. */
+function diffScopeControlHtml(): string {
+  if (!diffAvailable()) return '';
+  return (
+    `<div class="fctl">` +
+    `<button type="button" class="fbtn${diffScope.collapse ? ' on' : ''}" data-filter="diff-only"` +
+    ` title="Drop every file the diff did not touch">&#8676;&#8677; only the diff</button>` +
+    `</div>`
+  );
 }
 
 /** The "only" / "clear" pair — present exactly while a filter is. */
@@ -1507,6 +1555,8 @@ function applyOverlay(): void {
     for (const rec of city.moduleRecords) {
       if (mode === 'structure' || mode === 'strata') {
         _color.copy(rec.baseColor);
+      } else if (mode === 'prov') {
+        provColor(rec.file, _color);
       } else if (mode === 'recent') {
         const r = recentValue(rec.file);
         if (r.count > 0) _color.copy(green).multiplyScalar(scrubbing ? 1 + r.flash * 1.6 : 1);
@@ -1524,6 +1574,8 @@ function applyOverlay(): void {
     for (const rec of city.fileRecords) {
       if (mode === 'structure' || mode === 'strata') {
         _color.copy(rec.baseColor);
+      } else if (mode === 'prov') {
+        provColor(rec.node, _color).multiplyScalar(0.4);
       } else if (mode === 'recent') {
         const r = recentValue(rec.node);
         if (r.count > 0) _color.copy(green).multiplyScalar(0.28 + (scrubbing ? r.flash * 0.5 : 0));
@@ -1651,10 +1703,11 @@ function applyStrataMode(): void {
     strata.build = null;
   }
   if (!on) {
-    // The filter is a query on the stacks; with no stacks it has nothing to say,
-    // and leaving it armed would surprise you on the way back out.
+    // The filters are queries on the stacks; with no stacks they have nothing
+    // to say, and leaving one armed would surprise you on the way back out.
     strata.filter.types.clear();
     strata.filter.collapse = false;
+    diffScope.collapse = false;
     renderMassingStat();
     return;
   }
@@ -1682,7 +1735,7 @@ function updateStrata(): void {
   if (!build) return;
   const range = { start: timeline.start, cursor: state.timeCursor };
   const keep = collapsePredicate();
-  build.update(range, keep);
+  build.update(range, keep, diffFilePredicate());
   skyline?.update(range, keep);
   renderMassingStat();
   paintStrata();
@@ -1886,6 +1939,7 @@ function metricStrataPaint(): StrataPaint {
 
   return (record, _age, target) => {
     const file = record.file;
+    if (mode === 'prov') return provColor(file, target);
     if (mode === 'structure') return target.copy(dominantKindColor(file));
     if (mode === 'recent') {
       const r = recentValue(file);
@@ -2218,6 +2272,177 @@ function tourHighlight(targets: TourTarget[] | null): void {
     else if (prev.mods) prev.mods.add(t.module);
   });
   setSearchHighlight({ paths, cursor: null });
+}
+
+// ---------------------------------------------------------------------------
+// Diff scope — the changed-file set of one range, as a layer
+// ---------------------------------------------------------------------------
+
+/**
+ * A diff is first a *scope*: the files a reviewer has to look at at all. That
+ * layer is deliberately separate from what any overlay paints on top of it —
+ * provenance below is the first such overlay, import blast radius and PR tours
+ * are meant to be the next.
+ *
+ * It follows the strata filter's two states exactly (see "Strata filter"):
+ * membership is a **highlight** by default — files outside the scope keep their
+ * footprint and go dormant, so you still see *where* in the city the PR landed
+ * — and `collapse` promotes it to a massing predicate, dropping their stacks
+ * entirely for a skyline of nothing but the diff.
+ */
+const diffScope: {
+  base: string;
+  head: string;
+  byPath: Map<string, DiffFile>;
+  /** Files, plus folder subtotals so a district can answer for its subtree. */
+  byNode: Map<VNode, DiffSum>;
+  total: DiffSum;
+  /** "only": non-diff files are not built at all. */
+  collapse: boolean;
+} = {
+  base: '', head: '',
+  byPath: new Map(),
+  byNode: new Map(),
+  total: { verbatim: 0, reshaped: 0, new: 0, deleted: 0 },
+  collapse: false,
+};
+
+/** Added-line buckets, summed — one file's row or a folder's subtree. */
+type DiffSum = { verbatim: number; reshaped: number; new: number; deleted: number };
+
+function diffAvailable(): boolean {
+  return diffScope.byNode.size > 0;
+}
+
+/** Index `data.diff` (when the analyzer produced one) and reveal the mode. */
+function initDiffScope(data: CityData): void {
+  const diff = data.diff;
+  const root = state.root;
+  if (!diff || !Array.isArray(diff.files) || !root) return;
+  diffScope.base = String(diff.base || '');
+  diffScope.head = String(diff.head || '');
+  for (const f of diff.files) {
+    if (f && typeof f.path === 'string') diffScope.byPath.set(f.path, f);
+  }
+  sumDiffScope(root);
+  if (!diffAvailable()) return; // the diff touched nothing the city knows about
+  dom.provBtn.style.display = '';
+}
+
+/** Post-order subtree sums; nodes with nothing changed stay out of the map. */
+function sumDiffScope(node: VNode): DiffSum | null {
+  if (node.type === 'file') {
+    const f = diffScope.byPath.get(node.path);
+    if (!f) return null;
+    const sum = { verbatim: f.verbatim, reshaped: f.reshaped, new: f.new, deleted: f.deleted };
+    diffScope.byNode.set(node, sum);
+    addDiffSum(diffScope.total, sum);
+    return sum;
+  }
+  const sum: DiffSum = { verbatim: 0, reshaped: 0, new: 0, deleted: 0 };
+  let any = false;
+  for (const child of node.children || []) {
+    const childSum = sumDiffScope(child);
+    if (!childSum) continue;
+    any = true;
+    addDiffSum(sum, childSum);
+  }
+  if (!any) return null;
+  diffScope.byNode.set(node, sum);
+  return sum;
+}
+
+function addDiffSum(into: DiffSum, from: DiffSum): void {
+  into.verbatim += from.verbatim;
+  into.reshaped += from.reshaped;
+  into.new += from.new;
+  into.deleted += from.deleted;
+}
+
+/** The buckets a node stands for — synthetic scopes resolve to their real file. */
+function diffSum(node: VNode): DiffSum | null {
+  const real = realFileOf(node);
+  return diffScope.byNode.get(real ?? node) ?? null;
+}
+
+/** The massing predicate — non-null only while the scope is collapsed. */
+function diffFilePredicate(): FileFilter | null {
+  if (!diffScope.collapse || !diffAvailable()) return null;
+  return (node) => diffSum(node) !== null;
+}
+
+/** Toggle "only the diff". Like the strata collapse, this is an `update()`. */
+function toggleDiffCollapse(): void {
+  if (!diffAvailable()) return;
+  if (!strata.build) {
+    showNotice('"Only the diff" needs the strata massing — Esc back out to a folder');
+    return;
+  }
+  diffScope.collapse = !diffScope.collapse;
+  updateStrata();
+  renderLegend();
+}
+
+// ---------------------------------------------------------------------------
+// PR provenance — where the diff scope's added lines came from
+// ---------------------------------------------------------------------------
+
+/** Bucket hues: cyan = skip it, violet = check it, orange = read it. */
+const PROV_VERBATIM = new THREE.Color(0x22d3ee);
+const PROV_RESHAPED = new THREE.Color(0xa78bfa);
+const PROV_NEW = new THREE.Color(PALETTE.orange);
+/** A file the diff only took lines away from. */
+const PROV_DELETED = new THREE.Color(0x7f1d1d);
+
+/**
+ * The ramp stops in *display* components. Mixing them in the renderer's linear
+ * working space sends violet → orange the long way round, through magenta; in
+ * sRGB the same two stops pass through the red-orange the eye expects.
+ */
+function srgbOf(color: THREE.Color): [number, number, number] {
+  const out = { r: 0, g: 0, b: 0 };
+  color.getRGB(out, THREE.SRGBColorSpace);
+  return [out.r, out.g, out.b];
+}
+const STOP_VERBATIM = srgbOf(PROV_VERBATIM);
+const STOP_RESHAPED = srgbOf(PROV_RESHAPED);
+const STOP_NEW = srgbOf(PROV_NEW);
+
+/**
+ * One number decides the hue: how much of this file a reviewer has to actually
+ * read (`reshaped` counts half — moved, but worth a glance). The three legend
+ * swatches are the stops of that ramp, so 87%-verbatim reads calm cyan, a
+ * half-rewritten file reads violet, and 93%-new burns orange.
+ *
+ * A blend of the three hues by share was tried first and mixed to mauve for
+ * exactly the interesting middle — a ramp keeps the axis monotone and readable.
+ * Files outside the diff scope go dormant, so the PR *is* the city.
+ */
+function provColor(node: VNode, target: THREE.Color): THREE.Color {
+  const sum = diffSum(node);
+  if (!sum) return target.copy(DORMANT);
+  const adds = sum.verbatim + sum.reshaped + sum.new;
+  if (!adds) return target.copy(PROV_DELETED);
+  const read = (sum.reshaped * 0.5 + sum.new) / adds;
+  const [a, b, k] = read <= 0.5
+    ? [STOP_VERBATIM, STOP_RESHAPED, read * 2] as const
+    : [STOP_RESHAPED, STOP_NEW, (read - 0.5) * 2] as const;
+  return target.setRGB(
+    a[0] + (b[0] - a[0]) * k,
+    a[1] + (b[1] - a[1]) * k,
+    a[2] + (b[2] - a[2]) * k,
+    THREE.SRGBColorSpace
+  );
+}
+
+/** The inspector line: `+449 · 87% verbatim · 3% reshaped · 10% new`. */
+function provNote(node: VNode): string | undefined {
+  const sum = diffSum(node);
+  if (!sum) return undefined;
+  const adds = sum.verbatim + sum.reshaped + sum.new;
+  if (!adds) return `−${fmt(sum.deleted)} · removed only`;
+  const pct = (x: number) => Math.round((100 * x) / adds);
+  return `+${fmt(adds)} · ${pct(sum.verbatim)}% verbatim · ${pct(sum.reshaped)}% reshaped · ${pct(sum.new)}% new`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2689,8 +2914,9 @@ function scopeFolder(path: string): VNode | null {
 function onTimeCursor(t: number | null): void {
   state.timeCursor = t;
   strata.dirty = true;
-  // Strata reads the cursor as its base snapshot, so it keeps its own overlay.
-  if (t !== null && state.mode !== 'recent' && state.mode !== 'strata') {
+  // Strata reads the cursor as its base snapshot, and provenance is about one
+  // diff rather than the timeline, so both keep their own overlay.
+  if (t !== null && state.mode !== 'recent' && state.mode !== 'strata' && state.mode !== 'prov') {
     state.mode = 'recent';
     for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) b.classList.toggle('active', b.dataset.mode === 'recent');
     renderLegend();
@@ -3569,6 +3795,7 @@ function describe(target: Target | null): Descriptor | null {
     filterNote: match
       ? `${fmt(match.matched)} of ${fmt(match.total)} commits match filter (${[...strata.filter.types].join(' ')})`
       : undefined,
+    provNote: provNote(node),
     loc: mod ? mod.loc : node.loc,
     churn: node.churn,
     fixChurn: node.fixChurn,
@@ -3759,6 +3986,11 @@ function bindEvents(): void {
       // the scope itself does — same rule as the search results above it.
       if (filterActive()) {
         clearStrataFilter();
+        return;
+      }
+      // The diff-scope collapse is the same kind of query, one step further out.
+      if (diffScope.collapse) {
+        toggleDiffCollapse();
         return;
       }
       const up = state.focus?.parent;

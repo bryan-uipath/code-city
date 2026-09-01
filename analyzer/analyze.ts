@@ -10,6 +10,7 @@ import ts from 'typescript';
 import type {
   CityData, Commit, Edge, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleMember, ModuleKind, Pr, PrStatus, TreeNode,
 } from '../shared/types.js';
+import { collectDiffScope } from './diff-scope.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -83,6 +84,8 @@ interface Options {
   prs: boolean;
   /** First-paint mode: cap the history pass, skip PRs, leave the cache alone. */
   quick: boolean;
+  /** `<base>..<head>` to mine into a diff scope, or null to skip the pass. */
+  diff: string | null;
 }
 
 /** Commits the --quick pass reads — enough for churn heat and some strata. */
@@ -129,6 +132,7 @@ async function main(): Promise<void> {
   const edges = buildEdges(repoRoot, opts.roots, parsed, fileSet);
   const tree = buildTree(repoRoot, files, parsed, history.churn);
   const prs = opts.prs && !opts.quick ? await collectPRs(repoRoot, fileSet) : [];
+  const diff = opts.diff ? collectDiffScope(repoRoot, opts.diff) : null;
 
   const data: CityData = {
     repo: {
@@ -142,6 +146,7 @@ async function main(): Promise<void> {
     prs,
     files,
     commits,
+    ...(diff ? { diff } : {}),
   };
 
   const outPath = path.resolve(opts.out);
@@ -166,6 +171,16 @@ async function main(): Promise<void> {
     ` in ${(history.ms / 1000).toFixed(1)}s\n` +
     `out: ${outPath} (${(json.length / 1e6).toFixed(2)} MB)\nelapsed: ${((Date.now() - started) / 1000).toFixed(1)}s`
   );
+  if (diff) {
+    let v = 0, r = 0, n = 0;
+    for (const f of diff.files) { v += f.verbatim; r += f.reshaped; n += f.new; }
+    const adds = Math.max(v + r + n, 1);
+    const pct = (x: number) => `${Math.round((100 * x) / adds)}%`;
+    console.log(
+      `diff scope: ${diff.files.length} files ${diff.base.slice(0, 7)}..${diff.head.slice(0, 7)}\n` +
+      `  provenance +${adds} — verbatim ${v} (${pct(v)}) · reshaped ${r} (${pct(r)}) · new ${n} (${pct(n)})`
+    );
+  }
 }
 
 function parseArgs(argv: string[]): Options {
@@ -174,11 +189,13 @@ function parseArgs(argv: string[]): Options {
   let out = 'viewer/public/data.json';
   let prs = true;
   let quick = false;
+  let diff: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === undefined) continue;
     if (a === '--roots') roots = (argv[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     else if (a === '--out') out = argv[++i] ?? out;
+    else if (a === '--diff') diff = argv[++i] ?? null;
     else if (a === '--no-prs') prs = false;
     else if (a === '--quick') quick = true;
     else if (!a.startsWith('--')) repoPath = a;
@@ -188,7 +205,7 @@ function parseArgs(argv: string[]): Options {
   // Default: the whole repo. A narrower scope is an explicit --roots choice —
   // a "helpful" packages/ heuristic silently hid sibling dirs like src/.
   if (!roots) roots = ['.'];
-  return { repoPath, roots, out, prs, quick };
+  return { repoPath, roots, out, prs, quick, diff };
 }
 
 // ---------- discovery ----------
