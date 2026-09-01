@@ -127,13 +127,24 @@ export type StrataPaint = (record: StrataRecord, age: number, target: THREE.Colo
  */
 export type LevelFilter = (commit: StrataCommit) => boolean;
 
+/**
+ * A predicate on whole files: a rejected file gets no stack at all, not even
+ * the stub plinth. This is the "only the diff scope" collapse — the file-level
+ * counterpart of `LevelFilter`.
+ */
+export type FileFilter = (node: VNode) => boolean;
+
 export interface StrataBuild {
   group: THREE.Group;
   mesh: THREE.InstancedMesh;
   /** Indexed by instance id; length tracks the live instance count. */
   records: StrataRecord[];
   /** Rebuild the stacks for a time range; cheap enough to call while dragging. */
-  update(range: { start: number; cursor: number | null }, keep?: LevelFilter | null): void;
+  update(
+    range: { start: number; cursor: number | null },
+    keep?: LevelFilter | null,
+    keepFile?: FileFilter | null
+  ): void;
   /** Repaint the existing levels; omit `paint` to reapply the current one. */
   recolor(paint?: StrataPaint): void;
   /** Tallest stack in world units — used to frame selections. */
@@ -253,7 +264,11 @@ export function createStrata(
   update({ start: -Infinity, cursor: null });
   return build;
 
-  function update(range: { start: number; cursor: number | null }, keep?: LevelFilter | null): void {
+  function update(
+    range: { start: number; cursor: number | null },
+    keep?: LevelFilter | null,
+    keepFile?: FileFilter | null
+  ): void {
     const cursorTs = range.cursor ?? Infinity;
     const startTs = Number.isFinite(range.start) ? range.start : bounds.min;
     // Age is normalized over the visible range, so the gradient always uses its
@@ -267,6 +282,8 @@ export function createStrata(
     for (const { node, history } of stacks) {
       const rect = node.rect;
       if (!rect) continue;
+      // Filtered-out files leave bare ground: the plate still says where they are.
+      if (keepFile && !keepFile(node)) { heights.set(node, 0); continue; }
       const top = plateTop(node.tier ?? node.depth ?? 0, node.type === 'file');
       const inset = Math.min(0.8, rect.w * 0.08, rect.h * 0.08);
       const baseW = Math.max(rect.w - inset * 2, 0.25);

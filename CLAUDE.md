@@ -14,6 +14,7 @@ motion probe, and looking at the city.
 ```bash
 npm run analyze -- /path/to/repo            # -> viewer/public/data.json (analyzes ./packages by default)
 npm run analyze -- /path/to/repo --roots src,lib --out other.json --no-prs
+npm run analyze -- /path/to/repo --diff <base>..<head>   # + diff scope & PR provenance overlay
 npm run analyze -- .                        # required before the bundled welcome tour works
 npm run dev                                 # vite dev server (source/diff/status/search API live)
 npm run typecheck                           # tsc --noEmit — the only fast whole-repo check

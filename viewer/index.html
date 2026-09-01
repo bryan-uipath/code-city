@@ -261,6 +261,7 @@
   .sb-path { color: var(--foreground-muted); font-size: 9.5px; margin-top: 5px; word-break: break-all; letter-spacing: 0.02em; }
   .sb-note { color: var(--accent-muted); font-size: 9.5px; margin-top: 4px; word-break: break-word; letter-spacing: 0.04em; }
   .sb-note.filter { color: #ffd9cd; text-transform: uppercase; letter-spacing: 0.12em; font-size: 9px; }
+  .sb-note.prov { color: #a5f3fc; text-transform: uppercase; letter-spacing: 0.12em; font-size: 9px; }
   .sb-grid {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 8px;
     margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-subtle);
@@ -599,6 +600,7 @@
         <button class="mode" data-mode="fix">Fix hotspots</button>
         <button class="mode active" data-mode="recent">Recent focus</button>
         <button class="mode" data-mode="strata">Strata</button>
+        <button class="mode" data-mode="prov" id="mode-prov" style="display:none">Provenance</button>
       </div>
     </div>
 

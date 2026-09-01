@@ -96,6 +96,8 @@ export interface Descriptor {
   note?: string;
   /** How this file sits inside the active strata filter — `3 of 41 commits match filter`. */
   filterNote?: string;
+  /** Its share of the analyzed diff — `+449 · 87% verbatim · 3% reshaped · 10% new`. */
+  provNote?: string;
   /** Replaces the default LOC/CHURN/FIX/RECENT grid (PR descriptors). */
   grid?: Array<[string, string | number]>;
   prs: Pr[];
@@ -339,6 +341,7 @@ export function createSidebar(
       `<div class="sb-path">${escapeHtml(d.path || '—')}</div>` +
       (d.note ? `<div class="sb-note">${escapeHtml(d.note)}</div>` : '') +
       (d.filterNote ? `<div class="sb-note filter">${escapeHtml(d.filterNote)}</div>` : '') +
+      (d.provNote ? `<div class="sb-note prov">${escapeHtml(d.provNote)}</div>` : '') +
       `<div class="sb-grid">${grid}</div>` +
       coupling
     );

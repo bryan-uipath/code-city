@@ -38,12 +38,14 @@ zoom-out), like unfolding a hologram.
 - Orbit / zoom / pan (OrbitControls).
 - Hover → HUD tooltip (name, kind, loc, churn, fix count, PRs touching it).
 - Double-click → camera fly-to + focus that node (breadcrumb updates). Esc / breadcrumb → back up.
-- Mode buttons (HUD): Structure · Churn · Fix hotspots · Recent focus · Strata.
-  **The mode never changes the massing** — at folder scope all five stand on the
+- Mode buttons (HUD): Structure · Churn · Fix hotspots · Recent focus · Strata ·
+  Provenance (only with a `--diff` dataset).
+  **The mode never changes the massing** — at folder scope they all stand on the
   same strata stacks and only repaint them (see "Strata as the shared massing").
   Toggles: Coupling arcs · People/PRs.
 - Legend swatches (Strata): click a commit type to filter the stacks; "only"
-  compresses them to the matching commits (see "Strata filter").
+  compresses them to the matching commits (see "Strata filter"). Provenance gets
+  the same control for its diff scope ("only the diff").
 
 ## Data contract — `viewer/public/data.json`
 
@@ -89,6 +91,93 @@ Notes:
   Only files present in the tree appear in `f`. Commits touching zero tree files are dropped.
   `d` comes from `git log --numstat`: binary files (`-`) are skipped entirely and
   renames (`old => new`, `dir/{a => b}/x.ts`) resolve to the new path.
+
+## Data contract v3 — diff scope (`data.diff`, optional)
+
+Emitted only for `npm run analyze -- <repo> --diff <base>..<head>`
+(`base...head` = from the merge base; a bare rev means `<rev>..HEAD`):
+
+```jsonc
+"diff": {
+  "base": "1b86b9d…", "head": "4503fbb…",       // resolved via git rev-parse
+  "files": [                                     // most added lines first
+    { "path": "packages/a/x.ts",
+      "verbatim": 392, "reshaped": 12, "new": 45, // added lines, by origin
+      "deleted": 0, "movedOut": 0 }               // removed lines, and the moved subset
+  ]
+}
+```
+
+**The file list *is* the diff scope**: a file absent from it was not touched.
+Provenance (the buckets) is the first overlay that reads this section; import
+blast radius and PR tours are meant to sit on the same scope, which is why the
+scope and the buckets are one section and not two.
+
+## Diff scope & PR provenance (implemented)
+
+A split/extract refactor is mostly *relocation*, so the review question is not
+"what changed" but **"which of these 3000 added lines is actually new logic"**.
+The city answers it in two layers.
+
+**Layer 1 — the diff scope** (`viewer/src/main.ts`, "Diff scope" section) is the
+changed-file set, and it borrows the strata filter's two states exactly:
+
+- **Highlight (default)**: files outside the scope keep their footprint and go
+  dormant. The skyline stays standing on purpose — you have to see *where in the
+  city* the PR landed, which needs the rest of the city to still be there.
+- **Collapse ("only the diff")**: a `FileFilter` handed to `StrataBuild.update()`
+  — the same call a range drag makes — so files outside the scope get no stack at
+  all, not even the stub plinth, and the diff stands alone on bare plates
+  (flow-workbench: 19,827 levels → 117). It is a refill, never a rebuild, and it
+  composes with the commit-type filter and the focus stack. Like that filter it
+  outlives the overlay mode (every mode's legend says it is armed and can undo
+  it), clears when the massing goes away (a file isolate), and Escape takes it
+  off one step after the commit-type filter and before the scope pops.
+
+**Layer 2 — provenance** is the paint inside that scope. `analyzer/diff-scope.ts`
+runs one `git diff --color=always --color-moved=zebra
+--color-moved-ws=allow-indentation-change` and buckets every changed line:
+
+- **verbatim** — git's own move detection matched the added line to a deleted one
+  elsewhere in the diff (indentation aside). Free, and exact.
+- **reshaped** — moved but modified in transit (`foo` → `this.foo` when functions
+  are wrapped into a class). The leftover adds are paired against the leftover
+  *dels* by Dice similarity over identifier tokens (`this.` stripped, ≥2 tokens,
+  threshold 0.6, one-to-one, candidates drawn from an inverted token index).
+  Deliberately a heuristic and not an AST diff: the payoff is a *proportion of
+  mass*, not a line-accurate mapping. 0.6 was calibrated on PR 3532 — below it
+  the pairs are unrelated imports and `private readonly` boilerplate.
+- **new** — nothing in the diff explains it. This is what a reviewer reads.
+- Both diff sides are tracked (`--- a/…` as well as `+++ b/…`): a deleted file's
+  hunk says `+++ /dev/null`, and attributing its deletions to the previously
+  seen file is the easy bug.
+
+The paint is a **ramp, not a mix**: one number — `(reshaped/2 + new) / added`,
+"how much of this file must I actually read" — walks the three legend swatches
+(cyan → violet → orange), which are its stops. Mixing the three hues by share
+was tried first and turned the interesting middle to mauve. The ramp is
+interpolated in *sRGB*: in the renderer's linear space violet → orange detours
+through magenta. A file the diff only removed lines from goes dark red.
+
+Worked example (PR "split MfeEditorProvider.ts into 11 files", +1963 lines:
+60% verbatim · 8% reshaped · 32% new): `MfeDebugHandler.ts` +449 at 87% verbatim
+reads calm cyan (skip it), `MfeProjectDocumentStateObject.ts` +445 at 44/14/42
+reads violet (check it), `MfeActivePanelOwnerObject.ts` +72 at 7% verbatim burns
+orange (read it). The inspector carries the same line per file and per folder
+(`+445 · 44% verbatim · 14% reshaped · 42% new`), summed over subtrees.
+
+Notes and limits:
+- The mode button is hidden until `data.diff` indexes at least one file the city
+  knows about, so plain data.json and a static export of it never show a control
+  they cannot serve. With a diff baked in, the static export works — no dev API
+  is involved.
+- The reshaped bucket is capped by git's leftovers: only *unmatched* deletions
+  can be an origin (339 of 1475 in PR 3532), which is the honest ceiling.
+- A line edited in place counts as reshaped, not new. That is the intended
+  reading ("moved or rewritten, not fresh logic").
+- Live `git diff` against a branch would be a `/api/diff-scope` route behind
+  `CityHost` — deliberately not built yet; the analyzer flag covers the
+  review-a-PR case with no new endpoint.
 
 ## Dev API (vite plugin, dev-server only)
 
@@ -506,7 +595,8 @@ the 5–10 locations that carry the idea, emit the `.cctour`, hand the user
 shared/types.ts           # the data.json contract, shared analyzer <-> viewer
 shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
 shared/tour.ts            # Tour SDK types + validateTour (the untrusted-input boundary)
-analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs]
+analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--diff base..head]
+analyzer/diff-scope.ts    # one range -> changed-file set + per-file provenance buckets
 viewer/index.html         # HUD markup + CSS
 viewer/src/main.ts        # scene, interaction, overlays
 viewer/src/vtree.ts       # the viewer's augmented node type (layout, synthetic scopes)
