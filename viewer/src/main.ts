@@ -28,7 +28,7 @@ import {
   type Arc, type ArcFlow, type CityBuild, type ModuleRecord,
 } from './city.js';
 import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
-import { createTerraceSigns, type TerraceSigns } from './terrace.js';
+import { canSign, createTerraceSigns, type TerraceSigns } from './terrace.js';
 import {
   createSidebar, escapeHtml,
   type Descriptor, type Sidebar, type WorkChange, type WorkKind,
@@ -1023,15 +1023,34 @@ function scopeHome(root: VNode): Home {
   const base = root.synth === 'fileScope' && root.srcFile ? root.srcFile
     : root.synth === 'wrap' ? root.children?.[0] ?? root
     : root;
-  const home = base.home
-    ?? (base.rect ? { rect: base.rect, depth: base.depth ?? 0, tier: base.tier ?? 0 } : null)
-    ?? { rect: { x: -CITY_SIZE / 2, z: -CITY_SIZE / 2, w: CITY_SIZE, h: CITY_SIZE }, depth: 0, tier: 0 };
+  const floor = stageFloor(root);
+  const home = base.home ?? unplacedHome(base, floor);
   const r = home.rect;
-  const s = stageFloor(root) / Math.max(r.w, r.h);
+  // Measured on the short side: a skinny home (54 x 2) clears a floor set on
+  // its long one and still has no room for layoutNode to place anything in.
+  const s = floor / Math.min(r.w, r.h);
   if (s <= 1) return home;
   return {
     ...home,
     rect: { x: r.x + (r.w - r.w * s) / 2, z: r.z + (r.h - r.h * s) / 2, w: r.w * s, h: r.h * s },
+  };
+}
+
+/**
+ * Home for a node that was never laid out — a module scope made on the spot, or
+ * a file stripped for being too small: a floor-sized square on the nearest
+ * placed ancestor's centre, rather than the whole city.
+ */
+function unplacedHome(base: VNode, side: number): Home {
+  let anc = base.parent ?? null;
+  while (anc && !anc.rect) anc = anc.parent ?? null;
+  const r = anc?.rect;
+  const cx = r ? r.x + r.w / 2 : 0;
+  const cz = r ? r.z + r.h / 2 : 0;
+  return {
+    rect: { x: cx - side / 2, z: cz - side / 2, w: side, h: side },
+    depth: (anc?.depth ?? -1) + 1,
+    tier: (anc?.tier ?? -1) + 1,
   };
 }
 
@@ -3345,10 +3364,10 @@ function terraceSignNodes(): VNode[] {
   if (!root || root.synth) return [];
   const base = groupingRoot() ?? root;
   for (const a of base.children || []) {
-    if (a.type !== 'folder' || !a.rect) continue;
+    if (a.type !== 'folder' || !canSign(a)) continue;
     signedNodes.add(a);
     for (const b of a.children || []) {
-      if (b.type === 'folder' && b.rect) signedNodes.add(b);
+      if (b.type === 'folder' && canSign(b)) signedNodes.add(b);
     }
   }
   return [...signedNodes];
@@ -3367,11 +3386,15 @@ function parentLabelKey(node: VNode): string | null {
 function updateLabelCandidates(): void {
   if (!city || !scope.root) return;
   const list: LabelCandidate[] = [];
+  // The cull is relative to the stage: at true scale a file plate inside a
+  // folder isolate stays as small as it was in the whole city.
+  const stageRect = scope.root.rect;
+  const minSize = stageRect ? Math.max(stageRect.w, stageRect.h) / 300 : 3;
 
   walk(scope.root, (n) => {
     if (!n.rect) return;
     const size = Math.min(n.rect.w, n.rect.h);
-    if (size < 3) return;
+    if (size < minSize) return;
     const isFile = n.type === 'file';
     if (!isFile && n === scope.root && scope.root.depth === 0 && (n.children || []).length === 1) return;
     if (!isFile && signedNodes.has(n)) return; // its name is on the terrace wall

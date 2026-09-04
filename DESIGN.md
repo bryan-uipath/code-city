@@ -221,8 +221,7 @@ still exactly where it was.
 - **Known limit.** Seen from steeply above, the *top face* is whichever band is
   on top (usually `new`), so a 98%-verbatim file reads orange from directly
   overhead; the cyan mass is on the sides. It reads correctly at the oblique
-  angles the city is normally flown at, and worst inside a folder isolate, where
-  footprints are re-laid out to full extent while heights stay in world units.
+  angles the city is normally flown at.
 
 ### The timeline shows the diff
 
@@ -478,16 +477,19 @@ invisible.
 - **Legibility floor.** A scope too small to place its children is enlarged
   about its own centre to `stageFloor`: real folders to `max(48, √files·6)`,
   file / module scopes (buildings up to 60 tall on a plot a few units wide) to
-  the previous `max(60, √buildings·55)`. Only then does the homing scale
-  animate. The one deliberate exception to scale-true; expected to shrink once
-  the file interior is redesigned.
+  the previous `max(60, √buildings·55)`. Measured on the home's *short* side, so
+  a skinny plot is widened too. Only then does the homing scale animate. The one
+  deliberate exception to scale-true; expected to shrink once the file interior
+  is redesigned.
 - **What you lose.** Files too small to earn a plate at true scale stay
   unplaced when their folder is isolated (they had none at the overview
   either); `revealPath` still drills to them. A tall district's towers can
   overrun the top of the framing, which fits the footprint only.
 - Synthetic roots stand for a real node: a file scope is laid out at the file's
   home, a `wrap` at its lone leaf's, so isolating a module or a file keeps the
-  building where it stood.
+  building where it stood. A node that never got a home — a module scope made on
+  the spot by a double-click, a file stripped for being too small — falls back to
+  a floor-sized square on its nearest placed ancestor's centre, not the city.
 
 ## Camera motion
 

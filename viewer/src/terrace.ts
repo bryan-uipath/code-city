@@ -35,6 +35,15 @@ const INK_RATIO = 0.5;
  */
 const MAX_UPSCALE = 2.2;
 
+/**
+ * Whether a node's terrace wall is deep enough to carry a sign. Callers pick the
+ * signed set with this, so a folder that gets no sign still gets a label pill.
+ */
+export function canSign(node: VNode): boolean {
+  if (!node.rect) return false;
+  return plateThickness(node.tier ?? node.depth ?? 0, node.type === 'file') >= 1.4;
+}
+
 export interface TerraceSigns {
   group: THREE.Group;
   /** Replace the signed folder set (called on every scope rebuild). */
@@ -130,10 +139,9 @@ export function createTerraceSigns(camera: THREE.PerspectiveCamera): TerraceSign
 
   function makeSign(node: VNode): Sign | null {
     const r = node.rect;
-    if (!r) return null;
+    if (!r || !canSign(node)) return null;
     const tier = node.tier ?? node.depth ?? 0;
     const wall = plateThickness(tier, node.type === 'file');
-    if (wall < 1.4) return null;
 
     const tex = signTexture(node.name, tier);
     const material = new THREE.MeshBasicMaterial({
