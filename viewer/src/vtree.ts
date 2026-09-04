@@ -36,6 +36,13 @@ export interface Plot extends Rect {
   mod: VMod;
 }
 
+/** Where a node was first placed. A scope root is re-laid out here, so drilling in never rescales it. */
+export interface Home {
+  rect: Rect;
+  depth: number;
+  tier: number;
+}
+
 /** Which synthetic layer a node belongs to, absent for real tree nodes. */
 export type SynthKind = 'fileScope' | 'module' | 'member' | 'leaf' | 'wrap';
 
@@ -70,6 +77,8 @@ export interface VNode {
 
   /** null when the node was too small to place at this extent. */
   rect?: Rect | null;
+  /** First placement, kept across rebuilds; see layoutCity `at`. */
+  home?: Home;
   depth?: number;
   /** Terrace tier — depth minus pass-through (single-child) levels. */
   tier?: number;

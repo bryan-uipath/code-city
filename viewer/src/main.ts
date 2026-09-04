@@ -3,8 +3,10 @@
  *
  * The city is always rendered for ONE focus scope: double-clicking pushes into
  * a node (folder → file → module → member), which disposes the current city and
- * re-lays out that subtree at full extent. Everything else — PR markers, arcs,
- * labels, scaffolding — is rebuilt against the same scope.
+ * re-lays out that subtree at the footprint it already had — the surroundings
+ * go away and the camera closes in; the section itself never rescales.
+ * Everything else — PR markers, arcs, labels, scaffolding — is rebuilt against
+ * the same scope.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -26,7 +28,7 @@ import {
   type Arc, type ArcFlow, type CityBuild, type ModuleRecord,
 } from './city.js';
 import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
-import { createTerraceSigns, type TerraceSigns } from './terrace.js';
+import { canSign, createTerraceSigns, type TerraceSigns } from './terrace.js';
 import {
   createSidebar, escapeHtml,
   type Descriptor, type Sidebar, type WorkChange, type WorkKind,
@@ -43,7 +45,7 @@ import {
   type StrataBuild, type StrataCommit, type StrataIndex, type StrataPaint, type StrataRecord,
   type FileFilter, type LevelFilter, type StrataBand, type BandSource, type StrataUpdate, LEVEL_HEIGHT,
 } from './strata.js';
-import { asVNode, type AnyKind, type VMod, type VNode } from './vtree.js';
+import { asVNode, type AnyKind, type Home, type VMod, type VNode } from './vtree.js';
 
 const MAX_ARCS = 150;
 const DAY = 86400;
@@ -818,7 +820,7 @@ function rebuildScene(
 
   const root = makeScopeRoot(focus);
   scope.root = root;
-  layoutCity(root, { size: stageSize(root) });
+  layoutCity(root, root === state.root ? { size: CITY_SIZE } : { at: scopeHome(root) });
   city = buildCity(root);
   stage.add(city.group);
 
@@ -921,9 +923,9 @@ function disposeGhost(): void {
 }
 
 /**
- * Where a node sits in the layout it belongs to. The scope root always occupies
- * the whole stage, so a node that *is* the current root reports the stage rect —
- * which is what makes the drill-down and drill-up maps symmetric.
+ * Where a node sits in the layout it belongs to. A node that *is* the current
+ * root reports the root's rect — which is what makes the drill-down and
+ * drill-up maps symmetric.
  */
 function footprintOf(node: VNode, root: VNode | null): Footprint | null {
   if (!root) return null;
@@ -1011,15 +1013,57 @@ function rehomeStage(): void {
 }
 
 /**
- * Stage extent for a scope. Buildings are capped at 60 world units tall, so a
- * file or module scope laid out at the full org extent would read as a pancake;
- * shrink the stage to the number of buildings it actually contains.
+ * Where a drilled-in scope is laid out: the rect its root was first placed at,
+ * so the section keeps its footprint and heights while everything around it
+ * goes away. Only a scope too small to place its children is enlarged, about
+ * its own centre, to a legibility floor.
  */
-function stageSize(root: VNode): number {
-  if (!root.synth) return CITY_SIZE;
-  let buildings = 0;
-  walk(root, (n) => { if (n.type === 'file') buildings += (n.modules || []).length; });
-  return Math.min(Math.max(Math.sqrt(Math.max(buildings, 1)) * 55, 60), CITY_SIZE);
+function scopeHome(root: VNode): Home {
+  // Synthetic roots stand for a real node: the file, or the lone leaf they wrap.
+  const base = root.synth === 'fileScope' && root.srcFile ? root.srcFile
+    : root.synth === 'wrap' ? root.children?.[0] ?? root
+    : root;
+  const floor = stageFloor(root);
+  const home = base.home ?? unplacedHome(base, floor);
+  const r = home.rect;
+  // Measured on the short side: a skinny home (54 x 2) clears a floor set on
+  // its long one and still has no room for layoutNode to place anything in.
+  const s = floor / Math.min(r.w, r.h);
+  if (s <= 1) return home;
+  return {
+    ...home,
+    rect: { x: r.x + (r.w - r.w * s) / 2, z: r.z + (r.h - r.h * s) / 2, w: r.w * s, h: r.h * s },
+  };
+}
+
+/**
+ * Home for a node that was never laid out — a module scope made on the spot, or
+ * a file stripped for being too small: a floor-sized square on the nearest
+ * placed ancestor's centre, rather than the whole city.
+ */
+function unplacedHome(base: VNode, side: number): Home {
+  let anc = base.parent ?? null;
+  while (anc && !anc.rect) anc = anc.parent ?? null;
+  const r = anc?.rect;
+  const cx = r ? r.x + r.w / 2 : 0;
+  const cz = r ? r.z + r.h / 2 : 0;
+  return {
+    rect: { x: cx - side / 2, z: cz - side / 2, w: side, h: side },
+    depth: (anc?.depth ?? -1) + 1,
+    tier: (anc?.tier ?? -1) + 1,
+  };
+}
+
+/**
+ * Smallest extent a scope is allowed: real folders need room to place each
+ * file; inside a file the module buildings are up to 60 units tall, so the
+ * plate is sized to the number of buildings rather than the file's tiny plot.
+ */
+function stageFloor(root: VNode): number {
+  let n = 0;
+  walk(root, (nd) => { if (nd.type === 'file') n += root.synth ? (nd.modules || []).length : 1; });
+  const floor = root.synth ? Math.sqrt(Math.max(n, 1)) * 55 : Math.sqrt(n) * 6;
+  return Math.min(Math.max(floor, root.synth ? 60 : 48), CITY_SIZE);
 }
 
 function indexScope(): void {
@@ -3320,10 +3364,10 @@ function terraceSignNodes(): VNode[] {
   if (!root || root.synth) return [];
   const base = groupingRoot() ?? root;
   for (const a of base.children || []) {
-    if (a.type !== 'folder' || !a.rect) continue;
+    if (a.type !== 'folder' || !canSign(a)) continue;
     signedNodes.add(a);
     for (const b of a.children || []) {
-      if (b.type === 'folder' && b.rect) signedNodes.add(b);
+      if (b.type === 'folder' && canSign(b)) signedNodes.add(b);
     }
   }
   return [...signedNodes];
@@ -3342,11 +3386,15 @@ function parentLabelKey(node: VNode): string | null {
 function updateLabelCandidates(): void {
   if (!city || !scope.root) return;
   const list: LabelCandidate[] = [];
+  // The cull is relative to the stage: at true scale a file plate inside a
+  // folder isolate stays as small as it was in the whole city.
+  const stageRect = scope.root.rect;
+  const minSize = stageRect ? Math.max(stageRect.w, stageRect.h) / 300 : 3;
 
   walk(scope.root, (n) => {
     if (!n.rect) return;
     const size = Math.min(n.rect.w, n.rect.h);
-    if (size < 3) return;
+    if (size < minSize) return;
     const isFile = n.type === 'file';
     if (!isFile && n === scope.root && scope.root.depth === 0 && (n.children || []).length === 1) return;
     if (!isFile && signedNodes.has(n)) return; // its name is on the terrace wall

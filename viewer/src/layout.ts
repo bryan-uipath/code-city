@@ -4,7 +4,7 @@
  * World space convention: the city lies on the XZ plane, Y is up.
  * A rect is { x, z, w, h } with (x, z) the min corner.
  */
-import type { Plot, Rect, VNode, VMod } from './vtree.js';
+import type { Home, Plot, Rect, VNode, VMod } from './vtree.js';
 
 /** Anything the treemap can place: only its relative weight matters. */
 export interface Weighted {
@@ -32,11 +32,14 @@ export interface Cell extends Rect {
  *
  * @param root       tree root (folder node)
  * @param opts.size  world extent of the root plate (square), default 900
+ * @param opts.at    place the root at this rect/depth/tier instead (a drilled-in
+ *                   scope keeps the footprint it had, so nothing rescales)
  * @returns the same root
  */
-export function layoutCity(root: VNode, opts: { size?: number } = {}): VNode {
+export function layoutCity(root: VNode, opts: { size?: number; at?: Home } = {}): VNode {
   const size = opts.size ?? 900;
-  layoutNode(root, { x: -size / 2, z: -size / 2, w: size, h: size }, 0, 0);
+  const at = opts.at ?? { rect: { x: -size / 2, z: -size / 2, w: size, h: size }, depth: 0, tier: 0 };
+  layoutNode(root, at.rect, at.depth, at.tier);
   return root;
 }
 
@@ -139,6 +142,9 @@ function layoutNode(node: VNode, rect: Rect, depth: number, tier: number): void 
   node.rect = rect;
   node.depth = depth;
   node.tier = tier;
+  // First placement wins: the top-level layout runs first, so a real node's
+  // home is its spot in the whole city.
+  if (!node.home) node.home = { rect, depth, tier };
   // Pass-through levels share a tier, so nudge each depth by a hair: without it
   // a repo -> packages wrapper would be exactly coplanar with its child.
   node.top = plateTop(tier, node.type === 'file') + depth * PLATE_EPSILON;
