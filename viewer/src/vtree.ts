@@ -34,6 +34,9 @@ export interface Rect {
 /** One module's slot inside its file plate. */
 export interface Plot extends Rect {
   mod: VMod;
+  /** Inside a file: slab base above the plate and its linear height (lines × unit). */
+  y0?: number;
+  height?: number;
 }
 
 /** Where a node was first placed. A scope root is re-laid out here, so drilling in never rescales it. */
