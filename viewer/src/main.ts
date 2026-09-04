@@ -3,8 +3,10 @@
  *
  * The city is always rendered for ONE focus scope: double-clicking pushes into
  * a node (folder → file → module → member), which disposes the current city and
- * re-lays out that subtree at full extent. Everything else — PR markers, arcs,
- * labels, scaffolding — is rebuilt against the same scope.
+ * re-lays out that subtree at the footprint it already had — the surroundings
+ * go away and the camera closes in; the section itself never rescales.
+ * Everything else — PR markers, arcs, labels, scaffolding — is rebuilt against
+ * the same scope.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -47,7 +49,7 @@ import {
   type FileFilter, type LevelFilter, type StrataBand, type BandSource, type StrataUpdate, LEVEL_HEIGHT,
 } from './strata.js';
 import { createSkyline, type Skyline, type SkyHit } from './skyline.js';
-import { asVNode, type AnyKind, type VMod, type VNode } from './vtree.js';
+import { asVNode, type AnyKind, type Home, type VMod, type VNode } from './vtree.js';
 
 const MAX_ARCS = 150;
 const DAY = 86400;
@@ -927,11 +929,8 @@ function rebuildScene(
 
   const root = makeScopeRoot(focus);
   scope.root = root;
-  // The scale must be in force BEFORE the layout runs: every world constant the
-  // layout and the geometry builders read goes through it.
-  const extent = scopeExtent(root);
-  setWorldScale(extent.scale);
-  layoutCity(root, { size: extent.size });
+  setWorldScale(1);
+  layoutCity(root, root === state.root ? { size: CITY_SIZE } : { at: scopeHome(root) });
   city = buildCity(root);
   stage.add(city.group);
 
@@ -1034,9 +1033,9 @@ function disposeGhost(): void {
 }
 
 /**
- * Where a node sits in the layout it belongs to. The scope root always occupies
- * the whole stage, so a node that *is* the current root reports the stage rect —
- * which is what makes the drill-down and drill-up maps symmetric.
+ * Where a node sits in the layout it belongs to. A node that *is* the current
+ * root reports the root's rect — which is what makes the drill-down and
+ * drill-up maps symmetric.
  */
 function footprintOf(node: VNode, root: VNode | null): Footprint | null {
   if (!root) return null;
@@ -1124,39 +1123,38 @@ function rehomeStage(): void {
 }
 
 /**
- * Stage extent for a scope, in CITY-WIDE units.
- *
- * Footprint area per LOC is a property of the city, not of the level you happen
- * to be looking at: a scope holding a tenth of the repo's lines gets a tenth of
- * the root plate's AREA (so a linear factor of √0.1), and the camera moves in to
- * fill the screen with it. Heights are absolute for the same reason, so a file's
- * stack has the same silhouette isolated as it does from the org overview.
- *
- * A scope small enough to fall under `minScopeSize` is the one exception: it is
- * scaled up UNIFORMLY, footprints and heights by the same linear factor, so it
- * becomes legible without any of its proportions changing. That factor is the
- * layout's world scale (`setWorldScale`), and every world constant — street
- * widths, terrace lifts, building heights, strata slabs — runs through it.
+ * Where a drilled-in scope is laid out: the rect its root was first placed at,
+ * so the section keeps its footprint and heights while everything around it
+ * goes away. Only a scope too small to place its children is enlarged, about
+ * its own centre, to a legibility floor.
  */
-function scopeExtent(root: VNode): { size: number; scale: number } {
-  const total = Math.max(state.root?.loc ?? 0, 1);
-  const share = Math.min(Math.max(root.loc, 1) / total, 1);
-  const trueSize = CITY_SIZE * Math.sqrt(share);
-  // Clamp to the layout's scale ceiling and derive the size back from it: a
-  // plate laid out beyond what setWorldScale accepts would break uniformity
-  // (footprints inflated, heights not).
-  const scale = Math.min(Math.max(trueSize, minScopeSize()) / trueSize, 60);
-  return { size: trueSize * scale, scale };
+function scopeHome(root: VNode): Home {
+  // Synthetic roots stand for a real node: the file, or the lone leaf they wrap.
+  const base = root.synth === 'fileScope' && root.srcFile ? root.srcFile
+    : root.synth === 'wrap' ? root.children?.[0] ?? root
+    : root;
+  const home = base.home
+    ?? (base.rect ? { rect: base.rect, depth: base.depth ?? 0, tier: base.tier ?? 0 } : null)
+    ?? { rect: { x: -CITY_SIZE / 2, z: -CITY_SIZE / 2, w: CITY_SIZE, h: CITY_SIZE }, depth: 0, tier: 0 };
+  const r = home.rect;
+  const s = stageFloor(root) / Math.max(r.w, r.h);
+  if (s <= 1) return home;
+  return {
+    ...home,
+    rect: { x: r.x + (r.w - r.w * s) / 2, z: r.z + (r.h - r.h * s) / 2, w: r.w * s, h: r.h * s },
+  };
 }
 
 /**
- * The legibility floor. Absolute in world units, but never more than a third of
- * the whole city: in a small repo the root plate is itself only a few hundred
- * units across, and a floor at the city's own size would flatten every level
- * back onto the full square — the exact behaviour this replaces.
+ * Smallest extent a scope is allowed: real folders need room to place each
+ * file; inside a file the module buildings are up to 60 units tall, so the
+ * plate is sized to the number of buildings rather than the file's tiny plot.
  */
-function minScopeSize(): number {
-  return Math.min(MIN_SCOPE_SIZE, CITY_SIZE * 0.33);
+function stageFloor(root: VNode): number {
+  let n = 0;
+  walk(root, (nd) => { if (nd.type === 'file') n += root.synth ? (nd.modules || []).length : 1; });
+  const floor = root.synth ? Math.sqrt(Math.max(n, 1)) * 55 : Math.sqrt(n) * 6;
+  return Math.min(Math.max(floor, root.synth ? 60 : 48), CITY_SIZE);
 }
 
 function indexScope(): void {
