@@ -22,7 +22,7 @@ import { KIND_COLORS, PALETTE } from './city.js';
 import { buildingHeight } from './layout.js';
 import {
   resolveRange, walkStack,
-  type LevelFilter, type StackLevel, type StrataCommit, type StrataIndex,
+  type FileFilter, type LevelFilter, type StackLevel, type StrataCommit, type StrataIndex,
   type StrataPaint, type StrataRecord,
 } from './strata.js';
 import type { VNode } from './vtree.js';
@@ -143,7 +143,7 @@ export interface Skyline {
    */
   rebuild(root: VNode | null, index: StrataIndex | null, bounds: { min: number; max: number } | null): void;
   /** Refill the levels for a range + filter. The 2D twin of `StrataBuild.update`. */
-  update(range: { start: number; cursor: number | null }, keep?: LevelFilter | null): void;
+  update(range: { start: number; cursor: number | null }, keep?: LevelFilter | null, keepFile?: FileFilter | null): void;
   /** Repaint the existing levels; omit `paint` to reapply the current one. */
   repaint(paint?: StrataPaint): void;
   /**
@@ -168,12 +168,14 @@ export function createSkyline(opts: SkylineOptions): Skyline {
 
   let visible = false;
   let bars: SkyBar[] = [];
+  let allBars: SkyBar[] = [];
   let scopeRoot: VNode | null = null;
   let strataIndex: StrataIndex | null = null;
   let streamBounds: { min: number; max: number } | null = null;
   /** The last range/filter, so a repaint or resize can refill without them. */
   let lastRange: { start: number; cursor: number | null } = { start: -Infinity, cursor: null };
   let lastKeep: LevelFilter | null = null;
+  let lastKeepFile: FileFilter | null = null;
   let paint: StrataPaint | null = null;
   /** Are we standing on commit stacks, or on module massing? */
   let stacked = false;
@@ -259,6 +261,7 @@ export function createSkyline(opts: SkylineOptions): Skyline {
       const byHash = new Map<string, StrataCommit>();
       (function walk(n: VNode): void {
         if (n.type === 'file') {
+          if (lastKeepFile && !lastKeepFile(n)) return;
           const path = opts.realPath(n);
           for (const c of (path ? index.get(path) : null) ?? []) {
             const seen = byHash.get(c.h);
@@ -305,13 +308,17 @@ export function createSkyline(opts: SkylineOptions): Skyline {
           solidFill: null,
         }))
       : [];
+    allBars = bars;
     hover = null;
     scrollX = 0;
   }
 
-  function update(range: { start: number; cursor: number | null }, keep?: LevelFilter | null): void {
+  function update(range: { start: number; cursor: number | null }, keep?: LevelFilter | null, keepFile?: FileFilter | null): void {
     lastRange = range;
     lastKeep = keep ?? null;
+    if (lastKeepFile !== (keepFile ?? null)) histories.clear();
+    lastKeepFile = keepFile ?? null;
+    bars = keepFile ? allBars.filter((bar) => keepFile(bar.node)) : allBars;
     const index = strataIndex;
     const bounds = streamBounds;
 
@@ -872,7 +879,7 @@ export function createSkyline(opts: SkylineOptions): Skyline {
     // bar even is. Re-choose it, then refill.
     if (scopeRoot) {
       rebuild(scopeRoot, strataIndex, streamBounds);
-      update(lastRange, lastKeep);
+      update(lastRange, lastKeep, lastKeepFile);
     } else {
       layout();
     }
