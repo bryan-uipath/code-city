@@ -145,9 +145,8 @@ export interface DiffFile {
   reshaped: number;
   /** Added lines nothing in the diff explains — the logic to actually read. */
   new: number;
-  /** Deleted lines, and the subset git matched as moved away. */
+  /** Deleted lines. */
   deleted: number;
-  movedOut: number;
 }
 
 // ---------------------------------------------------------------------------

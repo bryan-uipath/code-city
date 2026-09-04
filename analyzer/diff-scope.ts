@@ -25,9 +25,15 @@ import { execFileSync } from 'node:child_process';
 import type { DiffFile, DiffScope } from '../shared/types.js';
 
 /** zebra palette: newMoved 1;36 / alt 1;33, oldMoved 1;35 / alt 1;34. */
-const MOVED_NEW = new Set(['1;36', '36;1', '1;33', '33;1']);
-const MOVED_OLD = new Set(['1;35', '35;1', '1;34', '34;1']);
+const MOVED_NEW = new Set(['1;36', '1;33']);
+const MOVED_OLD = new Set(['1;35', '1;34']);
+const GIT_PINS = [
+  // Non-ASCII paths must not arrive octal-escaped in the +++/--- headers, and a
+  // signed commit must not prepend gpg lines to `show -s --format=%ct`.
+  '-c', 'core.quotePath=false', '-c', 'log.showSignature=false',
+];
 const COLOR_PINS = [
+  ...GIT_PINS,
   '-c', 'color.diff.new=green', '-c', 'color.diff.old=red',
   '-c', 'color.diff.newMoved=bold cyan', '-c', 'color.diff.newMovedAlternative=bold yellow',
   '-c', 'color.diff.oldMoved=bold magenta', '-c', 'color.diff.oldMovedAlternative=bold blue',
@@ -107,8 +113,7 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
       else looseAdds.push({ path, tokens });
     } else {
       bucket.deleted++;
-      if (MOVED_OLD.has(color)) bucket.movedOut++;
-      else looseDels.push({ path, tokens });
+      if (!MOVED_OLD.has(color)) looseDels.push({ path, tokens });
     }
   }
 
@@ -190,7 +195,7 @@ function tokenize(text: string): Set<string> {
 
 function bucketsFor(files: Map<string, Buckets>, path: string): Buckets {
   let b = files.get(path);
-  if (!b) files.set(path, (b = { verbatim: 0, reshaped: 0, new: 0, deleted: 0, movedOut: 0 }));
+  if (!b) files.set(path, (b = { verbatim: 0, reshaped: 0, new: 0, deleted: 0 }));
   return b;
 }
 
@@ -220,7 +225,7 @@ function resolveRange(
 
 /** Committer timestamp, unix seconds — same clock as the commit stream's `ts`. */
 function commitTs(repoRoot: string, hash: string): number {
-  return Number(git(repoRoot, ['show', '-s', '--format=%ct', hash]).trim()) || 0;
+  return Number(git(repoRoot, [...GIT_PINS, 'show', '-s', '--format=%ct', hash]).trim()) || 0;
 }
 
 function revParse(repoRoot: string, rev: string): string {

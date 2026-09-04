@@ -170,7 +170,10 @@ function parseArgs(argv: string[]): Options {
     if (a === undefined) continue;
     if (a === '--roots') roots = (argv[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     else if (a === '--out') out = argv[++i] ?? out;
-    else if (a === '--diff') diff = argv[++i] ?? null;
+    else if (a === '--diff') {
+      diff = argv[++i] ?? '';
+      if (!diff || diff.startsWith('--')) throw new Error('--diff needs a range: --diff <base>..<head>');
+    }
     else if (a === '--no-prs') prs = false;
     else if (!a.startsWith('--')) repoPath = a;
     else throw new Error(`unknown flag: ${a}`);
