@@ -124,9 +124,9 @@ reads as a log.
 
 ## Authoring tips
 
-**Use `isolate` for "look inside this".** It drills into the target and
-re-lays out that subtree to fill the stage — a file becomes a district of its
-functions, a class becomes a district of its methods. It is the right treatment
+**Use `isolate` for "look inside this".** It drills into the target, which keeps
+the footprint it had in the city — a file becomes a district of its functions, a
+class becomes a district of its methods. It is the right treatment
 when the step is about the *internals* of one place, and the wrong one when the
 point is where that place sits.
 
