@@ -14,6 +14,7 @@ The thesis: as more code is written by agents, we read less of it line-by-line. 
 
 - **City hierarchy** — repo → folder districts → file blocks → module buildings → (double-click) class members. Folder plates are **stepped terraces**: top-level districts sit visibly raised, and every nesting level is a shallower step on top of its parent. Double-click isolates and breaks down any level; Esc / breadcrumb chains the camera back out through each level it passes.
 - **Strata massing** — at city level a file *is* its history: one slab per commit, so height = commits and footprint = the file's size at that commit. Every mode stands on the same stacks and only repaints them, so switching overlays never reshuffles the skyline. A second timeline handle sets the range, so dragging it back grows the city out of its own history. Module buildings return the moment you isolate a file.
+- **2D skyline** — the same city as a flat elevation: one bar per node in tree order, width = loc, height = the commit stack, with folder names bracketed under their runs. It is a second renderer over the same model, not a second model — it consumes whatever paint the 3D city is wearing, so every overlay, the timeline range, the legend filter and the search highlight work in it unchanged, and switching views keeps your scope and selection. At repo scale the bars aggregate to the deepest level that still fits, so drilling down *is* the zoom.
 - **Overlays** — structure (the file's dominant module kind; the kinds themselves resolve inside a file), churn (12-month commit heat), fix hotspots (bug-fix commits), recent focus (touched in the last 30 days — the default), and strata (each level colored by its conventional-commit type: feat cyan, fix red, refactor violet…).
 - **Strata filter** — in Strata the legend's type swatches are the controls: click `fix` and every fix level stays vivid while the rest ghost to silhouettes; hit **only** and the stacks recompress to their fix commits alone, turning the skyline into pure bug-fix mass. Multi-select accumulates, it composes with the timeline range ("only fix strata in Q1"), the stats and inspector report the filtered counts, and Esc clears the filter before it backs out a level. "Fix hotspots" is now a shortcut into it.
 - **People / PR layer** — open PRs as author avatars on light beams over the files they touch. Beam thickness scales with diff size, altitude with activity recency. Draft PRs render as orange scaffolding; files touched by 2+ PRs get red conflict cages.
@@ -53,6 +54,7 @@ Requirements: Node 20+, git; optionally the [`gh` CLI](https://cli.github.com/) 
 | Double-click | Isolate + break down that node |
 | Esc / breadcrumb | Clear an active strata filter, else back up a level |
 | Legend swatch (Strata) | Filter the stacks to that commit type; **only** collapses them to it |
+| City / Skyline | Switch renderer — 3D city or 2D elevation (or `?view=skyline`) |
 | `⌘P` / `⌘F` | Find a file or module / find in file contents |
 | `C` | Copy the selected node's repo-relative path |
 | `←` / `→` / `Esc` | Tour only: previous step / next step / exit the tour |
@@ -84,7 +86,7 @@ to have an agent write one for a PR — see [docs/tours.md](docs/tours.md).
 ## How it works
 
 - `analyzer/analyze.ts` — walks the repo, extracts top-level modules (and class/interface/enum members) with the TypeScript compiler API, mines churn/fix/recency and the full commit stream (with per-file `[adds, dels]`) from a single `git log --numstat` pass — cached incrementally, so re-runs only read `<cachedHead>..HEAD` — resolves import edges (including monorepo workspace packages), and pulls open PRs via `gh`. Output is one JSON file; schema in [DESIGN.md](DESIGN.md).
-- `viewer/` — Vite + Three.js. Squarified-treemap layout, instanced meshes (tested at ~17k buildings / 60fps+), UnrealBloom postprocessing, and a small dev-server API that serves source snippets and diffs from the analyzed repo (path-contained, localhost only).
+- `viewer/` — Vite + Three.js. Squarified-treemap layout, instanced meshes (tested at ~17k buildings / 60fps+), UnrealBloom postprocessing, and a small dev-server API that serves source snippets and diffs from the analyzed repo (path-contained, localhost only). The 2D skyline is a canvas renderer over the same walked stacks and the same paints (tested at 4.2k files / 2.6k commits).
 
 ## Development
 
@@ -107,4 +109,4 @@ See [DESIGN.md](DESIGN.md) for the full metaphor, data contract, and style guide
 
 ## Status
 
-Early prototype, moving fast. Recently landed: the interactive Strata filter (legend swatches as a live query, with collapse-to-matching massing), a hierarchy-legibility pass (terraces, side-wall district signage, clickable labels, chained camera flights), the Working-tree layer, Strata as the shared massing across every mode, an incremental analyzer cache, guided tours, and markdown support. Current focus: core UX and fit & finish. Future: a VS Code extension over the existing `CityHost` seam (see DESIGN.md).
+Early prototype, moving fast. Recently landed: the 2D skyline view, the interactive Strata filter (legend swatches as a live query, with collapse-to-matching massing), a hierarchy-legibility pass (terraces, side-wall district signage, clickable labels, chained camera flights), the Working-tree layer, Strata as the shared massing across every mode, an incremental analyzer cache, guided tours, and markdown support. Current focus: core UX and fit & finish. Future: a VS Code extension over the existing `CityHost` seam (see DESIGN.md).

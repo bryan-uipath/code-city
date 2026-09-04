@@ -131,6 +131,89 @@ export type StrataPaint = (record: StrataRecord, age: number, target: THREE.Colo
  */
 export type LevelFilter = (commit: StrataCommit) => boolean;
 
+/**
+ * A timeline range with its derived quantities, resolved once per update: the
+ * two handles as timestamps plus the width the age gradient normalizes over.
+ */
+export interface StrataRange {
+  /** Oldest commit rendered. */
+  startTs: number;
+  /** The base snapshot — LOC is rewound past everything newer than this. */
+  cursorTs: number;
+  /** `cursorTs - startTs`, floored at 1, for the age gradient. */
+  span: number;
+}
+
+/** One walked level: the commit it stands for, its footprint, and its age. */
+export interface StackLevel {
+  commit: StrataCommit;
+  /** Footprint at that commit as a fraction of the base snapshot's, [MIN_AREA, 1]. */
+  ratio: number;
+  /** Normalized age inside the range: 0 = oldest, 1 = newest. */
+  age: number;
+}
+
+/** Resolve the raw handle positions against the stream's full span. */
+export function resolveRange(
+  range: { start: number; cursor: number | null },
+  bounds: { min: number; max: number }
+): StrataRange {
+  const cursorTs = range.cursor ?? Infinity;
+  const startTs = Number.isFinite(range.start) ? range.start : bounds.min;
+  // Age is normalized over the visible range, so the gradient always uses its
+  // whole width no matter how far the handles have been dragged together.
+  const span = Math.max((Number.isFinite(cursorTs) ? cursorTs : bounds.max) - startTs, 1);
+  return { startTs, cursorTs, span };
+}
+
+/**
+ * Walk one file's history into the levels of its stack, newest first.
+ *
+ * This is the whole stacking rule, with no geometry attached: the current
+ * handle is a snapshot, so today's LOC is rewound past every commit newer than
+ * it, and the commits inside the range then stack upward off that base. A
+ * filtered-out commit still moved the file, so it still moves the LOC walk — it
+ * just gets no level, and the stack closes over the gap.
+ *
+ * Pure, and deliberately free of THREE: the 3D slabs and the 2D skyline are two
+ * renderings of this one list.
+ */
+export function walkStack(
+  history: StrataCommit[],
+  todayLoc: number,
+  range: StrataRange,
+  keep?: LevelFilter | null,
+  max: number = MAX_LEVELS
+): StackLevel[] {
+  const out: StackLevel[] = [];
+  if (max <= 0) return out;
+
+  let loc = Math.max(todayLoc, 1);
+  let first = 0;
+  while (first < history.length) {
+    const c = history[first];
+    if (!c || c.ts <= range.cursorTs) break;
+    loc = Math.max(loc - (c.adds - c.dels), 1);
+    first++;
+  }
+  const baseLoc = loc;
+
+  for (let i = first; i < history.length && out.length < max; i++) {
+    const c = history[i];
+    if (!c) break;
+    if (c.ts < range.startTs) break; // history is newest-first: the rest is older
+    if (!keep || keep(c)) {
+      out.push({
+        commit: c,
+        ratio: Math.min(Math.max(loc / baseLoc, MIN_AREA), 1),
+        age: Math.min(Math.max((c.ts - range.startTs) / range.span, 0), 1),
+      });
+    }
+    loc = Math.max(loc - (c.adds - c.dels), 1);
+  }
+  return out;
+}
+
 export interface StrataBuild {
   group: THREE.Group;
   mesh: THREE.InstancedMesh;
@@ -265,11 +348,7 @@ export function createStrata(
   return build;
 
   function update(range: { start: number; cursor: number | null }, keep?: LevelFilter | null): void {
-    const cursorTs = range.cursor ?? Infinity;
-    const startTs = Number.isFinite(range.start) ? range.start : bounds.min;
-    // Age is normalized over the visible range, so the gradient always uses its
-    // whole width no matter how far the handles have been dragged together.
-    const span = Math.max((Number.isFinite(cursorTs) ? cursorTs : bounds.max) - startTs, 1);
+    const resolved = resolveRange(range, bounds);
     records.length = 0;
     ages.length = 0;
     heights.clear();
@@ -285,38 +364,18 @@ export function createStrata(
       const cx = rect.x + rect.w / 2;
       const cz = rect.z + rect.h / 2;
 
-      // The current handle is a snapshot: rewind today's LOC past every commit
-      // that happened after it, then stack the commits inside the range.
-      let loc = Math.max(node.loc, 1);
-      let first = 0;
-      while (first < history.length) {
-        const c = history[first];
-        if (!c || c.ts <= cursorTs) break;
-        loc = Math.max(loc - (c.adds - c.dels), 1);
-        first++;
-      }
-      const baseLoc = loc;
-
+      const levels = walkStack(history, node.loc, resolved, keep, Math.min(MAX_LEVELS, capacity - n));
       let level = 0;
-      for (let i = first; i < history.length && level < MAX_LEVELS && n < capacity; i++) {
-        const c = history[i];
-        if (!c) break;
-        if (c.ts < startTs) break; // history is newest-first: everything past here is older
-        // A filtered-out commit still moved the file, so it still moves the LOC
-        // walk — it just gets no slab, and the stack closes over the gap.
-        if (!keep || keep(c)) {
-          const ratio = Math.min(Math.max(loc / baseLoc, MIN_AREA), 1);
-          const k = Math.sqrt(ratio); // ratio is an area, the slab scales by its side
-          pos.set(cx, top + level * levelHeight, cz);
-          scale.set(baseW * k, slabHeight, baseH * k);
-          m.compose(pos, q, scale);
-          mesh.setMatrixAt(n, m);
-          ages[n] = Math.min(Math.max((c.ts - startTs) / span, 0), 1);
-          records[n] = { file: node, commit: c, level };
-          n++;
-          level++;
-        }
-        loc = Math.max(loc - (c.adds - c.dels), 1);
+      for (const lv of levels) {
+        const k = Math.sqrt(lv.ratio); // ratio is an area, the slab scales by its side
+        pos.set(cx, top + level * levelHeight, cz);
+        scale.set(baseW * k, slabHeight, baseH * k);
+        m.compose(pos, q, scale);
+        mesh.setMatrixAt(n, m);
+        ages[n] = lv.age;
+        records[n] = { file: node, commit: lv.commit, level };
+        n++;
+        level++;
       }
 
       if (level === 0 && n < capacity) {
