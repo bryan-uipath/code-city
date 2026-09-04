@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import type { Pr } from '../../shared/types.js';
 import { buildingHeight, plateTop, plateThickness, PLATE_THICKNESS } from './layout.js';
-import type { AnyKind, VMod, VNode } from './vtree.js';
+import type { AnyKind, Plot, VMod, VNode } from './vtree.js';
 
 // ---------------------------------------------------------------------------
 // Palette
@@ -97,6 +97,8 @@ export interface ModuleRecord {
   file: VNode;
   mod: VMod;
   baseColor: THREE.Color;
+  /** World Y of the building's base (a stacked member sits above its plate). */
+  base: number;
   height: number;
   center: THREE.Vector3;
 }
@@ -131,11 +133,13 @@ export function buildCity(root: VNode): CityBuild {
     if (node.type === 'file') files.push(node);
     else folders.push(node);
   });
+  // Members share their module's footprint as stacked slabs; no plate each.
+  const plated = files.filter((f) => f.synth !== 'member');
 
   const folderPart = buildPlates(folders, false);
-  const filePart = buildPlates(files, true);
+  const filePart = buildPlates(plated, true);
   const buildings = buildBuildings(files);
-  const outlines = buildOutlines(folders, files);
+  const outlines = buildOutlines(folders, plated);
 
   if (folderPart.mesh) group.add(folderPart.mesh);
   if (filePart.mesh) group.add(filePart.mesh);
@@ -248,7 +252,7 @@ function buildingMaterial(kind: AnyKind): THREE.MeshStandardMaterial {
 
 function buildBuildings(files: VNode[]): { meshes: THREE.InstancedMesh[]; records: ModuleRecord[] } {
   // Bucket module plots by kind so each kind gets one InstancedMesh.
-  const buckets = new Map<AnyKind, Array<{ file: VNode; plot: { mod: VMod; x: number; z: number; w: number; h: number } }>>();
+  const buckets = new Map<AnyKind, Array<{ file: VNode; plot: Plot }>>();
   for (const kind of ALL_KINDS) buckets.set(kind, []);
 
   for (const file of files) {
@@ -285,8 +289,8 @@ function buildBuildings(files: VNode[]): { meshes: THREE.InstancedMesh[]; record
       const entry = entries[i];
       if (!entry) continue;
       const { file, plot } = entry;
-      const top = file.top ?? 0;
-      const h = buildingHeight(plot.mod.loc) * (KIND_HEIGHT_SCALE[kind] ?? 1);
+      const top = (file.top ?? 0) + (plot.y0 ?? 0);
+      const h = plot.height ?? buildingHeight(plot.mod.loc) * (KIND_HEIGHT_SCALE[kind] ?? 1);
       pos.set(plot.x + plot.w / 2, top, plot.z + plot.h / 2);
       scale.set(Math.max(plot.w, 0.25), h, Math.max(plot.h, 0.25));
       m.compose(pos, q, scale);
@@ -300,6 +304,7 @@ function buildBuildings(files: VNode[]): { meshes: THREE.InstancedMesh[]; record
         file,
         mod: plot.mod,
         baseColor: color.clone(),
+        base: top,
         height: h,
         center: new THREE.Vector3(pos.x, top + h / 2, pos.z),
       };
@@ -1018,7 +1023,7 @@ export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.ora
 function tallestBuilding(fileNode: VNode): number {
   let max = 0;
   if (fileNode.plots) {
-    for (const p of fileNode.plots) max = Math.max(max, buildingHeight(p.mod.loc));
+    for (const p of fileNode.plots) max = Math.max(max, (p.y0 ?? 0) + (p.height ?? buildingHeight(p.mod.loc)));
   }
   return max;
 }

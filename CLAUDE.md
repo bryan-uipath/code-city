@@ -60,7 +60,9 @@ the current city and re-lays out that subtree at the footprint it already had
 (scale-true: surroundings go away, the camera closes in; a legibility floor
 only enlarges scopes too small to place their children)
 (folder → file → module → member), with synthetic nodes for the file/module
-levels. PR markers, arcs, labels and scaffolding are all rebuilt against the
+levels. Inside a file the layout is reading order (rows of modules in source
+order filling the file's footprint, member stacks, code holograms on hover) —
+see DESIGN.md "File interior". PR markers, arcs, labels and scaffolding are all rebuilt against the
 scope — nothing may assume the real tree root.
 
 **Strata is the shared massing, not a mode.** When a commit stream exists and
