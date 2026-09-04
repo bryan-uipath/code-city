@@ -311,7 +311,8 @@ move, a switch across that boundary can also be animated (`rise`).
   All of that is one `StrataPaint` swapped through `recolor()`; the search /
   tour highlight and the working-tree amber are two more paints in the same seam.
 - **Module buildings appear when you isolate a file** (or a module). That is
-  where kind, size and nesting resolve, and it is unchanged.
+  where kind, size and nesting resolve — in reading order, kind-painted in every
+  mode (see "File interior").
 - The **range handle is therefore live in every mode** — it changes the massing,
   and the massing is shared. It hides only inside a file/module isolate, where
   there are no stacks.
@@ -475,16 +476,16 @@ scale (`k = 1`), and the old city fading out over the identical new one is
 invisible.
 
 - **Legibility floor.** A scope too small to place its children is enlarged
-  about its own centre to `stageFloor`: real folders to `max(48, √files·6)`,
-  file / module scopes (buildings up to 60 tall on a plot a few units wide) to
-  the previous `max(60, √buildings·55)`. Measured on the home's *short* side, so
-  a skinny plot is widened too. Only then does the homing scale animate. The one
-  deliberate exception to scale-true; expected to shrink once the file interior
-  is redesigned.
+  about its own centre to `stageFloor`: real folders to `max(48, √files·6)`, a
+  file scope to `max(60, √modules·11)`, a lone module or member stack to 24.
+  Measured on the home's *short* side, so a skinny plot is widened too. Only
+  then does the homing scale animate. The one deliberate exception to
+  scale-true.
 - **What you lose.** Files too small to earn a plate at true scale stay
   unplaced when their folder is isolated (they had none at the overview
-  either); `revealPath` still drills to them. A tall district's towers can
-  overrun the top of the framing, which fits the footprint only.
+  either); `revealPath` still drills to them. At folder scope a tall district's
+  towers can overrun the top of the framing, which fits the footprint only;
+  inside a file the framing adds the tallest module to the extent.
 - Synthetic roots stand for a real node: a file scope is laid out at the file's
   home, a `wrap` at its lone leaf's, so isolating a module or a file keeps the
   building where it stood. A node that never got a home — a module scope made on
@@ -504,7 +505,8 @@ quarter of the average so a one-line `const` still gets a plot you can hover;
 a light trailing row is folded into the one before it rather than becoming a
 sliver. Heights are linear in lines (`lineUnit`): the file's longest module
 stands about 0.4 of the plate's side (capped at 60), read off the file's scope
-layout so a lone module isolated on its own keeps its height. A class,
+layout so a lone module isolated on its own keeps its height; a module-less file
+normalises on its own `loc`, since its one stub module *is* the whole file. A class,
 interface or enum is a **stack**: its members as slabs piled in source order,
 each as tall as its lines, on a pedestal plate; members get no plate of their
 own — they share the module's footprint (`Plot.y0` / `Plot.height`, stacked in
@@ -521,8 +523,10 @@ frame, drawn over the city (no depth test) up and to the right of the
 building's top, scaled with distance so it stays readable. Selecting a module
 pins its card; hover borrows the slot and hands it back. Inside a file a module
 is usually hit through its synthetic leaf (its pedestal), so `moduleRecOf`
-resolves the building from either kind of target. Source comes through
-`CityHost.getSource` and is cached per span; without a host (static export)
+resolves the building from either kind of target, and only from the current
+city's records — a target's `rec` outlives the build that made it. Source comes
+through `CityHost.getSource` — just the lines the card shows, the `+N lines`
+tail coming from `loc` — and is cached per span; without a host (static export)
 the card is the header alone. The card replaces the name pill for modules —
 the name is in its header.
 

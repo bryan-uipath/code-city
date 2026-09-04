@@ -18,7 +18,6 @@ export interface CodePanel {
   mesh: THREE.Mesh;
   /** Canvas height over width: world height = world width × aspect. */
   aspect: number;
-  dispose(): void;
 }
 
 /**
@@ -26,13 +25,14 @@ export interface CodePanel {
  * @param sub     right-aligned span note (`L12–48`)
  * @param lines   source lines, or null when the host cannot serve source
  * @param first   line number of `lines[0]`
+ * @param more    lines past the snippet, for the "+N lines" tail
  */
-export function makeCodePanel(header: string, sub: string, lines: string[] | null, first: number): CodePanel {
+export function makeCodePanel(header: string, sub: string, lines: string[] | null, first: number, more = 0): CodePanel {
   const rows = lines ? Math.min(lines.length, SNIPPET_LINES) : 0;
-  const more = lines ? lines.length - rows : 0;
   const canvas = document.createElement('canvas');
   canvas.width = PX_W;
-  canvas.height = HEAD_PX + (rows ? PAD_PX * 2 + rows * LINE_PX + (more > 0 ? LINE_PX : 0) : 0);
+  const tail = rows > 0 && more > 0;
+  canvas.height = HEAD_PX + (rows ? PAD_PX * 2 + rows * LINE_PX + (tail ? LINE_PX : 0) : 0);
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('2d context unavailable');
   const W = canvas.width;
@@ -62,7 +62,7 @@ export function makeCodePanel(header: string, sub: string, lines: string[] | nul
     ctx.fillStyle = tone(text);
     ctx.fillText(text, GUTTER_PX, y);
   }
-  if (more > 0) {
+  if (tail) {
     ctx.textAlign = 'left';
     ctx.fillStyle = 'rgba(120, 160, 190, 0.6)';
     ctx.fillText(`… +${more} lines`, GUTTER_PX, HEAD_PX + PAD_PX + rows * LINE_PX + LINE_PX / 2);
@@ -83,21 +83,12 @@ export function makeCodePanel(header: string, sub: string, lines: string[] | nul
     transparent: true,
     depthWrite: false,
     depthTest: false, // a readout is drawn over the city, never inside it
-    side: THREE.DoubleSide,
     toneMapped: false,
   });
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
   mesh.renderOrder = 18;
   mesh.frustumCulled = false;
-  return {
-    mesh,
-    aspect: H / W,
-    dispose() {
-      mesh.geometry.dispose();
-      mat.dispose();
-      tex.dispose();
-    },
-  };
+  return { mesh, aspect: H / W };
 }
 
 /** Screen-align the panel: its text stays upright and square to the viewer. */

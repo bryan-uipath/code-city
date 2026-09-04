@@ -1020,7 +1020,8 @@ export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.ora
   return lines;
 }
 
-function tallestBuilding(fileNode: VNode): number {
+/** Top of the tallest building on a file's plate, relative to the plate. */
+export function tallestBuilding(fileNode: VNode): number {
   let max = 0;
   if (fileNode.plots) {
     for (const p of fileNode.plots) max = Math.max(max, (p.y0 ?? 0) + (p.height ?? buildingHeight(p.mod.loc)));

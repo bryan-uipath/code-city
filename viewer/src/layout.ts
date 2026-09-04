@@ -74,15 +74,17 @@ export function treemap(items: Weighted[], rect: Rect): Cell[] {
 }
 
 /**
- * World units per source line inside a file: its longest module stands about
- * half the plate's side (capped at 60), everything else linear in lines. Read
- * off the file's scope layout, so a lone module isolated on its own keeps the
- * height it had inside the file.
+ * World units per source line inside a file: its longest module stands at two
+ * fifths of the plate's side (capped at 60), everything else linear in lines.
+ * Read off the file's scope layout, so a lone module isolated on its own keeps
+ * the height it had inside the file.
  */
-export function lineUnit(file: VNode): number {
+function lineUnit(file: VNode): number {
   const r = file._scope?.rect;
   const side = r ? Math.max(r.w, r.h) : 60;
-  let max = 40;
+  // A module-less file is one stub module standing for the whole file; without
+  // it in the max, a 400-line NOTES.md normalises to nothing and grows a needle.
+  let max = file.modules?.length ? 40 : Math.max(40, file.loc || 0);
   for (const m of file.modules ?? []) max = Math.max(max, m.loc || 0);
   return Math.min(60, side * 0.4) / max;
 }
@@ -225,7 +227,7 @@ function layoutFileScope(root: VNode, rect: Rect, depth: number, tier: number): 
   if (!kids.length) return;
   const street = Math.min(streetWidth(depth), rect.w * 0.14, rect.h * 0.14);
   const inner = { x: rect.x + street, z: rect.z + street, w: Math.max(rect.w - street * 2, MIN_RECT), h: Math.max(rect.h - street * 2, MIN_RECT) };
-  const gutter = Math.min(Math.max(street * 0.5, 1), 6, 0.6);
+  const gutter = 0.6;
   const unit = lineUnit(root.srcFile ?? root);
   // A one-line const still needs a plot you can hover: floor each share at a
   // quarter of the average, so area ∝ lines only above that.
@@ -247,7 +249,7 @@ function layoutFileScope(root: VNode, rect: Rect, depth: number, tier: number): 
 }
 
 /** Reading-order flow: rows of items, each row justified to the rect's width. */
-export function flowLayout(items: Weighted[], rect: Rect): Cell[] {
+function flowLayout(items: Weighted[], rect: Rect): Cell[] {
   const out: Cell[] = [];
   if (!items.length || rect.w <= 0 || rect.h <= 0) return out;
   const weights = items.map((it) => Math.max(Number(it.weight) || 0, 0));

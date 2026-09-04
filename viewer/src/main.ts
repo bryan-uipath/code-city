@@ -20,9 +20,9 @@ import { HttpHost } from '../../shared/host.js';
 import type {
   CityData, DiffFile, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr, SourceResponse,
 } from '../../shared/types.js';
-import { layoutCity, plateTop, buildingHeight } from './layout.js';
+import { layoutCity, plateTop } from './layout.js';
 import {
-  buildCity, buildEnvironment, disposeObject,
+  buildCity, buildEnvironment, disposeObject, tallestBuilding,
   buildCouplingArcs, buildArcFlow, buildPrMarker, buildScaffolding, makeSelectionBox, frameNodeBox, makeLabelSprite,
   heatColor, walk, KIND_COLORS, KIND_ORDER, MEMBER_ORDER, PALETTE,
   type Arc, type ArcFlow, type CityBuild, type ModuleRecord,
@@ -46,7 +46,7 @@ import {
   type FileFilter, type LevelFilter, type StrataBand, type BandSource, type StrataUpdate, LEVEL_HEIGHT,
 } from './strata.js';
 import { asVNode, type AnyKind, type Home, type VMod, type VNode } from './vtree.js';
-import { facePanel, makeCodePanel, type CodePanel } from './hologram.js';
+import { facePanel, makeCodePanel, SNIPPET_LINES, type CodePanel } from './hologram.js';
 
 const MAX_ARCS = 150;
 const DAY = 86400;
@@ -2741,7 +2741,7 @@ function hasRect(node: VNode | undefined): node is VNode {
 /** Tallest building top in the current scope (plots only — the stacks are folder-scope). */
 function scopeTallest(): number {
   let m = 0;
-  for (const f of scope.fileNodes) for (const p of f.plots || []) m = Math.max(m, (p.y0 ?? 0) + (p.height ?? buildingHeight(p.mod.loc)));
+  for (const f of scope.fileNodes) m = Math.max(m, tallestBuilding(f));
   return m;
 }
 
@@ -2758,8 +2758,7 @@ function uniq<T>(arr: T[]): T[] {
 }
 
 function tallest(node: VNode): number {
-  let m = 0;
-  for (const p of node.plots || []) m = Math.max(m, buildingHeight(p.mod.loc));
+  let m = tallestBuilding(node);
   if (node.children) for (const c of node.children) m = Math.max(m, tallest(c));
   return m;
 }
@@ -3793,9 +3792,10 @@ function snippetTarget(): ModuleRecord | null {
  * through its synthetic leaf node (its pedestal plate), not the instance.
  */
 function moduleRecOf(t: Target | null): ModuleRecord | null {
-  if (!t || t.type === 'pr') return null;
-  if (t.rec) return t.rec;
-  if (!t.node.synth || !t.node.mod || !city) return null;
+  if (!t || t.type === 'pr' || !city) return null;
+  // A rec outlives its city on hover/selection state: only this build's is real.
+  if (t.rec) return city.moduleRecords.includes(t.rec) ? t.rec : null;
+  if (!t.node.synth || !t.node.mod) return null;
   return city.moduleRecords.find((r) => r.file === t.node) ?? null;
 }
 
@@ -3809,13 +3809,13 @@ function refreshSnippet(): void {
   const file = realFileOf(rec.file);
   const mod = rec.mod;
   const line = mod.line;
-  snippet.anchor.set(rec.center.x, rec.base + rec.height, rec.center.z).add(stageHome);
   const header = `${mod.kind} ${mod.name}`;
   const loc = Math.max(mod.loc, 1);
   const sub = line ? `L${line}–${line + loc - 1}` : `${loc} lines`;
+  const more = Math.max(loc - SNIPPET_LINES, 0);
   const mount = (lines: string[] | null, first: number): void => {
     if (token !== snippet.token) return; // superseded while loading
-    const panel = makeCodePanel(header, sub, lines, first);
+    const panel = makeCodePanel(header, sub, lines, first, more);
     scene.add(panel.mesh);
     snippet.panel = panel;
     updateSnippet();
@@ -3825,10 +3825,12 @@ function refreshSnippet(): void {
     mount(null, 1);
     return;
   }
-  const key = `${file.path}:${line}:${loc}`;
+  // Only what the card shows: the "+N lines" tail is known from loc.
+  const end = Math.min(line + SNIPPET_LINES - 1, line + loc - 1);
+  const key = `${file.path}:${line}:${end}`;
   let pending = sourceCache.get(key);
   if (!pending) {
-    pending = host.getSource(file.path, line, line + loc - 1);
+    pending = host.getSource(file.path, line, end);
     sourceCache.set(key, pending);
   }
   pending.then((src) => mount(src ? src.lines : null, src ? src.start : line));
@@ -3839,7 +3841,7 @@ function clearSnippet(): void {
   snippet.rec = null;
   if (!snippet.panel) return;
   scene.remove(snippet.panel.mesh);
-  snippet.panel.dispose();
+  disposeObject(snippet.panel.mesh);
   snippet.panel = null;
 }
 
@@ -3849,7 +3851,10 @@ function clearSnippet(): void {
  */
 function updateSnippet(): void {
   const p = snippet.panel;
-  if (!p) return;
+  const rec = snippet.rec;
+  if (!p || !rec) return;
+  // Re-derived rather than baked: a rebuild re-homes the stage under the card.
+  snippet.anchor.set(rec.center.x, rec.base + rec.height, rec.center.z).add(stageHome);
   const dist = camera.position.distanceTo(snippet.anchor);
   const w = Math.min(Math.max(dist * 0.2, 6), 40);
   const h = w * p.aspect;
