@@ -273,7 +273,7 @@ Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippe
 ## Interaction v2
 
 - **No cursor tooltip.** A persistent right sidebar shows hover info (top section, live) and pinned selection detail (on click): stats, PRs, recent commits for that path, and code — module source snippet + latest diff via the dev API. When the focused/selected node is file-level or deeper, the sidebar expands to a wide code pane showing the actual source (module span, or whole file capped).
-- **Double-click = isolate.** Rendering the focused node's subtree ONLY, re-laid out to fill the stage: folder → its city; file → its modules as blocks; module → its `children` (methods etc.) as buildings. Breadcrumb/Esc rebuilds the parent scene. This is the hierarchy: org → repo → folder → file → module → member.
+- **Double-click = isolate.** Rendering the focused node's subtree ONLY, at the footprint it already had (see *Scale-true drill-down*): folder → its city; file → its modules as blocks; module → its `children` (methods etc.) as buildings. Breadcrumb/Esc rebuilds the parent scene. This is the hierarchy: org → repo → folder → file → module → member.
 - **Map-style labels**: labels chosen dynamically from what's in view (projected size within a readable band, capped count, fade in/out) — district names give way to file names give way to building names as you zoom, like a map engine.
 - **PR markers** connect visibly: avatar at centroid, thin beams down to EACH affected file plate + glowing ground ring per file. PRs gain `additions`/`deletions` in the data; the central beam's radius and glow scale with log(additions+deletions) so big PRs read as big pillars of light.
 - **Directional arcs**: animated flow (moving dashes/pulses) from importer → imported.
@@ -463,6 +463,32 @@ it. The fixes, layered:
   (only panel titles stay uppercase). Same rule in 3D — folder names are
   uppercase city signage, file and module names are identifiers.
 
+## Scale-true drill-down (implemented)
+
+The core assets never move or rescale; only what is around them goes away and
+the camera closes in. Each node records the rect, depth and tier it was first
+laid out at (`VNode.home`, assigned by the top-level layout), and a drilled-in
+scope is laid out *at that home* (`layoutCity(root, { at })`) rather than
+re-mapped to the full stage. The layout is deterministic, so every child lands
+exactly where it stood in the parent city: heights, footprints, streets and
+terrace altitude read the same at every level, the transition has nothing to
+scale (`k = 1`), and the old city fading out over the identical new one is
+invisible.
+
+- **Legibility floor.** A scope too small to place its children is enlarged
+  about its own centre to `stageFloor`: real folders to `max(48, √files·6)`,
+  file / module scopes (buildings up to 60 tall on a plot a few units wide) to
+  the previous `max(60, √buildings·55)`. Only then does the homing scale
+  animate. The one deliberate exception to scale-true; expected to shrink once
+  the file interior is redesigned.
+- **What you lose.** Files too small to earn a plate at true scale stay
+  unplaced when their folder is isolated (they had none at the overview
+  either); `revealPath` still drills to them. A tall district's towers can
+  overrun the top of the framing, which fits the footprint only.
+- Synthetic roots stand for a real node: a file scope is laid out at the file's
+  home, a `wrap` at its lone leaf's, so isolating a module or a file keeps the
+  building where it stood.
+
 ## Camera motion
 
 Every zoom in the city is one gesture: one move of the camera, one unfold of the
@@ -474,7 +500,8 @@ scene, one continuous world underneath both. The rules, in the order they matter
   (`startTransition`): the new layout is translated so the anchor — the node
   being drilled into, or the child being backed out of — lands exactly on the
   world position it already occupied, and only the SCALE animates from there.
-  The section grows (or folds) about the spot it already stood on. Everything
+  With scale-true drill-down that scale is 1 unless the legibility floor kicks
+  in, so the section normally just stands where it stood. Everything
   derived from a layout rect carries `stageHome`: framings, labels, callouts;
   the selection boxes just ride the stage. Once everything settles, `rehomeStage`
   shifts stage, camera and orbit target back to the origin together — invisible,
