@@ -41,7 +41,7 @@ import {
   buildStrataIndex, createStrata, commitTypePaint, commitTypeKey,
   COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
   type StrataBuild, type StrataCommit, type StrataIndex, type StrataPaint, type StrataRecord,
-  type FileFilter, type LevelFilter, type StrataBand, type BandSource, LEVEL_HEIGHT,
+  type FileFilter, type LevelFilter, type StrataBand, type BandSource, type StrataUpdate, LEVEL_HEIGHT,
 } from './strata.js';
 import { asVNode, type AnyKind, type VMod, type VNode } from './vtree.js';
 
@@ -1088,6 +1088,9 @@ function buildHud(): void {
       strata.filter.types.add('fix');
       const wasCollapse = strata.filter.collapse;
       strata.filter.collapse = false;
+      // This leaves Provenance too, so the band massing has to go with it or
+      // the strata paint lands on band geometry.
+      if (bandMassing() !== strata.bands) startRise();
       applyOverlay();
       applyStrataFilter(wasCollapse);
       showNotice('Fix hotspots · strata filtered to fix commits — "only" compresses to fix mass');
@@ -1236,12 +1239,15 @@ function renderLegend(): void {
       rows.push(`<div class="row"><span>filter · ${[...strata.filter.types].join(' ')}</span></div>`);
       rows.push(filterControlsHtml());
     }
-    // Same rule for the diff scope: it changes the shared massing, so whichever
-    // mode you are in has to say so and be able to undo it.
+  }
+  // Same rule for the diff scope: it changes the shared massing, so every mode
+  // can arm it and undo it — except Provenance, where untouched files are
+  // already plinths and the collapse says nothing.
+  if (stacked && state.mode !== 'prov' && diffAvailable()) {
     if (diffScope.collapse) {
-      rows.push(`<div class="row"><span>diff scope · ${fmt(diffScope.byPath.size)} files only</span></div>`);
-      rows.push(diffScopeControlHtml());
+      rows.push(`<div class="row"><span>diff scope · ${fmt(diffScope.files)} files only</span></div>`);
     }
+    rows.push(diffScopeControlHtml());
   }
   // The pinned range changes which commits exist, so it says so in every mode.
   if (stacked && timeline.rangeIsDiff) {
@@ -1474,22 +1480,22 @@ function updateStrata(): void {
 }
 
 /**
- * The refill itself. Split out because the rise animation runs it per frame and
- * must not allocate: `update()` reapplies the stored paint on its own.
+ * The refill itself. Split out because the rise animation runs it per frame:
+ * the range and options are scratch, and `update()` reapplies the stored paint.
  */
+const _refillRange: { start: number; cursor: number | null } = { start: 0, cursor: null };
+const _refillOpts: StrataUpdate = { keep: null, keepFile: null, bands: false, rise: 1 };
 function refillStrata(build: StrataBuild): void {
   const bands = bandMassing();
-  build.update(
-    { start: timeline.start, cursor: state.timeCursor },
-    {
-      // The commit-type filter and the diff collapse are queries on commits;
-      // the band massing has none, so both go inert rather than stay armed.
-      keep: bands ? null : collapsePredicate(),
-      keepFile: bands ? null : diffFilePredicate(),
-      bands,
-      rise: RISE_EASE(strata.riseT),
-    }
-  );
+  _refillRange.start = timeline.start;
+  _refillRange.cursor = state.timeCursor;
+  // The commit-type filter and the diff collapse are queries on commits; the
+  // band massing has none, so both go inert rather than stay armed.
+  _refillOpts.keep = bands ? null : collapsePredicate();
+  _refillOpts.keepFile = bands ? null : diffFilePredicate();
+  _refillOpts.bands = bands;
+  _refillOpts.rise = RISE_EASE(strata.riseT);
+  build.update(_refillRange, _refillOpts);
   strata.bands = bands;
 }
 
@@ -1998,19 +2004,19 @@ function tourHighlight(targets: TourTarget[] | null): void {
  * entirely for a skyline of nothing but the diff.
  */
 const diffScope: {
-  base: string;
-  head: string;
   byPath: Map<string, DiffFile>;
   /** Files, plus folder subtotals so a district can answer for its subtree. */
   byNode: Map<VNode, DiffSum>;
   total: DiffSum;
+  /** Files of the diff the city actually holds — the one count the HUD shows. */
+  files: number;
   /** "only": non-diff files are not built at all. */
   collapse: boolean;
 } = {
-  base: '', head: '',
   byPath: new Map(),
   byNode: new Map(),
   total: { verbatim: 0, reshaped: 0, new: 0, deleted: 0 },
+  files: 0,
   collapse: false,
 };
 
@@ -2026,23 +2032,25 @@ function initDiffScope(data: CityData): void {
   const diff = data.diff;
   const root = state.root;
   if (!diff || !Array.isArray(diff.files) || !root) return;
-  diffScope.base = String(diff.base || '');
-  diffScope.head = String(diff.head || '');
+  const base = String(diff.base || '');
+  const head = String(diff.head || '');
   for (const f of diff.files) {
     if (f && typeof f.path === 'string') diffScope.byPath.set(f.path, f);
   }
   sumDiffScope(root);
   if (!diffAvailable()) return; // the diff touched nothing the city knows about
+  // Every count the HUD shows is city-only: the repo-wide list holds files no
+  // scope of this city can ever draw.
+  for (const node of diffScope.byNode.keys()) if (node.type === 'file') diffScope.files++;
   initProvMassing();
   dom.provBtn.style.display = '';
   // The chip is the always-on tell that this city is a diff, whatever the mode.
   const t = diffScope.total;
-  const files = [...diffScope.byNode.keys()].filter((n) => n.type === 'file').length;
   const ref = (name: string | undefined, hash: string): string => (name && name !== hash ? name : hash.slice(0, 7));
   dom.diffChip.innerHTML =
-    `&#x2442; <b>${escapeHtml(ref(diff.baseRef, diffScope.base))}</b> &rarr; ` +
-    `<b>${escapeHtml(ref(diff.headRef, diffScope.head))}</b>` +
-    ` &middot; ${fmt(files)} files &middot; +${fmt(t.verbatim + t.reshaped + t.new)}`;
+    `&#x2442; <b>${escapeHtml(ref(diff.baseRef, base))}</b> &rarr; ` +
+    `<b>${escapeHtml(ref(diff.headRef, head))}</b>` +
+    ` &middot; ${fmt(diffScope.files)} files &middot; +${fmt(t.verbatim + t.reshaped + t.new)}`;
   dom.diffChip.style.display = '';
   dom.diffChip.addEventListener('click', () => dom.provBtn.click());
 }
@@ -2084,9 +2092,9 @@ function diffSum(node: VNode): DiffSum | null {
 }
 
 /** The massing predicate — non-null only while the scope is collapsed. */
+const diffFileKeep: FileFilter = (node) => diffSum(node) !== null;
 function diffFilePredicate(): FileFilter | null {
-  if (!diffScope.collapse || !diffAvailable()) return null;
-  return (node) => diffSum(node) !== null;
+  return diffScope.collapse && diffAvailable() ? diffFileKeep : null;
 }
 
 /**
@@ -2107,7 +2115,6 @@ function snapRangeToDiff(): void {
 function releaseDiffRange(): void {
   if (!timeline.rangeIsDiff) return;
   timeline.setRange(timeline.min, null);
-  strata.dirty = true;
 }
 
 /** Toggle "only the diff". Like the strata collapse, this is an `update()`. */
@@ -2202,7 +2209,10 @@ let provUnit = 0.05;
 /** Fix the lines→height scale once the diff is indexed. */
 function initProvMassing(): void {
   let max = 1;
-  for (const f of diffScope.byPath.values()) max = Math.max(max, f.verbatim + f.reshaped + f.new);
+  // City files only: a lockfile outside every root would flatten the whole diff.
+  for (const [node, s] of diffScope.byNode) {
+    if (node.type === 'file') max = Math.max(max, s.verbatim + s.reshaped + s.new);
+  }
   provUnit = (PROV_TALLEST_LEVELS * LEVEL_HEIGHT) / max;
 }
 
@@ -3475,8 +3485,9 @@ function bindEvents(): void {
         toggleDiffCollapse();
         return;
       }
-      // A range pinned to the diff is the same kind of query, one step further.
-      if (timeline.rangeIsDiff) {
+      // A range pinned to the diff is the same kind of query, one step further —
+      // but only where it is visible: inside an isolate Escape pops the scope.
+      if (timeline.rangeIsDiff && strataActive()) {
         releaseDiffRange();
         renderLegend();
         return;
@@ -3746,7 +3757,6 @@ function animate(): void {
       strata.acc += dt;
       if (strata.acc > 0.1) {
         strata.acc = 0;
-        strata.dirty = false;
         updateStrata();
       }
     }

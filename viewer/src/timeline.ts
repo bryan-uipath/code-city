@@ -142,6 +142,7 @@ export function createTimeline(
   });
   dom.play.addEventListener('click', () => {
     tl.playing = !tl.playing;
+    if (tl.playing) tl.rangeIsDiff = false; // playback walks the cursor off the diff head
     dom.play.classList.toggle('on', tl.playing);
     dom.play.innerHTML = tl.playing ? '&#10073;&#10073;' : '&#9654;';
     if (tl.playing && tl.cursor === null) setCursor(tl.min);
@@ -235,11 +236,15 @@ export function createTimeline(
   /** Pin the range to an arbitrary span — the diff chip's snap. */
   function setRange(start: number, cursor: number | null, asDiff = false): void {
     if (!tl.enabled) return;
-    const ceiling = (cursor ?? tl.max) - DAY;
-    tl.start = Math.min(Math.max(start, tl.min), Math.max(ceiling, tl.min));
+    // No one-day floor here (unlike a hand drag): a sub-day PR must pin exactly,
+    // and the ceiling is the *clamped* cursor or the start could pass it.
+    const at = cursor === null ? null : Math.min(Math.max(cursor, tl.min), tl.max);
+    tl.start = Math.min(Math.max(start, tl.min), at ?? tl.max);
     dom.startRange.value = String(Math.round(((tl.start - tl.min) / (tl.max - tl.min)) * 1000));
-    tl.rangeIsDiff = asDiff;
-    setCursor(cursor === null ? null : Math.min(Math.max(cursor, tl.min), tl.max));
+    // A clamped endpoint means the stream does not hold the whole span, so the
+    // range is no longer the diff and must not say it is.
+    tl.rangeIsDiff = asDiff && tl.start === start && at === cursor;
+    setCursor(at);
     handlers.onRange?.(tl.start);
   }
 
@@ -362,7 +367,7 @@ function diffMarks(data: CityData): DiffMarks | null {
 
 /** Commits-per-week histogram painted into the slider track. */
 function drawSparkline(
-  canvas: HTMLCanvasElement, commits: TimelineCommit[], min: number, max: number, diff: DiffMarks | null = null
+  canvas: HTMLCanvasElement, commits: TimelineCommit[], min: number, max: number, diff: DiffMarks | null
 ): void {
   const w = Math.max(canvas.clientWidth, 1);
   const h = Math.max(canvas.clientHeight, 1);
@@ -380,11 +385,15 @@ function drawSparkline(
   // portion of each bar, so the delta reads inside the whole history.
   const mine = new Float64Array(weeks);
   const own = diff && diff.own.size > 0 ? diff.own : null;
+  let mineTotal = 0;
   for (const c of commits) {
     const i = Math.min(Math.floor((c.ts - min) / WEEK), weeks - 1);
     bins[i] = (bins[i] ?? 0) + 1;
-    if (own && own.has(c.h.slice(0, 7))) mine[i] = (mine[i] ?? 0) + 1;
+    if (own && own.has(c.h.slice(0, 7))) { mine[i] = (mine[i] ?? 0) + 1; mineTotal++; }
   }
+  // Muting the history is only worth it when the branch is in it to be the
+  // signal — analyzed off another checkout, none of its commits are.
+  const muted = mineTotal > 0;
   let peak = 1;
   for (const v of bins) peak = Math.max(peak, v);
 
@@ -395,7 +404,7 @@ function drawSparkline(
     const t = v / peak;
     const x = i * bw;
     const bwi = Math.max(bw - 0.5, 0.5);
-    ctx.fillStyle = own
+    ctx.fillStyle = muted
       ? `rgba(120, 150, 170, ${0.18 + t * 0.22})` // muted: the branch is the signal
       : `rgba(${34 + t * 200}, ${211 - t * 90}, ${238 - t * 180}, ${0.28 + t * 0.6})`;
     ctx.fillRect(x, h - bh, bwi, bh);

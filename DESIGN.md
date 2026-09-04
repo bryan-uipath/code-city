@@ -40,8 +40,9 @@ zoom-out), like unfolding a hologram.
 - Double-click → camera fly-to + focus that node (breadcrumb updates). Esc / breadcrumb → back up.
 - Mode buttons (HUD): Structure · Churn · Fix hotspots · Recent focus · Strata ·
   Provenance (only with a `--diff` dataset).
-  **The mode never changes the massing** — at folder scope they all stand on the
-  same strata stacks and only repaint them (see "Strata as the shared massing").
+  **Footprint and position never change across modes; height may** — at folder
+  scope they all stand on the same strata stacks and only repaint them, except
+  Provenance, which brings its own heights (see "Strata as the shared massing").
   Toggles: Coupling arcs · People/PRs.
 - Legend swatches (Strata): click a commit type to filter the stacks; "only"
   compresses them to the matching commits (see "Strata filter"). Provenance gets
@@ -103,7 +104,7 @@ Emitted only for `npm run analyze -- <repo> --diff <base>..<head>`
   "files": [                                     // most added lines first
     { "path": "packages/a/x.ts",
       "verbatim": 392, "reshaped": 12, "new": 45, // added lines, by origin
-      "deleted": 0, "movedOut": 0 }               // removed lines, and the moved subset
+      "deleted": 0 }                              // removed lines
   ],
   "commits": ["4503fbb…", "0d8f748…"],           // git rev-list base..head, FULL hashes
   "baseTs": 1788186324, "headTs": 1788278773      // committer times, same unit as Commit.ts
