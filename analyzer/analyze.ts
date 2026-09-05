@@ -10,7 +10,7 @@ import ts from 'typescript';
 import type {
   CityData, Commit, Edge, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleMember, ModuleKind, ModuleRef, Pr, TreeNode,
 } from '../shared/types.js';
-import { collectDiffScope } from './diff-scope.js';
+import { collectDiffScope, pathOf } from './diff-scope.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -826,6 +826,7 @@ interface GhPr {
   updatedAt?: string;
   additions?: number;
   deletions?: number;
+  headRefOid?: string;
 }
 
 async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]> {
@@ -835,7 +836,7 @@ async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]>
   try {
     const { stdout } = await execFileAsync('gh',
       ['pr', 'list', '--repo', repoSlug, '--state', 'open', '--limit', '50',
-        '--json', 'number,title,author,isDraft,updatedAt,additions,deletions'],
+        '--json', 'number,title,author,isDraft,updatedAt,additions,deletions,headRefOid'],
       { maxBuffer: 32 * 1024 * 1024 });
     const parsed: unknown = JSON.parse(stdout);
     list = Array.isArray(parsed) ? parsed : [];
@@ -853,6 +854,16 @@ async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]>
       files = stdout.split('\n').map((s) => s.trim()).filter((s) => fileSet.has(s));
     } catch { return null; }
     if (!files.length) return null;
+    // Hunk line ranges place the PR inside a file; optional, so a failed diff
+    // fetch only loses precision.
+    let spans: Record<string, [number, number][]> | undefined;
+    try {
+      const { stdout } = await execFileAsync('gh', ['pr', 'diff', String(pr.number), '--repo', repoSlug], { maxBuffer: 64 * 1024 * 1024 });
+      // Line numbers are read against the checkout: head-side only when the
+      // checkout already contains the PR head, otherwise the shared base side.
+      const side = await contains(repoRoot, pr.headRefOid) ? 'head' : 'base';
+      spans = hunkSpans(stdout, fileSet, side);
+    } catch { /* keep file-level placement */ }
     const login = pr.author?.login || 'unknown';
     return {
       number: pr.number,
@@ -864,9 +875,54 @@ async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]>
       additions: pr.additions ?? 0,
       deletions: pr.deletions ?? 0,
       files,
+      ...(spans && Object.keys(spans).length ? { spans } : {}),
     };
   });
   return results.filter(isPr);
+}
+
+/** Is `oid` reachable from the checked-out HEAD? */
+async function contains(repoRoot: string, oid: string | undefined): Promise<boolean> {
+  if (!oid) return false;
+  try {
+    await execFileAsync('git', ['-C', repoRoot, 'merge-base', '--is-ancestor', oid, 'HEAD']);
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * `@@ -a,b +c,d @@` → the hunk line ranges of `side` per tree file. A hunk with
+ * a zero-length side (pure insertion or deletion) becomes `[a, a]`, its anchor.
+ */
+function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'base'): Record<string, [number, number][]> {
+  const out: Record<string, [number, number][]> = {};
+  let file: string | null = null;
+  // `---`/`+++` are headers only before the first hunk of a file; added content
+  // can start the same way.
+  let inHeader = false;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) { inHeader = true; file = null; continue; }
+    if (inHeader) {
+      if (line.startsWith('--- ')) file ??= treeFile(pathOf(line.slice(4), 'a/'), fileSet);
+      else if (line.startsWith('+++ ')) file = treeFile(pathOf(line.slice(4), 'b/'), fileSet) ?? file;
+      else if (line.startsWith('@@')) inHeader = false;
+      if (inHeader) continue;
+    }
+    if (!file || !line.startsWith('@@')) continue;
+    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!m) continue;
+    const at = side === 'head' ? m[3] : m[1];
+    const span = side === 'head' ? m[4] : m[2];
+    const start = Number(at);
+    const len = span === undefined ? 1 : Number(span);
+    if (!Number.isFinite(start) || !Number.isFinite(len)) continue;
+    (out[file] ??= []).push(len <= 0 ? [start, start] : [start, start + len - 1]);
+  }
+  return out;
+}
+
+function treeFile(p: string | null, fileSet: Set<string>): string | null {
+  return p && fileSet.has(p) ? p : null;
 }
 
 function isPr(pr: Pr | null | undefined): pr is Pr {

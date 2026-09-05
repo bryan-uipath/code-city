@@ -200,7 +200,7 @@ function bucketsFor(files: Map<string, Buckets>, path: string): Buckets {
 }
 
 /** `a/foo.ts` → `foo.ts`; `/dev/null` → null. Quoted paths are unquoted. */
-function pathOf(raw: string, prefix: string): string | null {
+export function pathOf(raw: string, prefix: string): string | null {
   let p = raw.trim();
   if (p === '/dev/null') return null;
   if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
