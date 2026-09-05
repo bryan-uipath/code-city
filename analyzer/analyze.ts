@@ -317,9 +317,16 @@ function siblingRefs(body: ts.Node, names: Set<string>, self: string): ModuleRef
   const visit = (n: ts.Node): void => {
     if (ts.isIdentifier(n) && names.has(n.text) && n.text !== self) {
       const p = n.parent;
-      // `obj.name` and `{ name: v }` name a member, not the module.
-      const member = (p && ts.isPropertyAccessExpression(p) && p.name === n)
-        || (p && ts.isPropertyAssignment(p) && p.name === n);
+      // Naming a member declares/selects it (`obj.name`, `{ name: v }`, `name(): void`);
+      // only a shorthand `{ name }` is a real read of the sibling.
+      const member = !!p && (
+        ts.isPropertyAccessExpression(p) ? p.name === n
+          : ts.isQualifiedName(p) ? p.right === n
+            : ts.isBindingElement(p) ? p.propertyName === n
+              : (ts.isPropertyAssignment(p) || ts.isPropertySignature(p) || ts.isMethodSignature(p)
+                || ts.isMethodDeclaration(p) || ts.isPropertyDeclaration(p) || ts.isEnumMember(p)
+                || ts.isGetAccessorDeclaration(p) || ts.isSetAccessorDeclaration(p)
+                || ts.isJsxAttribute(p)) && p.name === n);
       if (!member) counts.set(n.text, (counts.get(n.text) ?? 0) + 1);
     }
     ts.forEachChild(n, visit);

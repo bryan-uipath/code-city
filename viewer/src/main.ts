@@ -2507,10 +2507,13 @@ function rebuildArcs(): void {
 
   const sel = state.selection && state.selection.type !== 'pr' ? state.selection.node : null;
   const inFile = scope.root?.synth === 'fileScope';
-  const arcs = inFile ? intraFileArcs(sel) : sel ? arcsForNode(sel) : packageArcs();
+  // Only a module carries arcs: a member stands in for its class, the file for none.
+  let selMod = inFile ? sel : null;
+  while (selMod && !(selMod.mod && selMod.synth !== 'member')) selMod = selMod.parent ?? null;
+  const arcs = inFile ? intraFileArcs(selMod) : sel ? arcsForNode(sel) : packageArcs();
   if (!arcs.length) return;
   // Inside a file the web is dense, so only a selection's few arcs go thick.
-  const thick = inFile ? !!sel : !sel;
+  const thick = inFile ? !!selMod : !sel;
   arcMesh = buildCouplingArcs(arcs, { thick, scale: inFile ? 0.35 : CITY_SIZE / 900 });
   if (arcMesh) stage.add(arcMesh);
   arcFlow = buildArcFlow(arcs, { thick });
@@ -2563,12 +2566,12 @@ function arcsForNode(node: VNode): Arc[] {
  * Inside a file: arcs between its top-level modules from `ModuleInfo.refs`
  * (referrer → referenced). With a module selected, only the arcs touching it.
  */
-function intraFileArcs(sel: VNode | null): Arc[] {
+function intraFileArcs(selMod: VNode | null): Arc[] {
   const root = scope.root;
   if (!root || root.synth !== 'fileScope') return [];
   const byName = new Map<string, VNode>();
   for (const n of root.children ?? []) if (n.mod && n.rect) byName.set(n.mod.name, n);
-  const selName = sel?.mod && sel.synth !== 'member' ? sel.mod.name : null;
+  const selName = selMod?.mod?.name ?? null;
   const pairs: Array<{ a: VNode; b: VNode; n: number }> = [];
   for (const a of byName.values()) {
     for (const ref of a.mod?.refs ?? []) {
