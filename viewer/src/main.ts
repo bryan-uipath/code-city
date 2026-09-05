@@ -2735,9 +2735,11 @@ function buildPeopleLayer(): void {
       if (!rect) continue;
       cx += rect.x + rect.w / 2;
       cz += rect.z + rect.h / 2;
-      // A member slab's beam lands on the slab, not the plate under the stack.
-      const plate = plateTop(n.tier ?? n.depth ?? 0, n.type === 'file') + (n.plots?.[0]?.y0 ?? 0);
-      top = Math.max(top, plate + tallest(n));
+      // A member slab's beam lands on the slab, not the plate under the stack;
+      // `tallest` is measured from the plate, so its y0 is already in there.
+      const base = plateTop(n.tier ?? n.depth ?? 0, n.type === 'file');
+      const plate = base + (n.plots?.[0]?.y0 ?? 0);
+      top = Math.max(top, base + tallest(n));
       if (targets.length < 20) targets.push(new THREE.Vector3(rect.x + rect.w / 2, plate, rect.z + rect.h / 2));
     }
 

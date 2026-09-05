@@ -983,8 +983,10 @@ export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.ora
     const z0 = r.z - grow;
     const z1 = r.z + r.h + grow;
     const tier = n.tier ?? n.depth ?? 0;
-    const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1;
-    const y1 = y0 + Math.max(tallestBuilding(n) + 6, 14);
+    // A member slab is caged around itself: its lift off the plate is not height.
+    const lift = n.plots?.[0]?.y0 ?? 0;
+    const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1 + lift;
+    const y1 = y0 + Math.max(tallestBuilding(n) - lift + 6, 14);
 
     const c: Array<[number, number]> = [
       [x0, z0], [x1, z0], [x1, z1], [x0, z1],
