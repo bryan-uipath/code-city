@@ -3817,6 +3817,7 @@ function refreshSnippet(): void {
     if (token !== snippet.token) return; // superseded while loading
     const panel = makeCodePanel(header, sub, lines, first, more);
     scene.add(panel.mesh);
+    scene.add(panel.beam);
     snippet.panel = panel;
     updateSnippet();
   };
@@ -3841,13 +3842,16 @@ function clearSnippet(): void {
   snippet.rec = null;
   if (!snippet.panel) return;
   scene.remove(snippet.panel.mesh);
+  scene.remove(snippet.panel.beam);
   disposeObject(snippet.panel.mesh);
+  disposeObject(snippet.panel.beam);
   snippet.panel = null;
 }
 
 /**
- * Per frame: a screen-aligned card up and to the right of the building's top,
- * sized with distance so it reads the same from anywhere.
+ * Per frame: the card hangs straight above the building, projected up from
+ * its roof by a light cone, screen-aligned and sized with distance so it
+ * reads the same from anywhere.
  */
 function updateSnippet(): void {
   const p = snippet.panel;
@@ -3856,14 +3860,15 @@ function updateSnippet(): void {
   // Re-derived rather than baked: a rebuild re-homes the stage under the card.
   snippet.anchor.set(rec.center.x, rec.base + rec.height, rec.center.z).add(stageHome);
   const dist = camera.position.distanceTo(snippet.anchor);
-  const w = Math.min(Math.max(dist * 0.2, 6), 40);
+  const w = Math.min(Math.max(dist * 0.34, 10), 70);
   const h = w * p.aspect;
+  const rise = Math.min(Math.max(dist * 0.06, 2), 12);
   p.mesh.scale.set(w, h, 1);
   facePanel(p.mesh, camera);
-  _v3.set(1, 0, 0).applyQuaternion(camera.quaternion); // screen right
-  p.mesh.position.copy(snippet.anchor).addScaledVector(_v3, w / 2 + 1.5);
-  _v3.set(0, 1, 0).applyQuaternion(camera.quaternion); // screen up
-  p.mesh.position.addScaledVector(_v3, h / 2 + 1);
+  p.mesh.position.copy(snippet.anchor);
+  p.mesh.position.y += rise + h / 2;
+  p.beam.scale.set(w * 0.42, rise + h * 0.15, w * 0.42);
+  p.beam.position.copy(snippet.anchor);
 }
 
 /** Hovering an avatar brightens that PR's beams and file rings. */
