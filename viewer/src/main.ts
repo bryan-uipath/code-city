@@ -3451,14 +3451,24 @@ function describe(target: Target | null): Descriptor | null {
     churn: node.churn,
     fixChurn: node.fixChurn,
     recentChurn: state.timeCursor === null ? node.recentChurn : recentValue(node).count,
-    prs: real ? index.prsByFile.get(real.path) || [] : index.prsByNode.get(node) || [],
+    prs: real ? prsTouching(real.path, mod) : index.prsByNode.get(node) || [],
     coupling: state.coupling ? couplingSummary(node) : null,
     codePath: real ? real.path : null,
     span: mod && mod.line !== undefined && Number.isFinite(mod.line)
-      ? { start: Math.max(1, mod.line), end: Math.max(1, mod.line) + Math.max(mod.loc, 1) }
+      ? { start: Math.max(1, mod.line), end: Math.max(1, mod.line) + Math.max(mod.loc, 1) - 1 }
       : null,
     deep: !!real,
   };
+}
+
+/** A file's PRs — or, for a module, only those whose hunks touch its lines (PRs without spans stay). */
+function prsTouching(path: string, mod: VMod | undefined): Pr[] {
+  const list = index.prsByFile.get(path) || [];
+  if (!mod || typeof mod.line !== 'number') return list;
+  return list.filter((pr) => {
+    const spans = pr.spans?.[path];
+    return !spans || touchesSpans(mod, spans);
+  });
 }
 
 // ---------------------------------------------------------------------------

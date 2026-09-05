@@ -55,11 +55,23 @@ const ROUTES = {
     send(res, 200, { path: rel, start, end, total, lines: all.slice(start - 1, end) });
   },
 
-  '/log': async ({ res, root, rel }) => {
-    const { stdout } = await git(root, [
-      'log', '-n', String(LOG_COUNT), '--follow',
-      `--pretty=format:%h${'\t'}%ct${'\t'}%an${'\t'}%s`, '--', rel,
-    ]);
+  '/log': async ({ res, root, rel, params }) => {
+    const pretty = `--pretty=format:%h${'\t'}%ct${'\t'}%an${'\t'}%s`;
+    const start = intParam(params.get('start'), 0);
+    const end = intParam(params.get('end'), 0);
+    // A line range asks which commits touched those lines (`-L`); it cannot
+    // be combined with --follow, and a range past EOF falls back to the file.
+    const forFile = ['log', '-n', String(LOG_COUNT), '--follow', pretty, '--', rel];
+    let stdout;
+    if (start >= 1 && end >= start) {
+      try {
+        ({ stdout } = await git(root, ['log', '-n', String(LOG_COUNT), '--no-patch', `-L${start},${end}:${rel}`, pretty]));
+      } catch {
+        ({ stdout } = await git(root, forFile));
+      }
+    } else {
+      ({ stdout } = await git(root, forFile));
+    }
     const commits = stdout.split('\n').filter(Boolean).map((line) => {
       const [h, ts, a, ...rest] = line.split('\t');
       return { h, ts: Number(ts), a, s: rest.join('\t') };
