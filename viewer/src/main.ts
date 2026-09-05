@@ -423,9 +423,6 @@ const recency: { map: Map<VNode, { count: number; flash: number }>; dirty: boole
  * the overlay/timeline recolor; closing it calls applyOverlay() to restore.
  * `paths` maps a real file path to { w, mods } (mods = null → the whole file).
  */
-/** The selected PR: its files stay lit while the rest of the city goes dark. */
-let prFocus: Pr | null = null;
-
 const searchPaint: {
   on: boolean;
   paths: Map<string, { w: number; mods: Set<string> | null }> | null;
@@ -475,7 +472,7 @@ async function main(): Promise<void> {
   labeler = createLabeler(scene, camera);
   search = createSearch({
     getRoot: () => state.root ?? asVNode(data.tree),
-    highlight: setSearchHighlight,
+    highlight: (spec) => { if (prFocus()) setSelection(null); setSearchHighlight(spec); },
     reveal: revealPath,
     notice: showNotice,
     search: (q) => host.search(q),
@@ -837,7 +834,10 @@ function rebuildScene(
   applyWorktreeLayer();
   applySearchLayerMute();
 
-  if (state.selection && state.selection.type !== 'pr' && !scope.nodes.has(state.selection.node)) {
+  // A selection the new scope has no marker for — a node that fell out, or a PR
+  // none of whose files it touches — would leave the city dark with nothing lit.
+  const sel = state.selection;
+  if (sel && (sel.type === 'pr' ? !prTargets(sel.pr).length : !scope.nodes.has(sel.node))) {
     setSelection(null, { keepSidebar: true });
   }
   refreshSelectionBox();
@@ -1843,10 +1843,10 @@ function setSearchResults(view: SearchResultsPayload | null): void {
 
 /** PR beams/scaffolding would drown a search highlight, so they rest while searching — but not for a PR's own highlight. */
 function applySearchLayerMute(): void {
-  const show = state.people && (!searchPaint.on || prFocus !== null);
+  const show = state.people && (!searchPaint.on || prFocus() !== null);
   peopleGroup.visible = show;
   scaffoldGroup.visible = show;
-  worktreeGroup.visible = state.worktree && !searchPaint.on;
+  worktreeGroup.visible = state.worktree && (!searchPaint.on || prFocus() !== null);
 }
 
 /** Matches glow white-cyan (brighter with weight), everything else goes dark. */
@@ -2028,6 +2028,7 @@ function tourReveal(target: TourTarget): boolean {
  * target itself burns brightest; null hands the city back to its overlay.
  */
 function tourHighlight(targets: TourTarget[] | null): void {
+  if (prFocus()) setSelection(null); // the tour owns the highlight channel
   if (!targets || !targets.length) {
     setSearchHighlight(null);
     return;
@@ -2380,7 +2381,7 @@ function pushWorktreeToSidebar(): void {
 /** Ghost outlines for the files that are not simply "modified in place". */
 function applyWorktreeLayer(): void {
   clearGroup(worktreeGroup);
-  worktreeGroup.visible = state.worktree && !searchPaint.on;
+  worktreeGroup.visible = state.worktree && (!searchPaint.on || prFocus() !== null);
   if (!state.worktree) return;
 
   const untracked: VNode[] = [];
@@ -2847,12 +2848,17 @@ function tallest(node: VNode): number {
 // Selection / focus
 // ---------------------------------------------------------------------------
 
+/** The selected PR: its files stay lit while the rest of the city goes dark. */
+function prFocus(): Pr | null {
+  return state.selection?.type === 'pr' ? state.selection.pr : null;
+}
+
 function setSelection(target: Target | null, opts: { keepSidebar?: boolean } = {}): void {
+  const was = prFocus();
   state.selection = target;
   // Selecting a PR lights its files the way a search does; deselecting restores.
-  const pr = target && target.type === 'pr' ? target.pr : null;
-  if (pr !== prFocus) {
-    prFocus = pr;
+  const pr = prFocus();
+  if (pr !== was) {
     setSearchHighlight(pr ? { paths: new Map(pr.files.map((p) => [p, { w: 1, mods: null }])), cursor: null } : null);
   }
   refreshSelectionBox();
@@ -3625,15 +3631,15 @@ function bindEvents(): void {
       }
     }
     if (e.key === 'Escape') {
+      // A lit PR is the most transient state, so it goes first.
+      if (prFocus()) {
+        setSelection(null);
+        return;
+      }
       // The results list outlives the palette, so Escape retires it before it
       // starts popping the focus stack.
       if (sidebar.hasSearch()) {
         setSearchResults(null);
-        return;
-      }
-      // A lit PR is a selection; Escape drops it before touching the scope.
-      if (prFocus) {
-        setSelection(null);
         return;
       }
       // A filter is a query laid over the current scope, so it comes off before
