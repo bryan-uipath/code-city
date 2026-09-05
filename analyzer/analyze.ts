@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import ts from 'typescript';
 import type {
-  CityData, Commit, Edge, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleMember, ModuleKind, Pr, TreeNode,
+  CityData, Commit, Edge, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleMember, ModuleKind, ModuleRef, Pr, TreeNode,
 } from '../shared/types.js';
 import { collectDiffScope } from './diff-scope.js';
 
@@ -263,6 +263,9 @@ function parseFile(absPath: string, rel: string): ParsedFile {
       return name ? [{ name, kind: 'member' as MemberKind, loc: spanLoc(member), line: startLine(member) }] : [];
     });
 
+  // Each module keeps its declaration node so refs can be mined once all names are known.
+  const bodies: ts.Node[] = [];
+  const add = (mod: ModuleInfo, node: ts.Node): void => { modules.push(mod); bodies.push(node); };
   for (const stmt of sf.statements) {
     if (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) {
       const spec = stmt.moduleSpecifier;
@@ -271,16 +274,16 @@ function parseFile(absPath: string, rel: string): ParsedFile {
     }
     if (ts.isFunctionDeclaration(stmt)) {
       const name = stmt.name?.text;
-      if (name) modules.push({ name, kind: jsx && isUpper(name) ? 'component' : 'function', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt) });
+      if (name) add({ name, kind: jsx && isUpper(name) ? 'component' : 'function', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt) }, stmt);
     } else if (ts.isClassDeclaration(stmt)) {
       const name = stmt.name?.text;
-      if (name) modules.push({ name, kind: 'class', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: classChildren(stmt) });
+      if (name) add({ name, kind: 'class', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: classChildren(stmt) }, stmt);
     } else if (ts.isInterfaceDeclaration(stmt)) {
-      modules.push({ name: stmt.name.text, kind: 'interface', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: memberChildren(stmt) });
+      add({ name: stmt.name.text, kind: 'interface', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: memberChildren(stmt) }, stmt);
     } else if (ts.isTypeAliasDeclaration(stmt)) {
-      modules.push({ name: stmt.name.text, kind: 'type', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt) });
+      add({ name: stmt.name.text, kind: 'type', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt) }, stmt);
     } else if (ts.isEnumDeclaration(stmt)) {
-      modules.push({ name: stmt.name.text, kind: 'enum', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: memberChildren(stmt) });
+      add({ name: stmt.name.text, kind: 'enum', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: memberChildren(stmt) }, stmt);
     } else if (ts.isVariableStatement(stmt)) {
       const exported = isExported(stmt);
       for (const decl of stmt.declarationList.declarations) {
@@ -289,11 +292,47 @@ function parseFile(absPath: string, rel: string): ParsedFile {
         const init = decl.initializer;
         const isFn = !!init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init));
         const kind: ModuleKind = isFn ? (jsx && isUpper(name) ? 'component' : 'function') : 'const';
-        modules.push({ name, kind, loc: spanLoc(decl), line: startLine(decl), exported });
+        add({ name, kind, loc: spanLoc(decl), line: startLine(decl), exported }, decl);
       }
     }
   }
+  const names = new Set(modules.map((m) => m.name));
+  modules.forEach((mod, i) => {
+    const body = bodies[i];
+    if (body) {
+      const refs = siblingRefs(body, names, mod.name);
+      if (refs.length) mod.refs = refs;
+    }
+  });
   return { loc, modules, imports };
+}
+
+/**
+ * Which sibling top-level modules a declaration's body names, by identifier.
+ * Lexical, not resolved: a shadowing local or a same-named property key reads
+ * as a reference too — good enough for arcs, not for refactoring.
+ */
+function siblingRefs(body: ts.Node, names: Set<string>, self: string): ModuleRef[] {
+  const counts = new Map<string, number>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isIdentifier(n) && names.has(n.text) && n.text !== self) {
+      const p = n.parent;
+      // Naming a member declares/selects it (`obj.name`, `{ name: v }`, `name(): void`);
+      // only a shorthand `{ name }` is a real read of the sibling.
+      const member = !!p && (
+        ts.isPropertyAccessExpression(p) ? p.name === n
+          : ts.isQualifiedName(p) ? p.right === n
+            : ts.isBindingElement(p) ? p.propertyName === n
+              : (ts.isPropertyAssignment(p) || ts.isPropertySignature(p) || ts.isMethodSignature(p)
+                || ts.isMethodDeclaration(p) || ts.isPropertyDeclaration(p) || ts.isEnumMember(p)
+                || ts.isGetAccessorDeclaration(p) || ts.isSetAccessorDeclaration(p)
+                || ts.isJsxAttribute(p)) && p.name === n);
+      if (!member) counts.set(n.text, (counts.get(n.text) ?? 0) + 1);
+    }
+    ts.forEachChild(n, visit);
+  };
+  ts.forEachChild(body, visit);
+  return [...counts].map(([name, n]) => ({ name, n }));
 }
 
 /**
