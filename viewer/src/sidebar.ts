@@ -142,6 +142,7 @@ export function createSidebar(
   const secCode = section('code');
   body.append(secInspect, secTour, secSearch, secSelected, secWork, secCode);
 
+  const spanLogs = new Map<string, LogCommit[]>(); // span key -> commits on those lines
   const state: {
     hover: Descriptor | null;
     selected: Descriptor | null;
@@ -326,6 +327,7 @@ export function createSidebar(
       prsHtml(d.prs || []) +
       commitsHtml(d);
     loadFallbackCommits(d);
+    loadSpanCommits(d);
   }
 
   function statsHtml(d: Descriptor): string {
@@ -378,9 +380,11 @@ export function createSidebar(
 
   function commitsHtml(d: Descriptor): string {
     const list = commitsFor(d);
+    const key = spanKey(d);
+    if (key && !spanLogs.has(key)) return `<div class="sb-sub">Commits on these lines…</div>`;
     if (!list.length) return '';
     const t = state.cursor;
-    const title = t === null ? 'Recent commits' : 'Commits near cursor';
+    const title = key ? 'Commits on these lines' : t === null ? 'Recent commits' : 'Commits near cursor';
     const shown = state.allCommits ? list.slice(0, MAX_COMMITS) : list.slice(0, COMMIT_PEEK);
     const rows = shown.map((c) => {
       const near = t !== null && Math.abs(c.ts - t) < 2 * 86400;
@@ -492,9 +496,28 @@ export function createSidebar(
     secWork.innerHTML = head + parts.join('');
   }
 
+  // A module's commits are the ones that touched its lines (`git log -L`),
+  // fetched once per span and remembered across hovers and selections.
+  function spanKey(d: Descriptor): string | null {
+    return d.span && d.codePath && opts.host.available() ? `${d.codePath}:${d.span.start}-${d.span.end}` : null;
+  }
+  function loadSpanCommits(d: Descriptor): void {
+    const key = spanKey(d);
+    if (!key || !d.span || !d.codePath || spanLogs.has(key)) return;
+    opts.host.getLog(d.codePath, d.span.start, d.span.end).then((json) => {
+      spanLogs.set(key, json && Array.isArray(json.commits) ? json.commits : []);
+      if (state.selected === d) {
+        renderSelected();
+        loadCode(d);
+      }
+    });
+  }
+
   function commitsFor(d: Descriptor): LogCommit[] {
     const codePath = d.codePath;
     if (!codePath) return [];
+    const key = spanKey(d);
+    if (key) return spanLogs.get(key) ?? [];
     const tl = opts.timeline;
     if (tl && tl.enabled) {
       return state.cursor === null ? tl.commitsFor(codePath).slice(0, MAX_COMMITS)
@@ -553,6 +576,8 @@ export function createSidebar(
 
   function latestHashFor(d: Descriptor): string | null {
     const codePath = d.codePath;
+    const key = spanKey(d);
+    if (key) return spanLogs.get(key)?.[0]?.h ?? null;
     const tl = opts.timeline;
     if (tl && tl.enabled && codePath) {
       const list = state.cursor === null ? tl.commitsFor(codePath) : tl.commitsNear(state.cursor, codePath, 1);
