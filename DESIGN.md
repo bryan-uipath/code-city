@@ -79,6 +79,7 @@ Notes:
 
 - **Edges are directional**: `{a, b, n}` means **a imports b** (dedupe per ordered pair, keep both directions if they exist).
 - **Module spans + nesting**: each module gains `line` (1-based start line) and optional `children` for its internals — class methods/properties/accessors, interface members, enum members: `{ name, kind: 'method'|'property'|'accessor'|'member', loc, line }`. This powers module-level drill-down (inside a building).
+- **PR spans**: each PR may carry `spans: { [path]: [start, end][] }` — the head-side line ranges of its hunks per tree file (from `gh pr diff`). Inside a file isolate the PR marker's beams land on the modules (or class members) those ranges touch instead of the whole file; absent spans fall back to file level.
 - **Intra-file refs**: each module may carry `refs: { name, n }[]` — the same-file top-level modules its body names, with occurrence counts. Lexical (identifier match against the file's own top-level names, property names excluded), not type-resolved; it feeds the coupling arcs inside a file isolate.
 - **Commit stream** (for the history timeline + sidebar):
 ```jsonc

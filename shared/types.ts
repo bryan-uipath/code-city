@@ -104,6 +104,8 @@ export interface Pr {
   deletions: number;
   /** Filtered to files present in the tree. */
   files: string[];
+  /** Per file, the head-side line ranges its hunks touch (`[start, end]`, 1-based). */
+  spans?: Record<string, [number, number][]>;
 }
 
 /** One commit of the stream: hash, unix seconds, author, subject, file indices. */

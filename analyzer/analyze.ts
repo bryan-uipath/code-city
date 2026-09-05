@@ -853,6 +853,13 @@ async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]>
       files = stdout.split('\n').map((s) => s.trim()).filter((s) => fileSet.has(s));
     } catch { return null; }
     if (!files.length) return null;
+    // Hunk line ranges place the PR inside a file; optional, so a failed diff
+    // fetch only loses precision.
+    let spans: Record<string, [number, number][]> | undefined;
+    try {
+      const { stdout } = await execFileAsync('gh', ['pr', 'diff', String(pr.number), '--repo', repoSlug], { maxBuffer: 64 * 1024 * 1024 });
+      spans = hunkSpans(stdout, fileSet);
+    } catch { /* keep file-level placement */ }
     const login = pr.author?.login || 'unknown';
     return {
       number: pr.number,
@@ -864,9 +871,31 @@ async function collectPRs(repoRoot: string, fileSet: Set<string>): Promise<Pr[]>
       additions: pr.additions ?? 0,
       deletions: pr.deletions ?? 0,
       files,
+      ...(spans && Object.keys(spans).length ? { spans } : {}),
     };
   });
   return results.filter(isPr);
+}
+
+/** `+++ b/path` + `@@ -a,b +c,d @@` → head-side `[c, c+d-1]` per tree file. */
+function hunkSpans(diff: string, fileSet: Set<string>): Record<string, [number, number][]> {
+  const out: Record<string, [number, number][]> = {};
+  let file: string | null = null;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++ ')) {
+      const p = line.slice(4).trim().replace(/^b\//, '');
+      file = fileSet.has(p) ? p : null;
+      continue;
+    }
+    if (!file || !line.startsWith('@@')) continue;
+    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!m) continue;
+    const start = Number(m[1]);
+    const len = m[2] === undefined ? 1 : Number(m[2]);
+    if (!Number.isFinite(start) || len <= 0) continue;
+    (out[file] ??= []).push([start, start + len - 1]);
+  }
+  return out;
 }
 
 function isPr(pr: Pr | null | undefined): pr is Pr {

@@ -2725,7 +2725,7 @@ function buildPeopleLayer(): void {
   for (const pr of prs) maxWeight = Math.max(maxWeight, Math.log2(1 + prSize(pr)));
 
   for (const pr of prs) {
-    const nodes = uniq(pr.files.map((p) => scope.byRealPath.get(p)).filter(hasRect));
+    const nodes = prTargets(pr);
     if (!nodes.length) continue;
 
     let cx = 0, cz = 0, top = 0;
@@ -2735,7 +2735,8 @@ function buildPeopleLayer(): void {
       if (!rect) continue;
       cx += rect.x + rect.w / 2;
       cz += rect.z + rect.h / 2;
-      const plate = plateTop(n.tier ?? n.depth ?? 0, n.type === 'file');
+      // A member slab's beam lands on the slab, not the plate under the stack.
+      const plate = plateTop(n.tier ?? n.depth ?? 0, n.type === 'file') + (n.plots?.[0]?.y0 ?? 0);
       top = Math.max(top, plate + tallest(n));
       if (targets.length < 20) targets.push(new THREE.Vector3(rect.x + rect.w / 2, plate, rect.z + rect.h / 2));
     }
@@ -2779,6 +2780,33 @@ function buildPeopleLayer(): void {
 
 function hasRect(node: VNode | undefined): node is VNode {
   return !!node && !!node.rect;
+}
+
+/**
+ * Where a PR lands in this scope: its file plates — or, inside a file, the
+ * modules (members, when a class has them) its hunks touch. Falls back to the
+ * whole file when the PR carries no spans or none intersect.
+ */
+function prTargets(pr: Pr): VNode[] {
+  const root = scope.root;
+  const spans = root?.synth === 'fileScope' && root.srcFile ? pr.spans?.[root.srcFile.path] : undefined;
+  if (spans && spans.length) {
+    const hit: VNode[] = [];
+    for (const m of root?.children ?? []) {
+      const members = (m.children ?? []).filter((c) => c.rect && touchesSpans(c.mod, spans));
+      if (members.length) hit.push(...members);
+      else if (m.rect && touchesSpans(m.mod, spans)) hit.push(m);
+    }
+    if (hit.length) return hit;
+  }
+  return uniq(pr.files.map((p) => scope.byRealPath.get(p)).filter(hasRect));
+}
+
+function touchesSpans(mod: VMod | undefined, spans: [number, number][]): boolean {
+  if (!mod || typeof mod.line !== 'number') return false;
+  const a = mod.line;
+  const b = a + Math.max(mod.loc, 1) - 1;
+  return spans.some(([s, e]) => s <= b && e >= a);
 }
 
 /** Tallest building top in the current scope (plots only — the stacks are folder-scope). */
