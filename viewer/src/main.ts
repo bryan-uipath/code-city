@@ -423,6 +423,9 @@ const recency: { map: Map<VNode, { count: number; flash: number }>; dirty: boole
  * the overlay/timeline recolor; closing it calls applyOverlay() to restore.
  * `paths` maps a real file path to { w, mods } (mods = null → the whole file).
  */
+/** The selected PR: its files stay lit while the rest of the city goes dark. */
+let prFocus: Pr | null = null;
+
 const searchPaint: {
   on: boolean;
   paths: Map<string, { w: number; mods: Set<string> | null }> | null;
@@ -1838,9 +1841,9 @@ function setSearchResults(view: SearchResultsPayload | null): void {
   );
 }
 
-/** PR beams/scaffolding would drown the highlight, so they rest while searching. */
+/** PR beams/scaffolding would drown a search highlight, so they rest while searching — but not for a PR's own highlight. */
 function applySearchLayerMute(): void {
-  const show = state.people && !searchPaint.on;
+  const show = state.people && (!searchPaint.on || prFocus !== null);
   peopleGroup.visible = show;
   scaffoldGroup.visible = show;
   worktreeGroup.visible = state.worktree && !searchPaint.on;
@@ -2846,6 +2849,12 @@ function tallest(node: VNode): number {
 
 function setSelection(target: Target | null, opts: { keepSidebar?: boolean } = {}): void {
   state.selection = target;
+  // Selecting a PR lights its files the way a search does; deselecting restores.
+  const pr = target && target.type === 'pr' ? target.pr : null;
+  if (pr !== prFocus) {
+    prFocus = pr;
+    setSearchHighlight(pr ? { paths: new Map(pr.files.map((p) => [p, { w: 1, mods: null }])), cursor: null } : null);
+  }
   refreshSelectionBox();
   refreshSnippet();
   if (!opts.keepSidebar) sidebar.setSelection(target ? describe(target) : null);
@@ -3622,6 +3631,11 @@ function bindEvents(): void {
         setSearchResults(null);
         return;
       }
+      // A lit PR is a selection; Escape drops it before touching the scope.
+      if (prFocus) {
+        setSelection(null);
+        return;
+      }
       // A filter is a query laid over the current scope, so it comes off before
       // the scope itself does — same rule as the search results above it.
       if (filterActive()) {
@@ -4244,6 +4258,8 @@ interface MotionProbe {
   flights(): Array<{ id: number; dur: number; ceiling: number; planY: number }>;
   focusPath(path: string): boolean;
   reveal(path: string): boolean;
+  /** Select an open PR by number (null clears), as clicking its avatar would. */
+  selectPr(n: number | null): boolean;
   up(): boolean;
   /** Eased progress of the flight in the air right now, 0..1. */
   progress(): number;
@@ -4332,6 +4348,12 @@ function createProbe(): MotionProbe | null {
       return true;
     },
     reveal(path) { return revealPath(path); },
+    selectPr(n) {
+      const pr = n === null ? null : state.data?.prs.find((p) => p.number === n);
+      if (pr === undefined) return false;
+      setSelection(pr ? { type: 'pr', pr } : null);
+      return true;
+    },
     up() {
       const parent = state.focus?.parent;
       if (!parent) return false;
