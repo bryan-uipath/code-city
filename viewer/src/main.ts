@@ -1060,7 +1060,7 @@ function unplacedHome(base: VNode, side: number): Home {
 
 /**
  * Smallest extent a scope is allowed: a folder needs room to place each file,
- * a file each module; a lone module or member stack just needs to be seen.
+ * a file each module; a lone module or member just needs to be seen.
  */
 function stageFloor(root: VNode): number {
   if (root.synth && root.synth !== 'fileScope') return 24;
@@ -2593,7 +2593,7 @@ function intraFileArcs(selMod: VNode | null): Arc[] {
   return arcs;
 }
 
-/** Centre of a module's roof inside a file — a slab or the top of a member stack. */
+/** Centre of a module's roof inside a file — a slab, or the top of a class plate. */
 function roofAnchor(node: VNode): THREE.Vector3 | null {
   const r = node.rect;
   if (!r) return null;
@@ -2828,10 +2828,16 @@ function uniq<T>(arr: T[]): T[] {
   return [...new Set(arr)];
 }
 
-function tallest(node: VNode): number {
-  let m = tallestBuilding(node);
-  if (node.children) for (const c of node.children) m = Math.max(m, tallest(c));
+/** Absolute Y of the highest roof in a subtree — nested plates carry their own lift. */
+function roofOf(node: VNode): number {
+  let m = (node.top ?? 0) + tallestBuilding(node);
+  if (node.children) for (const c of node.children) m = Math.max(m, roofOf(c));
   return m;
+}
+
+/** Highest roof in a subtree, measured from the node's own plate. */
+function tallest(node: VNode): number {
+  return roofOf(node) - (node.top ?? 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -3730,11 +3736,16 @@ function resolveHit(hit: THREE.Intersection): Target | null {
 
 // --- hover callout: name pill raised above the hovered thing, line down -----
 
-const callout: { sprite: THREE.Sprite | null; line: THREE.Line | null; anchor: THREE.Vector3; aspect: number } = {
+/** Two-line pill canvas (140px) over the one-line one (96px) — see makeLabelSprite. */
+const SUB_PILL_LINES = 140 / 96;
+
+const callout: { sprite: THREE.Sprite | null; line: THREE.Line | null; anchor: THREE.Vector3; aspect: number; lines: number } = {
   sprite: null,
   line: null,
   anchor: new THREE.Vector3(),
   aspect: 1,
+  /** Pill height relative to a one-line pill, so the name keeps its size. */
+  lines: 1,
 };
 
 function clearCallout(): void {
@@ -3765,8 +3776,9 @@ function showCallout(hit: NodeTarget, name: string, sub?: string): void {
     const top = plateTop(hit.node.tier ?? hit.node.depth ?? 0, hit.node.type === 'file');
     callout.anchor.set(r.x + r.w / 2, top + boxHeightFor(hit.node), r.z + r.h / 2).add(stageHome);
   }
-  const sprite = makeLabelSprite(name, { color: '#eafcff', worldHeight: sub ? 14 : 10, sub });
+  const sprite = makeLabelSprite(name, { color: '#eafcff', sub });
   callout.aspect = sprite.scale.y > 0 ? sprite.scale.x / sprite.scale.y : 1;
+  callout.lines = sub ? SUB_PILL_LINES : 1;
   sprite.renderOrder = 12;
   scene.add(sprite);
   callout.sprite = sprite;
@@ -3797,7 +3809,7 @@ function updateCallout(): void {
   const line = callout.line;
   if (!sprite || !line) return;
   const dist = camera.position.distanceTo(callout.anchor);
-  const h = Math.min(Math.max(dist * 0.021, 3.5), 34);
+  const h = Math.min(Math.max(dist * 0.021, 3.5), 34) * callout.lines;
   const rise = h * 2.4;
   sprite.scale.set(h * callout.aspect, h, 1);
   sprite.position.set(callout.anchor.x, callout.anchor.y + rise + h / 2, callout.anchor.z);
@@ -3837,7 +3849,8 @@ function setHover(hit: Target | null): void {
   else frameNodeBox(hoverBox, hit.node, boxHeightFor(hit.node));
 
   const desc = describe(hit);
-  if (hit.type !== 'pr' && desc) showCallout(hit, desc.name, signatureOf(moduleRecOf(hit)?.mod));
+  // A class/interface plate is a node, not a building: its VMod is on the node.
+  if (hit.type !== 'pr' && desc) showCallout(hit, desc.name, signatureOf(moduleRecOf(hit)?.mod ?? hit.node.mod));
   else clearCallout();
   refreshSnippet();
   sidebar.setHover(desc);
@@ -3859,7 +3872,19 @@ const SNIPPET_SCREEN_SHARE = 0.3;
 function signatureOf(mod: VMod | undefined): string | undefined {
   const sig = mod?.sig;
   if (!sig) return undefined;
-  return sig.startsWith('(') ? sig.replace(/\)(: | )/, ') → ').replace(/\)$/, ') → void') : sig;
+  if (!sig.startsWith('(')) return sig; // heritage, alias, `new (…)`, `: T`
+  // Depth-scan to the paren closing the parameter list, so a callback param's
+  // own `): ` cannot be mistaken for the return type.
+  let depth = 0;
+  for (let i = 0; i < sig.length; i++) {
+    const c = sig[i];
+    if (c === '(') depth++;
+    else if (c === ')' && --depth === 0) {
+      const rest = sig.slice(i + 1);
+      return `${sig.slice(0, i + 1)} → ${rest.startsWith(': ') ? rest.slice(2) : 'void'}`;
+    }
+  }
+  return sig; // truncated: no balancing paren
 }
 
 /**

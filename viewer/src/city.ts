@@ -997,7 +997,7 @@ export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.ora
     const z0 = r.z - grow;
     const z1 = r.z + r.h + grow;
     const tier = n.tier ?? n.depth ?? 0;
-    // A member slab is caged around itself: its lift off the plate is not height.
+    // Each node is caged from its own plate: a nested tier's lift is not height.
     const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1;
     const y1 = y0 + Math.max(tallestBuilding(n) + 6, 14);
 

@@ -48,6 +48,8 @@ export function makeCodePanel(head: CodeHeader, lines: string[] | null, first: n
   const rows = lines ? Math.min(lines.length, MAX_ROWS) : 0;
   const view = rows ? Math.min(Math.max(rows, MIN_VIEW), MAX_VIEW) : 0;
   const body = rows ? drawBody(lines ?? [], rows, first, total) : null;
+  // The tail note is a drawn row too: the window must scroll over it, not squeeze it.
+  const drawn = body ? body.drawn : rows;
 
   const group = new THREE.Group();
   const headMesh = card(header.tex);
@@ -56,18 +58,18 @@ export function makeCodePanel(head: CodeHeader, lines: string[] | null, first: n
   const track = body ? bar(0.22) : null;
   const thumb = body ? bar(0.75) : null;
   if (bodyMesh && track && thumb) group.add(bodyMesh, track, thumb);
-  // The body texture shows `view` of `rows` rows; scrolling moves the window
+  // The body texture shows `view` of `drawn` rows; scrolling moves the window
   // (canvas textures upload unflipped here: v = 0 is the first row).
   if (body) {
     body.tex.flipY = false;
-    body.tex.repeat.set(1, view / rows);
+    body.tex.repeat.set(1, view / drawn);
     body.tex.offset.set(0, 0);
   }
 
   const headAspect = header.h / PX_W;
   const bodyAspect = (view * LINE_PX) / PX_W;
   const aspect = headAspect + bodyAspect;
-  const scrollable = rows > view;
+  const scrollable = drawn > view;
   let t = 0;
   let frac = 0;
 
@@ -85,7 +87,7 @@ export function makeCodePanel(head: CodeHeader, lines: string[] | null, first: n
         const x = w / 2 - w * 0.008;
         track.scale.set(w * 0.006, bh, 1);
         track.position.set(x, 0, 0.001);
-        const th = Math.max(bh * (view / rows), bh * 0.06);
+        const th = Math.max(bh * (view / drawn), bh * 0.06);
         thumb.scale.set(w * 0.006, th, 1);
         thumb.position.set(x, bh / 2 - th / 2 - frac * (bh - th), 0.002);
       }
@@ -94,11 +96,11 @@ export function makeCodePanel(head: CodeHeader, lines: string[] | null, first: n
     tick(dt) {
       if (!body || !scrollable) return;
       // Hold at the top, roll to the bottom at a reading pace, hold, start over.
-      const span = rows - view;
+      const span = drawn - view;
       const roll = span / ROWS_PER_S;
       t = (t + dt) % (HOLD_S + roll + HOLD_S);
       frac = Math.min(Math.max((t - HOLD_S) / roll, 0), 1);
-      body.tex.offset.y = (1 - view / rows) * frac;
+      body.tex.offset.y = (1 - view / drawn) * frac;
     },
   };
 }
@@ -130,7 +132,7 @@ function drawHeader(head: CodeHeader): { tex: THREE.CanvasTexture; h: number } {
   return { tex: texture(canvas), h: H };
 }
 
-function drawBody(lines: string[], rows: number, first: number, total: number): { tex: THREE.CanvasTexture } {
+function drawBody(lines: string[], rows: number, first: number, total: number): { tex: THREE.CanvasTexture; drawn: number } {
   const canvas = document.createElement('canvas');
   const ctx = ctx2d(canvas);
   const tail = total > rows;
@@ -162,7 +164,7 @@ function drawBody(lines: string[], rows: number, first: number, total: number): 
   ctx.strokeStyle = 'rgba(34, 211, 238, 0.5)';
   ctx.lineWidth = 2;
   ctx.strokeRect(1, 0, PX_W - 2, H);
-  return { tex: texture(canvas) };
+  return { tex: texture(canvas), drawn: rows + (tail ? 1 : 0) };
 }
 
 // --- pieces ----------------------------------------------------------------

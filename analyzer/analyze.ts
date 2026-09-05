@@ -260,7 +260,8 @@ function parseFile(absPath: string, rel: string): ParsedFile {
       let kind: MemberKind;
       let name: string | null = null;
       let sig = '';
-      if (ts.isConstructorDeclaration(member)) { kind = 'method'; name = 'constructor'; sig = callSig(member); }
+      // `new (…)`: a constructor returns its class, not void.
+      if (ts.isConstructorDeclaration(member)) { kind = 'method'; name = 'constructor'; sig = 'new ' + callSig(member); }
       else if (ts.isMethodDeclaration(member)) { kind = 'method'; sig = callSig(member); }
       else if (ts.isPropertyDeclaration(member)) { kind = 'property'; sig = member.type ? ': ' + src(member.type) : ''; }
       else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) { kind = 'accessor'; sig = callSig(member); }
