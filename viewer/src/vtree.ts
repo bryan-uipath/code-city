@@ -7,7 +7,7 @@
  * declared here — this is the single place where the augmentation lives.
  */
 import type * as THREE from 'three';
-import type { MemberKind, ModuleKind, TreeNode } from '../../shared/types.js';
+import type { MemberKind, ModuleKind, ModuleRef, TreeNode } from '../../shared/types.js';
 
 /** Any kind that can become a building: top-level modules and their members. */
 export type AnyKind = ModuleKind | MemberKind;
@@ -21,6 +21,7 @@ export interface VMod {
   line?: number;
   exported?: boolean;
   children?: VMod[];
+  refs?: ModuleRef[];
 }
 
 /** World-space footprint on the XZ plane; (x, z) is the min corner. */

@@ -2506,11 +2506,14 @@ function rebuildArcs(): void {
   if (!state.coupling || !city) return;
 
   const sel = state.selection && state.selection.type !== 'pr' ? state.selection.node : null;
-  const arcs = sel ? arcsForNode(sel) : packageArcs();
+  const inFile = scope.root?.synth === 'fileScope';
+  const arcs = inFile ? intraFileArcs(sel) : sel ? arcsForNode(sel) : packageArcs();
   if (!arcs.length) return;
-  arcMesh = buildCouplingArcs(arcs, { thick: !sel, scale: CITY_SIZE / 900 });
+  // Inside a file the web is dense, so only a selection's few arcs go thick.
+  const thick = inFile ? !!sel : !sel;
+  arcMesh = buildCouplingArcs(arcs, { thick, scale: inFile ? 0.35 : CITY_SIZE / 900 });
   if (arcMesh) stage.add(arcMesh);
-  arcFlow = buildArcFlow(arcs, { thick: !sel });
+  arcFlow = buildArcFlow(arcs, { thick });
   if (arcFlow) stage.add(arcFlow.points);
 }
 
@@ -2554,6 +2557,43 @@ function arcsForNode(node: VNode): Arc[] {
       : { from: far, to: anchor.clone(), strength: t.n / max });
   }
   return out;
+}
+
+/**
+ * Inside a file: arcs between its top-level modules from `ModuleInfo.refs`
+ * (referrer → referenced). With a module selected, only the arcs touching it.
+ */
+function intraFileArcs(sel: VNode | null): Arc[] {
+  const root = scope.root;
+  if (!root || root.synth !== 'fileScope') return [];
+  const byName = new Map<string, VNode>();
+  for (const n of root.children ?? []) if (n.mod && n.rect) byName.set(n.mod.name, n);
+  const selName = sel?.mod && sel.synth !== 'member' ? sel.mod.name : null;
+  const pairs: Array<{ a: VNode; b: VNode; n: number }> = [];
+  for (const a of byName.values()) {
+    for (const ref of a.mod?.refs ?? []) {
+      const b = byName.get(ref.name);
+      if (!b || b === a) continue;
+      if (selName && a.mod?.name !== selName && b.mod?.name !== selName) continue;
+      pairs.push({ a, b, n: ref.n });
+    }
+  }
+  const list = pairs.sort((x, y) => y.n - x.n).slice(0, MAX_ARCS);
+  const max = list[0]?.n ?? 1;
+  const arcs: Arc[] = [];
+  for (const p of list) {
+    const from = roofAnchor(p.a);
+    const to = roofAnchor(p.b);
+    if (from && to) arcs.push({ from, to, strength: p.n / max });
+  }
+  return arcs;
+}
+
+/** Centre of a module's roof inside a file — a slab or the top of a member stack. */
+function roofAnchor(node: VNode): THREE.Vector3 | null {
+  const r = node.rect;
+  if (!r) return null;
+  return new THREE.Vector3(r.x + r.w / 2, (node.top ?? 0) + tallest(node) + 0.5, r.z + r.h / 2);
 }
 
 function addDir(totals: Map<string, { path: string; out: boolean; n: number }>, path: string, out: boolean, n: number): void {

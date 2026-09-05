@@ -79,6 +79,7 @@ Notes:
 
 - **Edges are directional**: `{a, b, n}` means **a imports b** (dedupe per ordered pair, keep both directions if they exist).
 - **Module spans + nesting**: each module gains `line` (1-based start line) and optional `children` for its internals — class methods/properties/accessors, interface members, enum members: `{ name, kind: 'method'|'property'|'accessor'|'member', loc, line }`. This powers module-level drill-down (inside a building).
+- **Intra-file refs**: each module may carry `refs: { name, n }[]` — the same-file top-level modules its body names, with occurrence counts. Lexical (identifier match against the file's own top-level names, property names excluded), not type-resolved; it feeds the coupling arcs inside a file isolate.
 - **Commit stream** (for the history timeline + sidebar):
 ```jsonc
 {
@@ -529,6 +530,14 @@ through `CityHost.getSource` — just the lines the card shows, the `+N lines`
 tail coming from `loc` — and is cached per span; without a host (static export)
 the card is the header alone. The card replaces the name pill for modules —
 the name is in its header.
+
+**Coupling arcs inside a file.** With the coupling layer on, a file isolate
+draws its modules' references as arcs (`intraFileArcs`, referrer → referenced,
+strength = occurrence count, top 150): the whole web thin with nothing
+selected, a selected module's own arcs thick. Anchors are roof centres — a
+slab's top, or the top of a member stack (`roofAnchor`). Data comes from
+`ModuleInfo.refs`; a module scope (inside a class) draws none, since members
+carry no refs.
 
 The mini-treemap in `layoutModules` remains for a real file's plots at folder
 scope (v1 data without commits); the reading-order layout applies to synthetic

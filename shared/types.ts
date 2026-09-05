@@ -69,6 +69,13 @@ export interface ModuleInfo {
   exported: boolean;
   /** Class methods/properties/accessors, interface members, enum members. */
   children?: ModuleMember[];
+  /** Same-file top-level modules this one's body names, with occurrence counts. */
+  refs?: ModuleRef[];
+}
+
+export interface ModuleRef {
+  name: string;
+  n: number;
 }
 
 export interface ModuleMember {
