@@ -1,7 +1,7 @@
 /**
  * layout.ts — squarified treemap + recursive "city" layout; inside a file, a
  * reading-order flow (modules fill the file's footprint left→right, top→bottom;
- * members stack as slabs).
+ * a class's members do the same inside its plate).
  *
  * World space convention: the city lies on the XZ plane, Y is up.
  * A rect is { x, z, w, h } with (x, z) the min corner.
@@ -172,7 +172,7 @@ function layoutNode(node: VNode, rect: Rect, depth: number, tier: number): void 
     return;
   }
   if (node.synth === 'fileScope') return layoutFileScope(node, rect, depth, tier);
-  if (node.synth === 'module') return layoutStack(node, rect, depth, tier, lineUnit(node.srcFile ?? node));
+  if (node.synth === 'module') return layoutMembers(node, rect, depth, tier, lineUnit(node.srcFile ?? node));
 
   const kids = node.children;
   if (!kids || !kids.length) return;
@@ -212,9 +212,6 @@ function layoutNode(node: VNode, rect: Rect, depth: number, tier: number): void 
 
 // --- inside a file ---------------------------------------------------------
 
-/** Gap between stacked member slabs, world units. */
-const SLAB_GAP = 0.15;
-
 /**
  * A file isolate fills the file's own footprint with its modules in reading
  * order — rows left→right, top→bottom like text on a page, each module as
@@ -243,8 +240,8 @@ function layoutFileScope(root: VNode, rect: Rect, depth: number, tier: number): 
       stripLayout(k);
       continue;
     }
-    if (k.synth === 'module') layoutStack(k, r, depth + 1, tier + 1, unit);
-    else placeSlab(k, r, depth + 1, tier + 1, 0, unit);
+    if (k.synth === 'module') layoutMembers(k, r, depth + 1, tier + 1, unit);
+    else placeSlab(k, r, depth + 1, tier + 1, unit);
   }
 }
 
@@ -302,32 +299,42 @@ function flowLayout(items: Weighted[], rect: Rect): Cell[] {
 }
 
 /**
- * A module with members (class, interface, enum): one column made of its
- * members stacked in source order, each slab as tall as its line count.
+ * A module with members (class, interface, enum): a plate of its own, its
+ * members laid out inside it in reading order exactly like the file's modules
+ * — nesting, not stacking, so nothing inside a file reads as commit strata.
  */
-function layoutStack(node: VNode, rect: Rect, depth: number, tier: number, unit: number): void {
+function layoutMembers(node: VNode, rect: Rect, depth: number, tier: number, unit: number): void {
   node.rect = rect;
   node.depth = depth;
   node.tier = tier;
   node.top = plateTop(tier, false) + depth * PLATE_EPSILON;
   if (!node.home) node.home = { rect, depth, tier };
-  let y = 0;
-  for (const m of byLine(node.children ?? [])) {
-    y += placeSlab(m, rect, depth + 1, tier, y, unit) + SLAB_GAP;
+  const kids = byLine(node.children ?? []);
+  if (!kids.length) return;
+  const pad = Math.min(1, rect.w * 0.08, rect.h * 0.08);
+  const inner = { x: rect.x + pad, z: rect.z + pad, w: Math.max(rect.w - pad * 2, MIN_RECT), h: Math.max(rect.h - pad * 2, MIN_RECT) };
+  let total = 0;
+  for (const k of kids) total += Math.max(k.loc || 0, 1);
+  const minW = total / (kids.length * 4);
+  const cells = flowLayout(kids.map((k) => ({ weight: Math.max(k.loc || 0, minW) })), inner);
+  for (const cell of cells) {
+    const k = kids[cell.index];
+    if (!k) continue;
+    const r = insetRect(cell, 0.15);
+    if (r.w < 0.4 || r.h < 0.4) stripLayout(k);
+    else placeSlab(k, r, depth + 1, tier + 1, unit);
   }
 }
 
-/** One module or member as a slab over `rect`, its base `y0` above the plate. Returns its height. */
-function placeSlab(node: VNode, rect: Rect, depth: number, tier: number, y0: number, unit: number): number {
+/** One module or member as a building over `rect`, linear in lines. */
+function placeSlab(node: VNode, rect: Rect, depth: number, tier: number, unit: number): void {
   node.rect = rect;
   node.depth = depth;
   node.tier = tier;
   node.top = plateTop(tier, true) + depth * PLATE_EPSILON;
   if (!node.home) node.home = { rect, depth, tier };
   const mod = node.mod ?? node.modules?.[0];
-  const height = Math.max((mod?.loc ?? node.loc) * unit, 0.4);
-  node.plots = mod ? [{ mod, ...rect, y0, height }] : [];
-  return height;
+  node.plots = mod ? [{ mod, ...rect, height: Math.max((mod.loc ?? node.loc) * unit, 0.4) }] : [];
 }
 
 /** Source order when every item has a line, else the order given. */
@@ -345,7 +352,7 @@ function layoutModules(fileNode: VNode, rect: Rect): Plot[] {
   if (fileNode.synth) {
     const mod = mods[0];
     const height = Math.max((mod?.loc ?? fileNode.loc) * lineUnit(fileNode.srcFile ?? fileNode), 0.4);
-    return mod ? [{ mod, ...rect, y0: 0, height }] : [];
+    return mod ? [{ mod, ...rect, height }] : [];
   }
 
   const pad = Math.min(1.6, rect.w * 0.12, rect.h * 0.12);

@@ -61,7 +61,7 @@ the current city and re-lays out that subtree at the footprint it already had
 only enlarges scopes too small to place their children)
 (folder → file → module → member), with synthetic nodes for the file/module
 levels. Inside a file the layout is reading order (rows of modules in source
-order filling the file's footprint, member stacks, code holograms on hover) —
+order filling the file's footprint, members nested in their class plate) —
 see DESIGN.md "File interior". PR markers, arcs, labels and scaffolding are all
 rebuilt against the scope — nothing may assume the real tree root.
 
