@@ -108,7 +108,6 @@ function makeBeam(): THREE.Mesh {
     opacity: 0.1,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
-    depthTest: false,
     side: THREE.DoubleSide,
   });
   const mesh = new THREE.Mesh(geom, mat);

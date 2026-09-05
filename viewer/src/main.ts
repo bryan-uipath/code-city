@@ -3867,6 +3867,12 @@ function updateSnippet(): void {
   facePanel(p.mesh, camera);
   p.mesh.position.copy(snippet.anchor);
   p.mesh.position.y += rise + h / 2;
+  // Looking down, world-up buys almost no screen offset and the card would sit
+  // on its own building: nudge along screen-up as the view steepens.
+  _v3.copy(camera.position).sub(snippet.anchor).normalize();
+  const flat = Math.sqrt(Math.max(1 - _v3.y * _v3.y, 0));
+  _v3.setFromMatrixColumn(camera.matrixWorld, 1);
+  p.mesh.position.addScaledVector(_v3, (h / 2) * (1 - flat));
   p.beam.scale.set(w * 0.42, rise + h * 0.15, w * 0.42);
   p.beam.position.copy(snippet.anchor);
 }
