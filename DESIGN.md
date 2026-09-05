@@ -80,6 +80,7 @@ Notes:
 - **Edges are directional**: `{a, b, n}` means **a imports b** (dedupe per ordered pair, keep both directions if they exist).
 - **Module spans + nesting**: each module gains `line` (1-based start line) and optional `children` for its internals — class methods/properties/accessors, interface members, enum members: `{ name, kind: 'method'|'property'|'accessor'|'member', loc, line }`. This powers module-level drill-down (inside a building).
 - **PR spans**: each PR may carry `spans: { [path]: [start, end][] }` — the hunk line ranges per tree file (from `gh pr diff`). The numbers are read against the *checkout*, so the analyzer picks the side that addresses it: head-side (`+c,d`) when `merge-base --is-ancestor <headRefOid> HEAD` says the checkout already contains the PR head, base-side (`-a,b`) otherwise; a zero-length side (pure insertion or deletion) becomes `[a, a]`, its anchor point. Base-side spans still drift when the checkout has moved past the PR's base — placement is a hint, and absent or missed spans fall back to file level. Inside a file isolate the PR marker's beams land on the modules (or class members) those ranges touch instead of the whole file.
+- **Signatures**: each module and member may carry `sig` — the interface as written, whitespace-collapsed, capped at 200 chars: `(a: T, b?: U): R` for callables (functions, arrow consts, methods, accessors), `extends X implements Y` for classes/interfaces, `= …` for type aliases, `: T` for typed consts and properties, `N members` for enums. The hover pill shows it as subtext under the name (`(a: T) → R`).
 - **Intra-file refs**: each module may carry `refs: { name, n }[]` — the same-file top-level modules its body names, with occurrence counts. Lexical (identifier match against the file's own top-level names, property names excluded), not type-resolved; it feeds the coupling arcs inside a file isolate.
 - **Commit stream** (for the history timeline + sidebar):
 ```jsonc
@@ -274,7 +275,7 @@ Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippe
 ## Interaction v2
 
 - **No cursor tooltip.** A persistent right sidebar shows hover info (top section, live) and pinned selection detail (on click): stats, PRs, recent commits for that path, and code — module source snippet + latest diff via the dev API. When the focused/selected node is file-level or deeper, the sidebar expands to a wide code pane showing the actual source (module span, or whole file capped).
-- **Double-click = isolate.** Rendering the focused node's subtree ONLY, at the footprint it already had (see *Scale-true drill-down*): folder → its city; file → its spine (modules as columns in source order, see *File interior*); module → its member stack. Breadcrumb/Esc rebuilds the parent scene. This is the hierarchy: org → repo → folder → file → module → member.
+- **Double-click = isolate.** Rendering the focused node's subtree ONLY, at the footprint it already had (see *Scale-true drill-down*): folder → its city; file → its modules in reading order (see *File interior*); module → its members, the same way inside its plate. Breadcrumb/Esc rebuilds the parent scene. This is the hierarchy: org → repo → folder → file → module → member.
 - **Map-style labels**: labels chosen dynamically from what's in view (projected size within a readable band, capped count, fade in/out) — district names give way to file names give way to building names as you zoom, like a map engine.
 - **PR markers** connect visibly: avatar at centroid, thin beams down to EACH affected file plate + glowing ground ring per file. PRs gain `additions`/`deletions` in the data; the central beam's radius and glow scale with log(additions+deletions) so big PRs read as big pillars of light.
 - **Directional arcs**: animated flow (moving dashes/pulses) from importer → imported.
@@ -479,7 +480,7 @@ invisible.
 
 - **Legibility floor.** A scope too small to place its children is enlarged
   about its own centre to `stageFloor`: real folders to `max(48, √files·6)`, a
-  file scope to `max(60, √modules·11)`, a lone module or member stack to 24.
+  file scope to `max(60, √modules·11)`, a lone module or a class's member plate to 24.
   Measured on the home's *short* side, so a skinny plot is widened too. Only
   then does the homing scale animate. The one deliberate exception to
   scale-true.
@@ -509,34 +510,29 @@ sliver. Heights are linear in lines (`lineUnit`): the file's longest module
 stands about 0.4 of the plate's side (capped at 60), read off the file's scope
 layout so a lone module isolated on its own keeps its height; a module-less file
 normalises on its own `loc`, since its one stub module *is* the whole file. A class,
-interface or enum is a **stack**: its members as slabs piled in source order,
-each as tall as its lines, on a pedestal plate; members get no plate of their
-own — they share the module's footprint (`Plot.y0` / `Plot.height`, stacked in
-`city.ts`). Kind is the paint in here regardless of mode (every module shares
+interface or enum is a **plate of its own**: its members laid out inside it in
+reading order exactly like the file's modules, each a building as tall as its
+lines — nesting, not stacking, so nothing inside a file reads as commit strata
+(a vertical member stack was tried and rejected for that reason). Kind is the paint in here regardless of mode (every module shares
 the file's churn and recency, so the overlays have nothing per-building to
 say) and the legend carries the kind swatches plus `area · height = lines ·
 reading order = source order`. Framing inside a file adds the tallest building
 to the extent so towers do not overrun the top of the view.
 
-**Code holograms.** Hovering a module stands its source up beside it: a
-screen-aligned card (`hologram.ts`) with `kind name` and the line span in the
-header, the first 14 lines with a gutter, comments dimmed, scanlines, a cyan
-frame, drawn over the city (no depth test) up and to the right of the
-building's top, scaled with distance so it stays readable. Selecting a module
-pins its card; hover borrows the slot and hands it back. Inside a file a module
-is usually hit through its synthetic leaf (its pedestal), so `moduleRecOf`
-resolves the building from either kind of target, and only from the current
-city's records — a target's `rec` outlives the build that made it. Source comes
-through `CityHost.getSource` — just the lines the card shows, the `+N lines`
-tail coming from `loc` — and is cached per span; without a host (static export)
-the card is the header alone. The card replaces the name pill for modules —
-the name is in its header.
+**Code holograms (parked).** `hologram.ts` can stand a module's source up
+above its building — a header with kind, name, signature and span, a body that
+auto-scrolls the whole module with a scrollbar (so its length is felt), sized
+as a share of the viewport and kept inside the free strip between the HUD
+panels, projected up by a light cone. It is switched off (`CODE_HOLOGRAM` in
+main.ts): at readable type the card covers too much of the city, and at city
+scale the type is not readable. The interface — the part that matters — now
+rides on the hover pill as subtext instead.
 
 **Coupling arcs inside a file.** With the coupling layer on, a file isolate
 draws its modules' references as arcs (`intraFileArcs`, referrer → referenced,
 strength = occurrence count, top 150): the whole web thin with nothing
 selected, a selected module's own arcs thick. Anchors are roof centres — a
-slab's top, or the top of a member stack (`roofAnchor`). Data comes from
+building's top, or the tallest member on a class plate (`roofAnchor`). Data comes from
 `ModuleInfo.refs`; a module scope (inside a class) draws none, since members
 carry no refs.
 

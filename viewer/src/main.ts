@@ -46,7 +46,7 @@ import {
   type FileFilter, type LevelFilter, type StrataBand, type BandSource, type StrataUpdate, LEVEL_HEIGHT,
 } from './strata.js';
 import { asVNode, type AnyKind, type Home, type VMod, type VNode } from './vtree.js';
-import { facePanel, makeCodePanel, SNIPPET_LINES, type CodePanel } from './hologram.js';
+import { facePanel, makeCodePanel, type CodePanel } from './hologram.js';
 
 const MAX_ARCS = 150;
 const DAY = 86400;
@@ -276,6 +276,7 @@ const _m4 = new THREE.Matrix4();
 const _v3 = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _scale = new THREE.Vector3();
+const _ndc = new THREE.Vector3();
 const _color = new THREE.Color();
 const _dim = new THREE.Color();
 
@@ -2735,11 +2736,8 @@ function buildPeopleLayer(): void {
       if (!rect) continue;
       cx += rect.x + rect.w / 2;
       cz += rect.z + rect.h / 2;
-      // A member slab's beam lands on the slab, not the plate under the stack;
-      // `tallest` is measured from the plate, so its y0 is already in there.
-      const base = plateTop(n.tier ?? n.depth ?? 0, n.type === 'file');
-      const plate = base + (n.plots?.[0]?.y0 ?? 0);
-      top = Math.max(top, base + tallest(n));
+      const plate = plateTop(n.tier ?? n.depth ?? 0, n.type === 'file');
+      top = Math.max(top, plate + tallest(n));
       if (targets.length < 20) targets.push(new THREE.Vector3(rect.x + rect.w / 2, plate, rect.z + rect.h / 2));
     }
 
@@ -3755,7 +3753,7 @@ function clearCallout(): void {
   }
 }
 
-function showCallout(hit: NodeTarget, name: string): void {
+function showCallout(hit: NodeTarget, name: string, sub?: string): void {
   clearCallout();
   if (hit.type === 'module' && hit.rec) {
     hit.rec.mesh.getMatrixAt(hit.rec.instanceId, _m4);
@@ -3767,7 +3765,7 @@ function showCallout(hit: NodeTarget, name: string): void {
     const top = plateTop(hit.node.tier ?? hit.node.depth ?? 0, hit.node.type === 'file');
     callout.anchor.set(r.x + r.w / 2, top + boxHeightFor(hit.node), r.z + r.h / 2).add(stageHome);
   }
-  const sprite = makeLabelSprite(name, { color: '#eafcff', worldHeight: 10 });
+  const sprite = makeLabelSprite(name, { color: '#eafcff', worldHeight: sub ? 14 : 10, sub });
   callout.aspect = sprite.scale.y > 0 ? sprite.scale.x / sprite.scale.y : 1;
   sprite.renderOrder = 12;
   scene.add(sprite);
@@ -3839,9 +3837,7 @@ function setHover(hit: Target | null): void {
   else frameNodeBox(hoverBox, hit.node, boxHeightFor(hit.node));
 
   const desc = describe(hit);
-  // Inside a file a module's readout is the hologram, not the name pill.
-  const holo = realFileOf(state.focus) !== null && moduleRecOf(hit) !== null;
-  if (hit.type !== 'pr' && desc && !holo) showCallout(hit, desc.name);
+  if (hit.type !== 'pr' && desc) showCallout(hit, desc.name, signatureOf(moduleRecOf(hit)?.mod));
   else clearCallout();
   refreshSnippet();
   sidebar.setHover(desc);
@@ -3853,11 +3849,30 @@ const snippet: { panel: CodePanel | null; rec: ModuleRecord | null; anchor: THRE
   panel: null, rec: null, anchor: new THREE.Vector3(), token: 0,
 };
 const sourceCache = new Map<string, Promise<SourceResponse | null>>();
+/** Card width as a share of the viewport width. */
+const SNIPPET_SCREEN_SHARE = 0.3;
 
-/** Hovered module first, else the selected one; nothing outside a file isolate. */
+/**
+ * The interface as the pill shows it: `(a: T) → R` for callables, the
+ * heritage or alias as written for everything else.
+ */
+function signatureOf(mod: VMod | undefined): string | undefined {
+  const sig = mod?.sig;
+  if (!sig) return undefined;
+  return sig.startsWith('(') ? sig.replace(/\)(: | )/, ') → ').replace(/\)$/, ') → void') : sig;
+}
+
+/**
+ * The code hologram is parked (Bryan, 2026-09-05: not readable enough yet);
+ * the pill's signature subtext carries the interface instead. Flip to bring
+ * the selected module's card back.
+ */
+const CODE_HOLOGRAM = false;
+
+/** The selected module inside a file isolate — the card follows the click, not the pointer. */
 function snippetTarget(): ModuleRecord | null {
-  if (!realFileOf(state.focus)) return null;
-  return moduleRecOf(state.hover) ?? moduleRecOf(state.selection);
+  if (!CODE_HOLOGRAM || !realFileOf(state.focus)) return null;
+  return moduleRecOf(state.selection);
 }
 
 /**
@@ -3882,25 +3897,26 @@ function refreshSnippet(): void {
   const file = realFileOf(rec.file);
   const mod = rec.mod;
   const line = mod.line;
-  const header = `${mod.kind} ${mod.name}`;
   const loc = Math.max(mod.loc, 1);
-  const sub = line ? `L${line}–${line + loc - 1}` : `${loc} lines`;
-  const more = Math.max(loc - SNIPPET_LINES, 0);
+  const head = {
+    title: `${mod.kind} ${mod.name}`,
+    sig: mod.sig ?? '',
+    note: line ? `L${line}–${line + loc - 1} · ${loc} lines` : `${loc} lines`,
+  };
   const mount = (lines: string[] | null, first: number): void => {
     if (token !== snippet.token) return; // superseded while loading
-    const panel = makeCodePanel(header, sub, lines, first, more);
-    scene.add(panel.mesh);
+    const panel = makeCodePanel(head, lines, first, loc);
+    scene.add(panel.group);
     scene.add(panel.beam);
     snippet.panel = panel;
-    updateSnippet();
+    updateSnippet(0);
   };
-  // No source without a host (static export): the panel is the header alone.
+  // No source without a host (static export): the card is the header alone.
   if (!file || !line || !host.available()) {
     mount(null, 1);
     return;
   }
-  // Only what the card shows: the "+N lines" tail is known from loc.
-  const end = Math.min(line + SNIPPET_LINES - 1, line + loc - 1);
+  const end = line + loc - 1;
   const key = `${file.path}:${line}:${end}`;
   let pending = sourceCache.get(key);
   if (!pending) {
@@ -3914,40 +3930,83 @@ function clearSnippet(): void {
   snippet.token++;
   snippet.rec = null;
   if (!snippet.panel) return;
-  scene.remove(snippet.panel.mesh);
+  scene.remove(snippet.panel.group);
   scene.remove(snippet.panel.beam);
-  disposeObject(snippet.panel.mesh);
+  disposeObject(snippet.panel.group);
   disposeObject(snippet.panel.beam);
   snippet.panel = null;
 }
 
 /**
  * Per frame: the card hangs straight above the building, projected up from
- * its roof by a light cone, screen-aligned and sized with distance so it
- * reads the same from anywhere.
+ * its roof by a light cone, screen-aligned and sized as a share of the
+ * viewport — so it reads the same in a 60-unit file and a 900-unit city.
  */
-function updateSnippet(): void {
+function updateSnippet(dt: number): void {
   const p = snippet.panel;
   const rec = snippet.rec;
   if (!p || !rec) return;
   // Re-derived rather than baked: a rebuild re-homes the stage under the card.
   snippet.anchor.set(rec.center.x, rec.base + rec.height, rec.center.z).add(stageHome);
   const dist = camera.position.distanceTo(snippet.anchor);
-  const w = Math.min(Math.max(dist * 0.34, 10), 70);
-  const h = w * p.aspect;
-  const rise = Math.min(Math.max(dist * 0.06, 2), 12);
-  p.mesh.scale.set(w, h, 1);
-  facePanel(p.mesh, camera);
-  p.mesh.position.copy(snippet.anchor);
-  p.mesh.position.y += rise + h / 2;
-  // Looking down, world-up buys almost no screen offset and the card would sit
-  // on its own building: nudge along screen-up as the view steepens.
+  const rise = Math.min(Math.max(dist * 0.05, 2), 12);
+  // Sized as a share of the viewport, never wider or taller than the free
+  // strip between the HUD panels; exact because the card is then placed at
+  // the roof's own distance (below).
+  const viewW = 2 * dist * Math.tan((camera.fov * Math.PI) / 360) * camera.aspect;
+  const viewH = viewW / camera.aspect;
+  const box = freeStrip();
+  const w = Math.min(viewW * SNIPPET_SCREEN_SHARE, ((box.right - box.left) / 2) * viewW, (((box.top - box.bottom) / 2) * viewH) / p.aspect);
+  const h = p.layout(w);
+  // Aim: straight above the roof, nudged along screen-up as the view steepens
+  // (looking down, world-up buys almost no screen offset and the card would
+  // sit on its own building) — then slide along that ray to the roof's distance.
+  const pos = p.group.position;
+  pos.copy(snippet.anchor);
+  pos.y += rise + h / 2;
   _v3.copy(camera.position).sub(snippet.anchor).normalize();
   const flat = Math.sqrt(Math.max(1 - _v3.y * _v3.y, 0));
   _v3.setFromMatrixColumn(camera.matrixWorld, 1);
-  p.mesh.position.addScaledVector(_v3, (h / 2) * (1 - flat));
-  p.beam.scale.set(w * 0.42, rise + h * 0.15, w * 0.42);
+  pos.addScaledVector(_v3, (h / 2) * (1 - flat));
+  _v3.copy(pos).sub(camera.position).normalize();
+  pos.copy(camera.position).addScaledVector(_v3, dist);
+  keepOnScreen(pos, w / viewW, h / viewH, box);
+  p.tick(dt);
+  facePanel(p.group, camera);
+  p.beam.scale.set(w * 0.28, rise + h * 0.12, w * 0.28);
   p.beam.position.copy(snippet.anchor);
+}
+
+/** The viewport, in NDC, not covered by the control stack, top bar, timeline or sidebar. */
+function freeStrip(): { left: number; right: number; top: number; bottom: number } {
+  const sbW = realFileOf(state.focus) ? 580 : 320;
+  return {
+    left: -1 + (2 * 250) / window.innerWidth,
+    right: 1 - (2 * sbW) / window.innerWidth,
+    top: 1 - (2 * 70) / window.innerHeight,
+    bottom: -1 + (2 * 110) / window.innerHeight,
+  };
+}
+
+/**
+ * Slide a screen-aligned card (half-extents `hx`, `hy` in NDC) so it stays
+ * inside the free strip; the move is in the camera plane, so its size holds.
+ */
+function keepOnScreen(pos: THREE.Vector3, hx: number, hy: number, box: { left: number; right: number; top: number; bottom: number }): void {
+  const d = camera.position.distanceTo(pos);
+  const viewW = 2 * d * Math.tan((camera.fov * Math.PI) / 360) * camera.aspect;
+  const viewH = viewW / camera.aspect;
+  _ndc.copy(pos).project(camera);
+  let dx = 0;
+  if (_ndc.x + hx > box.right) dx = box.right - (_ndc.x + hx);
+  if (_ndc.x - hx + dx < box.left) dx = box.left - (_ndc.x - hx);
+  let dy = 0;
+  if (_ndc.y + hy > box.top) dy = box.top - (_ndc.y + hy);
+  if (_ndc.y - hy + dy < box.bottom) dy = box.bottom - (_ndc.y - hy);
+  _v3.setFromMatrixColumn(camera.matrixWorld, 0);
+  pos.addScaledVector(_v3, (dx * viewW) / 2);
+  _v3.setFromMatrixColumn(camera.matrixWorld, 1);
+  pos.addScaledVector(_v3, (dy * viewH) / 2);
 }
 
 /** Hovering an avatar brightens that PR's beams and file rings. */
@@ -4065,7 +4124,7 @@ function animate(): void {
   }
   updatePeople(t);
   updateCallout();
-  updateSnippet();
+  updateSnippet(dt);
   if (arcFlow) arcFlow.update(t);
 
   for (const group of [scaffoldGroup, worktreeGroup]) {

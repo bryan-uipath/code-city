@@ -20,6 +20,7 @@ export interface VMod {
   /** 1-based start line; absent on modules synthesized for module-less files. */
   line?: number;
   exported?: boolean;
+  sig?: string;
   children?: VMod[];
   refs?: ModuleRef[];
 }
@@ -35,8 +36,7 @@ export interface Rect {
 /** One module's slot inside its file plate. */
 export interface Plot extends Rect {
   mod: VMod;
-  /** Inside a file: slab base above the plate and its linear height (lines × unit). */
-  y0?: number;
+  /** Inside a file: linear building height (lines × unit). */
   height?: number;
 }
 

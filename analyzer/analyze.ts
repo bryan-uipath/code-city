@@ -233,6 +233,19 @@ function parseFile(absPath: string, rel: string): ParsedFile {
   const isExported = (node: ts.Node) =>
     !!ts.canHaveModifiers(node) && !!ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
 
+  // The interface as written in source, whitespace collapsed, capped.
+  const src = (n: ts.Node | undefined): string => (n ? n.getText(sf).replace(/\s+/g, ' ') : '');
+  const callSig = (n: ts.SignatureDeclarationBase): string =>
+    `(${n.parameters.map((p) => src(p)).join(', ')})${n.type ? ': ' + src(n.type) : ''}`;
+  const heritage = (n: ts.ClassDeclaration | ts.InterfaceDeclaration): string =>
+    (n.heritageClauses ?? []).map((h) => src(h)).join(' ');
+  const sigOf = (s: string): { sig?: string } => (s ? { sig: s.length > 200 ? s.slice(0, 199) + '…' : s } : {});
+  const varSig = (decl: ts.VariableDeclaration): string => {
+    const init = decl.initializer;
+    if (init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) return callSig(init);
+    if (decl.type) return ': ' + src(decl.type);
+    return init ? '= ' + src(init).slice(0, 80) : '';
+  };
   // Class methods/properties/accessors, interface members, enum members.
   const memberName = (member: ts.ClassElement | ts.TypeElement | ts.EnumMember): string | null => {
     const n = member.name;
@@ -246,21 +259,26 @@ function parseFile(absPath: string, rel: string): ParsedFile {
     for (const member of node.members ?? []) {
       let kind: MemberKind;
       let name: string | null = null;
-      if (ts.isConstructorDeclaration(member)) { kind = 'method'; name = 'constructor'; }
-      else if (ts.isMethodDeclaration(member)) kind = 'method';
-      else if (ts.isPropertyDeclaration(member)) kind = 'property';
-      else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) kind = 'accessor';
+      let sig = '';
+      if (ts.isConstructorDeclaration(member)) { kind = 'method'; name = 'constructor'; sig = callSig(member); }
+      else if (ts.isMethodDeclaration(member)) { kind = 'method'; sig = callSig(member); }
+      else if (ts.isPropertyDeclaration(member)) { kind = 'property'; sig = member.type ? ': ' + src(member.type) : ''; }
+      else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) { kind = 'accessor'; sig = callSig(member); }
       else continue;
       name ??= memberName(member);
       if (!name) continue;
-      out.push({ name, kind, loc: spanLoc(member), line: startLine(member) });
+      out.push({ name, kind, loc: spanLoc(member), line: startLine(member), ...sigOf(sig) });
     }
     return out;
   };
   const memberChildren = (node: ts.InterfaceDeclaration | ts.EnumDeclaration): ModuleMember[] =>
     [...(node.members ?? [])].flatMap((member) => {
       const name = memberName(member);
-      return name ? [{ name, kind: 'member' as MemberKind, loc: spanLoc(member), line: startLine(member) }] : [];
+      if (!name) return [];
+      const sig = ts.isMethodSignature(member) ? callSig(member)
+        : ts.isPropertySignature(member) && member.type ? ': ' + src(member.type)
+        : ts.isEnumMember(member) && member.initializer ? '= ' + src(member.initializer) : '';
+      return [{ name, kind: 'member' as MemberKind, loc: spanLoc(member), line: startLine(member), ...sigOf(sig) }];
     });
 
   // Each module keeps its declaration node so refs can be mined once all names are known.
@@ -274,16 +292,16 @@ function parseFile(absPath: string, rel: string): ParsedFile {
     }
     if (ts.isFunctionDeclaration(stmt)) {
       const name = stmt.name?.text;
-      if (name) add({ name, kind: jsx && isUpper(name) ? 'component' : 'function', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt) }, stmt);
+      if (name) add({ name, kind: jsx && isUpper(name) ? 'component' : 'function', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), ...sigOf(callSig(stmt)) }, stmt);
     } else if (ts.isClassDeclaration(stmt)) {
       const name = stmt.name?.text;
-      if (name) add({ name, kind: 'class', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: classChildren(stmt) }, stmt);
+      if (name) add({ name, kind: 'class', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), ...sigOf(heritage(stmt)), children: classChildren(stmt) }, stmt);
     } else if (ts.isInterfaceDeclaration(stmt)) {
-      add({ name: stmt.name.text, kind: 'interface', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: memberChildren(stmt) }, stmt);
+      add({ name: stmt.name.text, kind: 'interface', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), ...sigOf(heritage(stmt)), children: memberChildren(stmt) }, stmt);
     } else if (ts.isTypeAliasDeclaration(stmt)) {
-      add({ name: stmt.name.text, kind: 'type', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt) }, stmt);
+      add({ name: stmt.name.text, kind: 'type', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), ...sigOf('= ' + src(stmt.type)) }, stmt);
     } else if (ts.isEnumDeclaration(stmt)) {
-      add({ name: stmt.name.text, kind: 'enum', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), children: memberChildren(stmt) }, stmt);
+      add({ name: stmt.name.text, kind: 'enum', loc: spanLoc(stmt), line: startLine(stmt), exported: isExported(stmt), ...sigOf(`${stmt.members.length} members`), children: memberChildren(stmt) }, stmt);
     } else if (ts.isVariableStatement(stmt)) {
       const exported = isExported(stmt);
       for (const decl of stmt.declarationList.declarations) {
@@ -292,7 +310,7 @@ function parseFile(absPath: string, rel: string): ParsedFile {
         const init = decl.initializer;
         const isFn = !!init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init));
         const kind: ModuleKind = isFn ? (jsx && isUpper(name) ? 'component' : 'function') : 'const';
-        add({ name, kind, loc: spanLoc(decl), line: startLine(decl), exported }, decl);
+        add({ name, kind, loc: spanLoc(decl), line: startLine(decl), exported, ...sigOf(varSig(decl)) }, decl);
       }
     }
   }

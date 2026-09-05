@@ -97,7 +97,7 @@ export interface ModuleRecord {
   file: VNode;
   mod: VMod;
   baseColor: THREE.Color;
-  /** World Y of the building's base (a stacked member sits above its plate). */
+  /** World Y of the building's base (its plate top). */
   base: number;
   height: number;
   center: THREE.Vector3;
@@ -133,13 +133,10 @@ export function buildCity(root: VNode): CityBuild {
     if (node.type === 'file') files.push(node);
     else folders.push(node);
   });
-  // Members share their module's footprint as stacked slabs; no plate each.
-  const plated = files.filter((f) => f.synth !== 'member');
-
   const folderPart = buildPlates(folders, false);
-  const filePart = buildPlates(plated, true);
+  const filePart = buildPlates(files, true);
   const buildings = buildBuildings(files);
-  const outlines = buildOutlines(folders, plated);
+  const outlines = buildOutlines(folders, files);
 
   if (folderPart.mesh) group.add(folderPart.mesh);
   if (filePart.mesh) group.add(filePart.mesh);
@@ -289,7 +286,7 @@ function buildBuildings(files: VNode[]): { meshes: THREE.InstancedMesh[]; record
       const entry = entries[i];
       if (!entry) continue;
       const { file, plot } = entry;
-      const top = (file.top ?? 0) + (plot.y0 ?? 0);
+      const top = file.top ?? 0;
       const h = plot.height ?? buildingHeight(plot.mod.loc) * (KIND_HEIGHT_SCALE[kind] ?? 1);
       pos.set(plot.x + plot.w / 2, top, plot.z + plot.h / 2);
       scale.set(Math.max(plot.w, 0.25), h, Math.max(plot.h, 0.25));
@@ -380,6 +377,11 @@ function buildOutlines(folders: VNode[], files: VNode[]): THREE.LineSegments | n
 // ---------------------------------------------------------------------------
 
 const LABEL_FONT = '600 44px "SFMono-Regular", "JetBrains Mono", Menlo, monospace';
+const SUB_FONT = '30px "SFMono-Regular", "JetBrains Mono", Menlo, monospace';
+
+function clipText(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
 
 /**
  * Canvas-texture text sprite. `worldHeight` is the on-screen cap height in
@@ -387,7 +389,7 @@ const LABEL_FONT = '600 44px "SFMono-Regular", "JetBrains Mono", Menlo, monospac
  */
 export function makeLabelSprite(
   text: string,
-  { color = '#a8f4ff', worldHeight = 12, glow = true }: { color?: string; worldHeight?: number; glow?: boolean } = {}
+  { color = '#a8f4ff', worldHeight = 12, glow = true, sub }: { color?: string; worldHeight?: number; glow?: boolean; sub?: string } = {}
 ): THREE.Sprite {
   // Case is the caller's call: place names are uppercase city signage, but
   // identifiers (files, modules) must read exactly as they are written.
@@ -396,8 +398,14 @@ export function makeLabelSprite(
   const ctx = ctx2d(canvas);
   ctx.font = LABEL_FONT;
   const pad = 26;
-  const w = Math.ceil(ctx.measureText(label).width) + pad * 2;
-  const h = 96;
+  let w = Math.ceil(ctx.measureText(label).width) + pad * 2;
+  // A second, smaller line under the name: a function's `(args) → result`.
+  const subText = sub ? clipText(sub, 72) : '';
+  if (subText) {
+    ctx.font = SUB_FONT;
+    w = Math.max(w, Math.ceil(ctx.measureText(subText).width) + pad * 2);
+  }
+  const h = subText ? 140 : 96;
   canvas.width = Math.max(w, 8);
   canvas.height = h;
 
@@ -408,16 +416,22 @@ export function makeLabelSprite(
   // Dark backing pill so labels stay readable over bright plates.
   c2.fillStyle = 'rgba(3, 6, 18, 0.78)';
   c2.beginPath();
-  c2.roundRect(4, h / 2 - 34, canvas.width - 8, 68, 30);
+  c2.roundRect(4, 14, canvas.width - 8, h - 28, 30);
   c2.fill();
   if (glow) {
     c2.shadowColor = color;
     c2.shadowBlur = 22;
   }
+  const titleY = subText ? 48 : h / 2;
   c2.fillStyle = color;
-  c2.fillText(label, canvas.width / 2, h / 2);
+  c2.fillText(label, canvas.width / 2, titleY);
   c2.shadowBlur = 0;
-  c2.fillText(label, canvas.width / 2, h / 2);
+  c2.fillText(label, canvas.width / 2, titleY);
+  if (subText) {
+    c2.font = SUB_FONT;
+    c2.fillStyle = 'rgba(168, 244, 255, 0.85)';
+    c2.fillText(subText, canvas.width / 2, 100);
+  }
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -984,9 +998,8 @@ export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.ora
     const z1 = r.z + r.h + grow;
     const tier = n.tier ?? n.depth ?? 0;
     // A member slab is caged around itself: its lift off the plate is not height.
-    const lift = n.plots?.[0]?.y0 ?? 0;
-    const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1 + lift;
-    const y1 = y0 + Math.max(tallestBuilding(n) - lift + 6, 14);
+    const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1;
+    const y1 = y0 + Math.max(tallestBuilding(n) + 6, 14);
 
     const c: Array<[number, number]> = [
       [x0, z0], [x1, z0], [x1, z1], [x0, z1],
@@ -1026,7 +1039,7 @@ export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.ora
 export function tallestBuilding(fileNode: VNode): number {
   let max = 0;
   if (fileNode.plots) {
-    for (const p of fileNode.plots) max = Math.max(max, (p.y0 ?? 0) + (p.height ?? buildingHeight(p.mod.loc)));
+    for (const p of fileNode.plots) max = Math.max(max, p.height ?? buildingHeight(p.mod.loc));
   }
   return max;
 }
