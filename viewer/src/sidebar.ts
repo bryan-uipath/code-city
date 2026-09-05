@@ -104,6 +104,8 @@ export interface Descriptor {
   coupling?: { out: number; in: number } | null;
   codePath: string | null;
   span: { start: number; end: number } | null;
+  /** The module's own lines — scopes the commit log; `span` is only the reading window. */
+  logSpan?: { start: number; end: number };
   /** File-level or deeper — the code pane is worth widening for. */
   deep: boolean;
   /** Filled in from the host when there is no commit stream. */
@@ -142,7 +144,7 @@ export function createSidebar(
   const secCode = section('code');
   body.append(secInspect, secTour, secSearch, secSelected, secWork, secCode);
 
-  const spanLogs = new Map<string, LogCommit[]>(); // span key -> commits on those lines
+  const spanLogs = new Map<string, { commits: LogCommit[]; scoped: boolean }>(); // span key -> its log
   const state: {
     hover: Descriptor | null;
     selected: Descriptor | null;
@@ -245,6 +247,7 @@ export function createSidebar(
       state.openPrs.clear();
       state.allCommits = false;
       renderSelected();
+      if (desc) loadSpanCommits(desc); // before loadCode: the tour skips renderSelected
       loadCode(desc);
       applyWidth();
     },
@@ -262,6 +265,7 @@ export function createSidebar(
       return state.search !== null;
     },
     setWorkingTree(view) {
+      spanLogs.clear(); // a re-read of the tree re-reads the per-span logs too
       state.work = view;
       renderWork();
     },
@@ -327,7 +331,6 @@ export function createSidebar(
       prsHtml(d.prs || []) +
       commitsHtml(d);
     loadFallbackCommits(d);
-    loadSpanCommits(d);
   }
 
   function statsHtml(d: Descriptor): string {
@@ -381,10 +384,12 @@ export function createSidebar(
   function commitsHtml(d: Descriptor): string {
     const list = commitsFor(d);
     const key = spanKey(d);
-    if (key && !spanLogs.has(key)) return `<div class="sb-sub">Commits on these lines…</div>`;
+    const log = key ? spanLogs.get(key) : undefined;
+    if (key && !log) return `<div class="sb-sub">Commits on these lines…</div>`;
     if (!list.length) return '';
     const t = state.cursor;
-    const title = key ? 'Commits on these lines' : t === null ? 'Recent commits' : 'Commits near cursor';
+    const title = log ? (log.scoped ? 'Commits on these lines' : 'Recent commits · file')
+      : t === null ? 'Recent commits' : 'Commits near cursor';
     const shown = state.allCommits ? list.slice(0, MAX_COMMITS) : list.slice(0, COMMIT_PEEK);
     const rows = shown.map((c) => {
       const near = t !== null && Math.abs(c.ts - t) < 2 * 86400;
@@ -499,16 +504,21 @@ export function createSidebar(
   // A module's commits are the ones that touched its lines (`git log -L`),
   // fetched once per span and remembered across hovers and selections.
   function spanKey(d: Descriptor): string | null {
-    return d.span && d.codePath && opts.host.available() ? `${d.codePath}:${d.span.start}-${d.span.end}` : null;
+    const s = d.logSpan;
+    return s && d.codePath && opts.host.available() ? `${d.codePath}:${s.start}-${s.end}` : null;
   }
   function loadSpanCommits(d: Descriptor): void {
     const key = spanKey(d);
-    if (!key || !d.span || !d.codePath || spanLogs.has(key)) return;
-    opts.host.getLog(d.codePath, d.span.start, d.span.end).then((json) => {
-      spanLogs.set(key, json && Array.isArray(json.commits) ? json.commits : []);
+    const span = d.logSpan;
+    if (!key || !span || !d.codePath || spanLogs.has(key)) return;
+    opts.host.getLog(d.codePath, span.start, span.end).then((json) => {
+      spanLogs.set(key, {
+        commits: json && Array.isArray(json.commits) ? json.commits : [],
+        scoped: !!json?.scoped,
+      });
       if (state.selected === d) {
         renderSelected();
-        loadCode(d);
+        void loadLatestDiff(d, state.codeToken); // the source pane already stands
       }
     });
   }
@@ -517,7 +527,7 @@ export function createSidebar(
     const codePath = d.codePath;
     if (!codePath) return [];
     const key = spanKey(d);
-    if (key) return spanLogs.get(key) ?? [];
+    if (key) return spanLogs.get(key)?.commits ?? [];
     const tl = opts.timeline;
     if (tl && tl.enabled) {
       return state.cursor === null ? tl.commitsFor(codePath).slice(0, MAX_COMMITS)
@@ -529,7 +539,7 @@ export function createSidebar(
   /** Without a commit stream, ask the host for this path's log (once). */
   function loadFallbackCommits(d: Descriptor): void {
     const tl = opts.timeline;
-    if ((tl && tl.enabled) || !d.codePath || d.logCommits || !opts.host.available()) return;
+    if ((tl && tl.enabled) || d.logSpan || !d.codePath || d.logCommits || !opts.host.available()) return;
     const token = ++state.codeToken;
     opts.host.getLog(d.codePath).then((json) => {
       if (!json || token !== state.codeToken || state.selected !== d) return;
@@ -563,21 +573,27 @@ export function createSidebar(
       `<div class="h"><span>Code</span><em>${escapeHtml(baseName(codePath))} ` +
       `${Number(src.start) || start}–${Number(src.end) || end}</em></div>`;
     secCode.innerHTML = head + sourceHtml(src, Number(src.start) || start);
+    await loadLatestDiff(d, token);
+  }
 
-    const latest = latestHashFor(d);
-    if (!latest) return;
+  /** Appends the newest commit's diff under the source pane — the tail of loadCode. */
+  async function loadLatestDiff(d: Descriptor, token: number): Promise<void> {
+    const codePath = d.codePath;
+    const latest = codePath ? latestHashFor(d) : null;
+    // Both loadCode and the span-log callback can reach here; append once.
+    if (!codePath || !latest || token !== state.codeToken || secCode.querySelector('.sb-diff-head')) return;
     const diff = await opts.host.getDiff(codePath, latest);
-    if (token !== state.codeToken || !diff || !diff.diff) return;
+    if (token !== state.codeToken || !diff || !diff.diff || secCode.querySelector('.sb-diff-head')) return;
     secCode.insertAdjacentHTML(
       'beforeend',
-      `<div class="sb-sub">Latest diff · ${escapeHtml(latest.slice(0, 7))}</div>` + diffHtml(diff.diff)
+      `<div class="sb-sub sb-diff-head">Latest diff · ${escapeHtml(latest.slice(0, 7))}</div>` + diffHtml(diff.diff)
     );
   }
 
   function latestHashFor(d: Descriptor): string | null {
     const codePath = d.codePath;
     const key = spanKey(d);
-    if (key) return spanLogs.get(key)?.[0]?.h ?? null;
+    if (key) return spanLogs.get(key)?.commits[0]?.h ?? null;
     const tl = opts.timeline;
     if (tl && tl.enabled && codePath) {
       const list = state.cursor === null ? tl.commitsFor(codePath) : tl.commitsNear(state.cursor, codePath, 1);

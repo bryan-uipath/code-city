@@ -63,9 +63,11 @@ const ROUTES = {
     // be combined with --follow, and a range past EOF falls back to the file.
     const forFile = ['log', '-n', String(LOG_COUNT), '--follow', pretty, '--', rel];
     let stdout;
+    let scoped = false; // did `-L` actually answer? the caller labels the fallback
     if (start >= 1 && end >= start) {
       try {
         ({ stdout } = await git(root, ['log', '-n', String(LOG_COUNT), '--no-patch', `-L${start},${end}:${rel}`, pretty]));
+        scoped = true;
       } catch {
         ({ stdout } = await git(root, forFile));
       }
@@ -76,7 +78,7 @@ const ROUTES = {
       const [h, ts, a, ...rest] = line.split('\t');
       return { h, ts: Number(ts), a, s: rest.join('\t') };
     });
-    send(res, 200, { commits });
+    send(res, 200, { commits, scoped });
   },
 
   '/diff': async ({ res, root, rel, params }) => {

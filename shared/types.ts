@@ -182,6 +182,8 @@ export interface LogCommit {
 
 export interface LogResponse {
   commits: LogCommit[];
+  /** True only when a line range was honoured (`git log -L`); false = file-wide fallback. */
+  scoped?: boolean;
 }
 
 export interface DiffResponse {

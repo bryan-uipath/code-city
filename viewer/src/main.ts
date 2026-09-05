@@ -3435,6 +3435,9 @@ function describe(target: Target | null): Descriptor | null {
   // A strata level stands for one commit on that file — say which one.
   const level = target.level?.commit;
   const match = filterMatchCount(node);
+  const modSpan = mod && mod.line !== undefined && Number.isFinite(mod.line)
+    ? { start: Math.max(1, mod.line), end: Math.max(1, mod.line) + Math.max(mod.loc, 1) - 1 }
+    : null;
   return {
     name: mod ? mod.name : node.name,
     kind,
@@ -3454,9 +3457,8 @@ function describe(target: Target | null): Descriptor | null {
     prs: real ? prsTouching(real.path, mod) : index.prsByNode.get(node) || [],
     coupling: state.coupling ? couplingSummary(node) : null,
     codePath: real ? real.path : null,
-    span: mod && mod.line !== undefined && Number.isFinite(mod.line)
-      ? { start: Math.max(1, mod.line), end: Math.max(1, mod.line) + Math.max(mod.loc, 1) - 1 }
-      : null,
+    span: modSpan,
+    logSpan: modSpan ?? undefined, // revealPath widens `span` into a reading window; the log keeps the real lines
     deep: !!real,
   };
 }
