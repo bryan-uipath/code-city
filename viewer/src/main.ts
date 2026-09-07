@@ -17,10 +17,10 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 import type { CityHost } from '../../shared/host.js';
 import { HttpHost } from '../../shared/host.js';
-import type { CityData, DiffFile, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr } from '../../shared/types.js';
+import type { CityData, DiffFile, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr, SourceResponse } from '../../shared/types.js';
 import { layoutCity, plateTop, buildingHeight, streetWidth, setWorldScale, worldScale } from './layout.js';
 import {
-  buildCity, buildEnvironment, disposeObject,
+  buildCity, buildEnvironment, disposeObject, tallestBuilding,
   buildCouplingArcs, buildArcFlow, buildPrMarker, buildScaffolding, makeSelectionBox, frameNodeBox, makeLabelSprite,
   buildConstructionSites, buildVacantLots, prStatus,
   heatColor, walk, KIND_COLORS, KIND_ORDER, MEMBER_ORDER, PALETTE,
@@ -50,6 +50,7 @@ import {
 } from './strata.js';
 import { createSkyline, type Skyline, type SkyHit } from './skyline.js';
 import { asVNode, type AnyKind, type Home, type VMod, type VNode } from './vtree.js';
+import { facePanel, makeCodePanel, SNIPPET_LINES, type CodePanel } from './hologram.js';
 
 const MAX_ARCS = 150;
 const DAY = 86400;
@@ -914,6 +915,7 @@ function rebuildScene(
     from.cz += stageHome.z;
   }
   clearCallout();
+  clearSnippet();
   if (city) {
     retireCity(city.group);
     city = null;
@@ -940,6 +942,7 @@ function rebuildScene(
     setSelection(null, { keepSidebar: true });
   }
   refreshSelectionBox();
+  refreshSnippet();
   rebuildArcs();
   applyOverlay();
   updateLabelCandidates();
@@ -1160,15 +1163,19 @@ function unplacedHome(base: VNode, side: number): Home {
 }
 
 /**
- * Smallest extent a scope is allowed: real folders need room to place each
- * file; inside a file the module buildings are up to 60 units tall, so the
- * plate is sized to the number of buildings rather than the file's tiny plot.
+ * Smallest extent a scope is allowed: a folder needs room to place each file,
+ * a file each module; a lone module or member stack just needs to be seen.
  */
 function stageFloor(root: VNode): number {
+  if (root.synth && root.synth !== 'fileScope') return 24;
+  if (root.synth) return Math.min(Math.max(Math.sqrt(root.children?.length ?? 1) * 11, 60), CITY_SIZE);
+  return Math.min(Math.max(Math.sqrt(countFiles(root)) * 6, 48), CITY_SIZE);
+}
+
+function countFiles(root: VNode): number {
   let n = 0;
-  walk(root, (nd) => { if (nd.type === 'file') n += root.synth ? (nd.modules || []).length : 1; });
-  const floor = root.synth ? Math.sqrt(Math.max(n, 1)) * 55 : Math.sqrt(n) * 6;
-  return Math.min(Math.max(floor, root.synth ? 60 : 48), CITY_SIZE);
+  walk(root, (nd) => { if (nd.type === 'file') n++; });
+  return n;
 }
 
 function indexScope(): void {
@@ -1319,7 +1326,8 @@ function isMode(value: string | undefined): value is Mode {
 function renderLegend(): void {
   const rows: string[] = [];
   const stacked = strata.build !== null;
-  if (state.mode === 'structure') {
+  const inFile = realFileOf(state.focus) !== null;
+  if (inFile || state.mode === 'structure') {
     const kinds = scope.root && scope.root.synth ? [...KIND_ORDER, ...MEMBER_ORDER] : [...KIND_ORDER];
     for (const kind of kinds) {
       const hex = '#' + KIND_COLORS[kind].toString(16).padStart(6, '0');
@@ -1327,7 +1335,8 @@ function renderLegend(): void {
     }
     // At folder scope a whole stack takes its file's dominant kind; the kinds
     // themselves become buildings once you isolate into the file.
-    if (stacked) rows.push(`<div class="row"><span>file = dominant kind · isolate for modules</span></div>`);
+    if (inFile) rows.push(`<div class="row"><span>area · height = lines · reading order = source order</span></div>`);
+    else if (stacked) rows.push(`<div class="row"><span>file = dominant kind · isolate for modules</span></div>`);
   } else if (state.mode === 'recent') {
     rows.push(
       `<div class="row"><i class="sw" style="background:#4ade80;box-shadow:0 0 8px #4ade80"></i><span>touched &lt; 30d</span></div>`,
@@ -1594,11 +1603,14 @@ function applyOverlay(): void {
   const denom = Math.sqrt(Math.max(maxV, 1));
   const green = new THREE.Color(PALETTE.green);
 
+  // Inside a file every module shares the file's stats, so the overlays have
+  // nothing per-building to say: kind is the paint there.
+  const inFile = realFileOf(state.focus) !== null;
   // The buildings are hidden wherever the stacks stand, so repainting thousands
   // of invisible instances would be pure cost.
   if (!strata.build) {
     for (const rec of city.moduleRecords) {
-      if (mode === 'structure' || mode === 'strata') {
+      if (inFile || mode === 'structure' || mode === 'strata') {
         _color.copy(rec.baseColor);
       } else if (mode === 'prov') {
         provColor(rec.file, _color);
@@ -3357,6 +3369,13 @@ function hasRect(node: VNode | undefined): node is VNode {
   return !!node && !!node.rect;
 }
 
+/** Tallest building top in the current scope (plots only — the stacks are folder-scope). */
+function scopeTallest(): number {
+  let m = 0;
+  for (const f of scope.fileNodes) m = Math.max(m, tallestBuilding(f));
+  return m;
+}
+
 /** additions+deletions when the data has them, else file count as a stand-in. */
 function prSize(pr: Pr): number {
   const a = Number(pr.additions);
@@ -3370,8 +3389,7 @@ function uniq<T>(arr: T[]): T[] {
 }
 
 function tallest(node: VNode): number {
-  let m = 0;
-  for (const p of node.plots || []) m = Math.max(m, buildingHeight(p.mod.loc));
+  let m = tallestBuilding(node);
   if (node.children) for (const c of node.children) m = Math.max(m, tallest(c));
   return m;
 }
@@ -3383,6 +3401,7 @@ function tallest(node: VNode): number {
 function setSelection(target: Target | null, opts: { keepSidebar?: boolean } = {}): void {
   state.selection = target;
   refreshSelectionBox();
+  refreshSnippet();
   if (!opts.keepSidebar) showSelection(target ? describe(target) : null);
   rebuildArcs();
   updateLabelCandidates();
@@ -3467,10 +3486,9 @@ function framingFor(node: VNode): Framing | null {
   if (!r) return null;
   const target = new THREE.Vector3(r.x + r.w / 2, plateTop(node.tier ?? node.depth ?? 0, node.type === 'file'), r.z + r.h / 2)
     .add(stageHome);
-  // An isolated scope keeps its true city-wide size, so it is the FRAMING that
-  // has to close the distance — the geometry is not stretched to meet the camera.
   const s = worldScale();
-  const extent = Math.max(r.w, r.h, 12 * s);
+  // Inside a file the buildings are a good share of the plate: fit them too.
+  const extent = Math.max(r.w, r.h, 12 * s) + (realFileOf(state.focus) ? scopeTallest() : 0);
   // Framings are computed at the base FOV: a flight that is mid-breath must
   // still aim at where the destination will sit once the breath is over.
   const vFov = (BASE_FOV * Math.PI) / 180;
@@ -3493,7 +3511,10 @@ function framingFor(node: VNode): Framing | null {
   _v3.copy(camera.position).sub(controls.target);
   if (_v3.lengthSq() < 1e-6) _v3.set(0.4, 0.8, 0.9);
   _v3.normalize();
-  if (_v3.y < 0.42) { _v3.y = 0.42; _v3.normalize(); }
+  // A file is read like a page: look down at it, so the front row does not
+  // hide the rows behind.
+  const minY = realFileOf(state.focus) ? 0.7 : 0.42;
+  if (_v3.y < minY) { _v3.y = minY; _v3.normalize(); }
   const pos = target.clone().addScaledVector(_v3, dist);
   // Camera right vector: the view direction is -_v3, so right = up × _v3.
   const right = new THREE.Vector3().crossVectors(camera.up, _v3).normalize();
@@ -4069,7 +4090,7 @@ function updateLabelCandidates(): void {
       key: rec.file.path + '#' + rec.mod.name,
       text: String(rec.mod.name),
       tier: 'module',
-      pos: new THREE.Vector3(rec.center.x, (rec.file.top ?? 0) + rec.height + 2.5, rec.center.z).add(stageHome),
+      pos: new THREE.Vector3(rec.center.x, rec.base + rec.height + 2.5, rec.center.z).add(stageHome),
       size: Math.max(rec.height, 3),
       node: rec.file,
       rec,
@@ -4403,6 +4424,7 @@ function setHover(hit: Target | null): void {
       hoverBox.visible = false;
       clearCallout();
     }
+    refreshSnippet();
     sidebar.setHover(null);
     return;
   }
@@ -4415,10 +4437,104 @@ function setHover(hit: Target | null): void {
 
   const desc = describe(hit);
   if (inCity) {
-    if (hit.type !== 'pr' && desc) showCallout(hit, desc.name, calloutSub(hit, desc));
+    const holo = realFileOf(state.focus) !== null && moduleRecOf(hit) !== null;
+    if (!holo && hit.type !== 'pr' && desc) showCallout(hit, desc.name, calloutSub(hit, desc));
     else clearCallout();
   }
+  refreshSnippet();
   sidebar.setHover(desc);
+}
+
+// --- code hologram: a module's source stood up above its column (inside a file)
+
+const snippet: { panel: CodePanel | null; rec: ModuleRecord | null; anchor: THREE.Vector3; token: number } = {
+  panel: null, rec: null, anchor: new THREE.Vector3(), token: 0,
+};
+const sourceCache = new Map<string, Promise<SourceResponse | null>>();
+
+/** Hovered module first, else the selected one; nothing outside a file isolate. */
+function snippetTarget(): ModuleRecord | null {
+  if (!realFileOf(state.focus)) return null;
+  return moduleRecOf(state.hover) ?? moduleRecOf(state.selection);
+}
+
+/**
+ * The building a target stands for. Inside a file a module is usually hit
+ * through its synthetic leaf node (its pedestal plate), not the instance.
+ */
+function moduleRecOf(t: Target | null): ModuleRecord | null {
+  if (!t || t.type === 'pr' || !city) return null;
+  // A rec outlives its city on hover/selection state: only this build's is real.
+  if (t.rec) return city.moduleRecords.includes(t.rec) ? t.rec : null;
+  if (!t.node.synth || !t.node.mod) return null;
+  return city.moduleRecords.find((r) => r.file === t.node) ?? null;
+}
+
+function refreshSnippet(): void {
+  const rec = snippetTarget();
+  if (rec === snippet.rec) return;
+  clearSnippet();
+  snippet.rec = rec;
+  if (!rec) return;
+  const token = snippet.token;
+  const file = realFileOf(rec.file);
+  const mod = rec.mod;
+  const line = mod.line;
+  const header = `${mod.kind} ${mod.name}`;
+  const loc = Math.max(mod.loc, 1);
+  const sub = line ? `L${line}–${line + loc - 1}` : `${loc} lines`;
+  const more = Math.max(loc - SNIPPET_LINES, 0);
+  const mount = (lines: string[] | null, first: number): void => {
+    if (token !== snippet.token) return; // superseded while loading
+    const panel = makeCodePanel(header, sub, lines, first, more);
+    scene.add(panel.mesh);
+    snippet.panel = panel;
+    updateSnippet();
+  };
+  // No source without a host (static export): the panel is the header alone.
+  if (!file || !line || !host.available()) {
+    mount(null, 1);
+    return;
+  }
+  // Only what the card shows: the "+N lines" tail is known from loc.
+  const end = Math.min(line + SNIPPET_LINES - 1, line + loc - 1);
+  const key = `${file.path}:${line}:${end}`;
+  let pending = sourceCache.get(key);
+  if (!pending) {
+    pending = host.getSource(file.path, line, end);
+    sourceCache.set(key, pending);
+  }
+  pending.then((src) => mount(src ? src.lines : null, src ? src.start : line));
+}
+
+function clearSnippet(): void {
+  snippet.token++;
+  snippet.rec = null;
+  if (!snippet.panel) return;
+  scene.remove(snippet.panel.mesh);
+  disposeObject(snippet.panel.mesh);
+  snippet.panel = null;
+}
+
+/**
+ * Per frame: a screen-aligned card up and to the right of the building's top,
+ * sized with distance so it reads the same from anywhere.
+ */
+function updateSnippet(): void {
+  const p = snippet.panel;
+  const rec = snippet.rec;
+  if (!p || !rec) return;
+  // Re-derived rather than baked: a rebuild re-homes the stage under the card.
+  snippet.anchor.set(rec.center.x, rec.base + rec.height, rec.center.z).add(stageHome);
+  const dist = camera.position.distanceTo(snippet.anchor);
+  const w = Math.min(Math.max(dist * 0.2, 6), 40);
+  const h = w * p.aspect;
+  p.mesh.scale.set(w, h, 1);
+  facePanel(p.mesh, camera);
+  _v3.set(1, 0, 0).applyQuaternion(camera.quaternion); // screen right
+  p.mesh.position.copy(snippet.anchor).addScaledVector(_v3, w / 2 + 1.5);
+  _v3.set(0, 1, 0).applyQuaternion(camera.quaternion); // screen up
+  p.mesh.position.addScaledVector(_v3, h / 2 + 1);
 }
 
 /** Hovering an avatar brightens that PR's beams and file rings. */
@@ -4536,6 +4652,7 @@ function animate(): void {
   }
   updatePeople(t);
   updateCallout();
+  updateSnippet();
   if (arcFlow) arcFlow.update(t);
 
   // Only the parts that asked to breathe do: the working-tree layer nests solid
