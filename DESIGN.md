@@ -38,6 +38,9 @@ zoom-out), like unfolding a hologram.
 - Orbit / zoom / pan (OrbitControls).
 - Hover → HUD tooltip (name, kind, loc, churn, fix count, PRs touching it).
 - Double-click → camera fly-to + focus that node (breadcrumb updates). Esc / breadcrumb → back up.
+- View buttons (HUD): City · Skyline. A **view** is not a **mode** — the mode
+  says how the massing is painted, the view says how it is drawn, and both are
+  true at once (see "The 2D skyline" below).
 - Mode buttons (HUD): Structure · Churn · Fix hotspots · Recent focus · Strata.
   **The mode never changes the massing** — at folder scope all five stand on the
   same strata stacks and only repaint them (see "Strata as the shared massing").
@@ -226,6 +229,83 @@ Level colors encode conventional-commit type: feat cyan · fix red · refactor
 violet · chore slate · docs green · test amber · perf pink · ci gray · unknown =
 age gradient. (Shipped follow-up: the stacks became the shared massing for every
 mode — see "Strata as the shared massing" above.)
+
+## The 2D skyline (implemented — a second renderer, not a second model)
+
+The strata stacks with one spatial axis removed: bars in tree order, width =
+loc, height = the commit stack. Tree order is what makes it a *skyline* rather
+than a ranked chart — folders stay contiguous runs, so `viewer/src` is still one
+place you can point at, and the bracket under the run names it. Sorting by a
+metric would read more easily and would throw away the thing that makes the row
+a map.
+
+- **A view is a third axis of HUD state**, beside Overlay and Layers. The
+  existing invariant is that a mode is a paint and never touches the massing;
+  a view touches neither. "Churn in the skyline" and "churn in the city" are one
+  answer seen from two places, which is exactly why the skyline is allowed to
+  exist without a second copy of anything.
+- **It decides no colors.** `paintStrata` computes the paint once and hands the
+  same value to both renderers, so the five overlays, the legend filter's
+  ghosting, the working-tree amber and the search highlight arrive in the
+  skyline for free, and the two views cannot drift. Levels come from
+  `walkStack` — extracted out of `createStrata` for exactly this — so the
+  timeline range and the filter's collapse predicate arrive the same way.
+- **The 3D city stays up while it is off stage.** It is still built, still laid
+  out, still following the focus stack; only its render call is skipped. That is
+  what makes the switch instant, keeps scope and selection continuous across it,
+  and lets hover, select and double-click-to-isolate drive the existing
+  `setHover` / `setSelection` / `focusNode` seam with no skyline-specific path.
+  Only the 3D dressing (hover box, callout, PR beams, leader lines) is guarded.
+- **Bars aggregate to the deepest cut that fits.** 4,000 files across an 1,100px
+  strip is a quarter of a pixel each, so the row takes the deepest cut of the
+  subtree that leaves every bar wide enough to see and to click: districts at
+  repo scope, folders inside those, files once you have drilled in. Drill-down
+  is therefore the level-of-detail control, and it is the one already in the
+  user's hands. A folder borrows its subtree's history — its files' commits
+  deduped by hash, deltas summed over its own files — which is the definition
+  `churn` already uses, so the bar and the inspector agree.
+- **One fold stride for the whole row.** A per-bar level budget is the obvious
+  move and it is wrong: it lands every stack over the budget on the same
+  ceiling, so a 2,600-commit district and a 130-commit file come out the same
+  height. Instead the tallest stack sets one stride and everything folds by it,
+  which keeps heights proportional; a folded level takes the type most of its
+  commits were, represented by a real commit of that type so the inspector and
+  the filter still have something true to point at. At stride 1 the fold is the
+  identity, which is the case a file scope is always in. The row says which it
+  is (`1 LEVEL = N COMMITS`).
+- **A bar can be a folder, so the paints had to learn to answer for one.** Four
+  inputs resolved through `realFileOf`, which is null for a folder: the search
+  weight, the working-tree state, the dominant kind and the scrubbed recency.
+  Each now folds over the subtree, memoized and cleared with the thing it reads.
+- **Inside a file isolate there are no stacks**, exactly as in 3D, so bars fall
+  back to module massing: height is `buildingHeight(loc)`, color is the kind.
+- **The LEVELS stat reports the renderer you are looking at.** Both views stand
+  on the same stacks, but they do not draw the same number of things: at repo
+  scope the city has 18,477 slabs standing where the skyline has 357 folded
+  levels. Every write to that counter goes through one `renderMassingStat`,
+  which asks the skyline when the skyline is on stage (a folded level counts
+  against the legend filter when the commit REPRESENTING it matches — the same
+  commit that decides how it is painted) and falls back to the 3D slab count,
+  then the module count, exactly as before.
+- The plot fits the free strip the HUD leaves, measured off the panels the way
+  `framingFor` does it for the camera, and re-measured as the sidebar widens
+  under a file selection. Verified at 4,259 files / 2,621 commits, 90fps.
+- Entry: the View buttons, or `?view=skyline`.
+- Not yet in the skyline: the PR layer (avatars, beams and conflict cages are 3D
+  constructs that need a 2D answer) and coupling arcs.
+- **The Layers panel is off-stage, not gone.** Coupling arcs, People / PRs and
+  FX are drawn onto the 3D canvas, and the skyline hides that canvas outright —
+  so in skyline view those three would be buttons that light up and do nothing.
+  They are marked `data-view-only="city"` and go dim, unlit and inert while the
+  skyline is on stage (`syncLayerToggles`), rather than being removed: a panel
+  that changes shape under the pointer on a view switch costs more than a dim
+  row does. The state behind them is never touched, so switching back to the
+  city restores exactly what you left — People / PRs stays *on* while reading
+  unlit, because the LED reports what is on screen, not what is remembered.
+  Working tree is the one live layer in both views: its amber is a `StrataPaint`
+  input, so it arrives in the skyline through `paintStrata` like every other
+  overlay. That split is the rule for any new layer — paint it through the
+  strata and it works in both; draw it into the scene and it is city-only.
 
 ## Analyzer cache & static export
 
@@ -514,7 +594,8 @@ viewer/src/layout.ts      # squarified treemap layout
 viewer/src/city.ts        # geometry/instancing builders
 viewer/src/labels.ts      # map-style dynamic labels + parent->child leader lines
 viewer/src/terrace.ts     # district names on the terrace side walls
-viewer/src/strata.ts      # Strata mode: per-commit slab stacks + their paints
+viewer/src/strata.ts      # per-commit slab stacks, the walkStack rule + their paints
+viewer/src/skyline.ts     # the 2D skyline view: the same stacks as an elevation
 viewer/src/tour.ts        # tour player: HUD panel, steps, autoplay, tour loading
 viewer/public/tours/       # bundled tours (welcome.cctour = this repo's own architecture)
 viewer/public/data.json   # generated (gitignored)

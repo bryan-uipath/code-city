@@ -52,6 +52,8 @@
   canvas { display: block; }
 
   #scene { position: fixed; inset: 0; }
+  /* The 2D skyline shares #scene with the WebGL canvas; exactly one is shown. */
+  #skyline { position: absolute; inset: 0; display: none; }
 
   /* ------------------------------------------------------------- CRT skin */
   #crt {
@@ -145,10 +147,25 @@
   #controls {
     left: 14px; top: 66px; width: 214px;
     display: flex; flex-direction: column; gap: 10px;
+    /* The stack must never grow down into #help. The buttons are pinned and
+       the legend — the one panel with unbounded content — takes the squeeze,
+       so its filter controls stay reachable on a short window. */
+    max-height: calc(100vh - 226px);
+    overflow: hidden;
   }
-  #controls > .panel { padding: 11px 12px; }
+  #controls > .panel { padding: 11px 12px; flex: none; }
+  #controls > #legend {
+    flex: 0 1 auto; min-height: 74px;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #legend-body {
+    overflow-y: auto; min-height: 0;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
 
   .btnrow { display: flex; flex-direction: column; gap: 5px; }
+  .btnrow.split { flex-direction: row; }
+  .btnrow.split button { justify-content: center; text-align: center; }
 
   button.mode, button.toggle {
     appearance: none; width: 100%; text-align: left; cursor: pointer;
@@ -172,6 +189,16 @@
   }
   button.toggle.active { border-color: var(--orange); color: #ffd9cd; }
   button.toggle.active .led { background: var(--orange); border-color: var(--orange); box-shadow: 0 0 8px var(--orange); }
+  /* A layer the renderer on stage cannot draw. The button keeps its place so
+     the panel does not jump on a view switch, but it stops claiming to be lit:
+     the LED reads off even while the state behind it is still on, so coming
+     back to the city restores exactly what you left. */
+  button.toggle.off-stage {
+    cursor: default; opacity: 0.34; border-color: var(--border); color: var(--foreground-muted);
+    background: rgba(39, 39, 42, 0.72); box-shadow: none;
+  }
+  button.toggle.off-stage:hover { background: rgba(39, 39, 42, 0.72); border-color: var(--border); color: var(--foreground-muted); }
+  button.toggle.off-stage .led { background: none; border-color: var(--border); box-shadow: none; }
 
   /* --- legend */
   #legend .row { display: flex; align-items: center; gap: 8px; padding: 2.5px 0; color: var(--foreground-muted); }
@@ -670,6 +697,14 @@
   <!-- left controls -->
   <div id="controls" class="hud">
     <div class="panel">
+      <div class="panel-title">View</div>
+      <div class="btnrow split" id="views">
+        <button class="mode active" data-view="city">City</button>
+        <button class="mode" data-view="skyline">Skyline</button>
+      </div>
+    </div>
+
+    <div class="panel">
       <div class="panel-title">Overlay</div>
       <div class="btnrow" id="modes">
         <button class="mode" data-mode="structure">Structure</button>
@@ -683,9 +718,9 @@
     <div class="panel">
       <div class="panel-title">Layers</div>
       <div class="btnrow" id="toggles">
-        <button class="toggle" data-toggle="coupling">Coupling arcs<i class="led"></i></button>
-        <button class="toggle active" data-toggle="people">People / PRs<i class="led"></i></button>
-        <button class="toggle" data-toggle="fx">FX / hologram<i class="led"></i></button>
+        <button class="toggle" data-toggle="coupling" data-view-only="city">Coupling arcs<i class="led"></i></button>
+        <button class="toggle active" data-toggle="people" data-view-only="city">People / PRs<i class="led"></i></button>
+        <button class="toggle" data-toggle="fx" data-view-only="city">FX / hologram<i class="led"></i></button>
         <button class="toggle" data-toggle="worktree" id="toggle-worktree" style="display:none">Working tree<i class="led"></i></button>
         <button class="toggle active" data-toggle="follow" id="toggle-follow" style="display:none">Follow<i class="led"></i></button>
       </div>

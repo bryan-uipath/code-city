@@ -46,6 +46,7 @@ import {
   type StrataBuild, type StrataCommit, type StrataIndex, type StrataPaint, type StrataRecord,
   type LevelFilter,
 } from './strata.js';
+import { createSkyline, type Skyline, type SkyHit } from './skyline.js';
 import { asVNode, type AnyKind, type VMod, type VNode } from './vtree.js';
 
 const MAX_ARCS = 150;
@@ -135,6 +136,15 @@ const MIN_SCOPE_SIZE = 240;
  */
 type Mode = 'structure' | 'churn' | 'fix' | 'recent' | 'strata';
 
+/**
+ * Which renderer is on stage. A view is not a mode: the mode says how the
+ * massing is painted, the view says how the massing is drawn. Both are true at
+ * once — "churn in the skyline" and "churn in the city" are the same answer
+ * seen from two places, which is why the skyline consumes the very paint the
+ * city is wearing rather than deciding its own colors.
+ */
+type View = 'city' | 'skyline';
+
 /** A node (or building) the pointer / selection is on. */
 interface NodeTarget {
   type: 'folder' | 'file' | 'module';
@@ -156,6 +166,7 @@ const state: {
   data: CityData | null;
   root: VNode | null;
   mode: Mode;
+  view: View;
   coupling: boolean;
   people: boolean;
   fx: boolean;
@@ -169,6 +180,7 @@ const state: {
   data: null,
   root: null,
   mode: 'recent',
+  view: 'city',
   coupling: false,
   people: true,
   fx: false,
@@ -208,6 +220,7 @@ const dom = {
   statFps: requireEl('stat-fps'),
   legend: requireEl('legend-body'),
   modes: requireEl('modes'),
+  views: requireEl('views'),
   toggles: requireEl('toggles'),
   worktreeBtn: requireEl('toggle-worktree'),
 };
@@ -254,6 +267,7 @@ let terraceSigns: TerraceSigns;
 let sidebar: Sidebar;
 let timeline: Timeline;
 let search: SearchPalette | null = null;
+let skyline: Skyline | null = null;
 let tour: TourPlayer | null = null;
 /** The embed chrome; a no-op sink until (and unless) the viewer is embedded. */
 let embed: EmbedUi = { setSelection: () => {} };
@@ -477,6 +491,17 @@ async function main(): Promise<void> {
 
   state.focus = state.root;
   buildStaticScene();
+  skyline = createSkyline({
+    container: dom.scene,
+    realPath: (node) => realFileOf(node)?.path ?? null,
+    onHover: (hit) => setHover(skyTarget(hit)),
+    onSelect: (hit) => {
+      // Picking something is the end of the search errand, in either view.
+      if (sidebar.hasSearch()) setSearchResults(null);
+      setSelection(skyTarget(hit));
+    },
+    onIsolate: (node) => focusNode(focusTargetFor({ type: node.type, node, rec: null })),
+  });
   rebuildScene({ instant: true });
   buildHud();
   bindEvents();
@@ -504,6 +529,7 @@ async function main(): Promise<void> {
   });
   embed = initEmbed({ openSelection: (mode) => bridge.openSelection(mode) });
   if (state.selection) showSelection(describe(state.selection));
+  if (new URLSearchParams(location.search).get('view') === 'skyline') setView('skyline');
   animate();
 
   requestAnimationFrame(() => dom.boot.classList.add('hide'));
@@ -916,13 +942,13 @@ function rebuildScene(
   refreshPickables();
 
   dom.statFiles.textContent = fmt(scope.fileNodes.length);
-  if (!strata.build) {
-    dom.statModulesLabel.textContent = 'MODULES';
-    dom.statModules.textContent = fmt(city.moduleRecords.length);
-  }
   dom.statLoc.textContent = fmt(root.loc);
   renderBreadcrumb();
   renderLegend();
+  if (state.view === 'skyline') syncSkyline();
+  // Last, and unconditionally: the stat reports whichever renderer is on stage,
+  // and both of them have only just finished being rebuilt.
+  renderMassingStat();
 
   startTransition(from, opts.anchor ? footprintOf(opts.anchor, root) : null);
   if (probe && from) probe.markRebuild(from);
@@ -1200,6 +1226,12 @@ function buildHud(): void {
     renderLegend();
   });
 
+  dom.views.addEventListener('click', (e) => {
+    const btn = closest(e.target, 'button.mode');
+    const view = btn?.dataset.view;
+    if (view === 'city' || view === 'skyline') setView(view);
+  });
+
   dom.legend.addEventListener('click', (e) => {
     const ctl = closest(e.target, 'button.fbtn');
     if (ctl) {
@@ -1214,6 +1246,8 @@ function buildHud(): void {
   dom.toggles.addEventListener('click', (e) => {
     const btn = closest(e.target, 'button.toggle');
     if (!btn) return;
+    // A layer the renderer on stage cannot draw is inert, not merely dim.
+    if (btn.classList.contains('off-stage')) return;
     const key = btn.dataset.toggle;
     if (key === 'worktree') {
       setWorktree(!state.worktree);
@@ -1278,7 +1312,7 @@ function renderLegend(): void {
       `<div id="strata-ramp"></div>`,
       `<div class="ramp-labels"><span>oldest</span><span>untyped · age</span><span>newest</span></div>`,
       `<div class="row"><i class="sw" style="background:#1b2432"></i><span>untouched in range</span></div>`,
-      `<div class="row"><span>level = commit · area = loc</span></div>`
+      `<div class="row"><span>${massingNote()}</span></div>`
     );
   } else {
     const label = state.mode === 'churn' ? 'commits / 12mo' : 'fix commits / 12mo';
@@ -1296,7 +1330,7 @@ function renderLegend(): void {
   // Strata mode names the massing in its own block; every other mode gets the
   // same footnote, because the shape on screen is the same shape.
   if (stacked && state.mode !== 'strata') {
-    rows.push(`<div class="row"><span>level = commit · area = loc</span></div>`);
+    rows.push(`<div class="row"><span>${massingNote()}</span></div>`);
     // The filter outlives the mode it was set in, so every mode can undo it.
     if (filterActive()) {
       rows.push(`<div class="row"><span>filter · ${[...strata.filter.types].join(' ')}</span></div>`);
@@ -1343,6 +1377,15 @@ function prLegendRows(): string[] {
     );
   }
   return rows;
+}
+
+/**
+ * What the shared massing means, named for the view that is drawing it: the
+ * stacks are the same stacks, but one spends LOC on a footprint and the other
+ * on a width.
+ */
+function massingNote(): string {
+  return state.view === 'skyline' ? 'level = commit · width = loc' : 'level = commit · area = loc';
 }
 
 /** The "only" / "clear" pair — present exactly while a filter is. */
@@ -1397,10 +1440,36 @@ function heatValue(fileNode: VNode): number {
   return 0;
 }
 
-/** Recency for a scope file — history-cursor aware while scrubbing. */
-function recentValue(fileNode: VNode): { count: number; flash: number } {
-  if (state.timeCursor === null) return { count: fileNode.recentChurn, flash: 0 };
-  return recency.map.get(fileNode) || { count: 0, flash: 0 };
+/** Recency for a scope node — history-cursor aware while scrubbing. */
+function recentValue(node: VNode): { count: number; flash: number } {
+  if (state.timeCursor === null) return { count: node.recentChurn, flash: 0 };
+  const hit = recency.map.get(node);
+  if (hit) return hit;
+  // A skyline bar can be a folder, or a file too small to have earned a plate,
+  // so it may be absent from the pre-pass. Answer it now and memoize into the
+  // same map, which is cleared with the cursor.
+  const computed = computeRecency(node);
+  recency.map.set(node, computed);
+  return computed;
+}
+
+function computeRecency(node: VNode): { count: number; flash: number } {
+  const T = state.timeCursor;
+  if (T === null) return { count: node.recentChurn, flash: 0 };
+  const real = realFileOf(node);
+  if (real) {
+    const count = timeline.touchedSince(real.path, T - RECENT_WINDOW, T);
+    const age = timeline.lastTouchBefore(real.path, T);
+    return { count, flash: age <= FLASH_WINDOW ? 1 - age / FLASH_WINDOW : 0 };
+  }
+  let count = 0;
+  let flash = 0;
+  for (const child of node.children ?? []) {
+    const r = recentValue(child);
+    count += r.count;
+    flash = Math.max(flash, r.flash);
+  }
+  return { count, flash };
 }
 
 function recomputeRecency(): void {
@@ -1480,6 +1549,78 @@ function applyOverlay(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Views — who draws the scope
+// ---------------------------------------------------------------------------
+
+/**
+ * Swap the renderer on stage.
+ *
+ * Scope, selection, overlay, timeline range and filter are all view-independent
+ * state, so this is nothing but a change of who draws: you keep the place you
+ * were standing and the question you were asking. The 3D city is not torn down
+ * when it goes off stage — it is still built, still laid out, still following
+ * the focus stack — so coming back lands exactly where leaving left off.
+ */
+function setView(view: View): void {
+  if (state.view === view) return;
+  state.view = view;
+  for (const b of dom.views.querySelectorAll<HTMLElement>('button.mode')) {
+    b.classList.toggle('active', b.dataset.view === view);
+  }
+  const flat = view === 'skyline';
+  renderer.domElement.style.display = flat ? 'none' : 'block';
+  skyline?.setVisible(flat);
+  // Hover belongs to whichever surface the pointer is over; hand it back.
+  setHover(null);
+  if (flat) syncSkyline();
+  else updateLabelCandidates();
+  syncLayerToggles();
+  renderLegend();
+  renderMassingStat();
+}
+
+/**
+ * Layers are drawn by a renderer, so which ones exist depends on who is on
+ * stage. Coupling arcs, PR beams and the hologram pass are all 3D dressing and
+ * the skyline has no canvas to put them on; rather than let three buttons go on
+ * claiming to do something, mark them off-stage — present, so the panel does not
+ * reshuffle under the pointer, but unlit and inert. The state behind them is
+ * left alone, so switching back to the city restores exactly what you left.
+ */
+function syncLayerToggles(): void {
+  for (const btn of dom.toggles.querySelectorAll<HTMLElement>('button.toggle')) {
+    const only = btn.dataset.viewOnly;
+    const offStage = only !== undefined && only !== state.view;
+    btn.classList.toggle('off-stage', offStage);
+    btn.setAttribute('aria-disabled', offStage ? 'true' : 'false');
+    if (offStage) btn.title = `${only} view only`;
+    else btn.removeAttribute('title');
+  }
+}
+
+/** Point the skyline at the current scope, range and filter. */
+function syncSkyline(): void {
+  if (!skyline) return;
+  const data = state.data;
+  const streamed = timeline.enabled;
+  if (!strata.index && data && streamed) strata.index = buildStrataIndex(data);
+  skyline.rebuild(
+    scope.root,
+    streamed ? strata.index : null,
+    streamed ? { min: timeline.min, max: timeline.max } : null
+  );
+  skyline.update({ start: timeline.start, cursor: state.timeCursor }, collapsePredicate());
+  paintStrata();
+}
+
+/** A skyline hit, as the rest of the app already understands targets. */
+function skyTarget(hit: SkyHit | null): NodeTarget | null {
+  if (!hit) return null;
+  const node = hit.bar.node;
+  return { type: node.type, node, rec: null, level: hit.level?.record ?? null };
+}
+
+// ---------------------------------------------------------------------------
 // Strata render mode
 // ---------------------------------------------------------------------------
 
@@ -1514,8 +1655,7 @@ function applyStrataMode(): void {
     // and leaving it armed would surprise you on the way back out.
     strata.filter.types.clear();
     strata.filter.collapse = false;
-    dom.statModulesLabel.textContent = 'MODULES';
-    dom.statModules.textContent = fmt(city.moduleRecords.length);
+    renderMassingStat();
     return;
   }
 
@@ -1540,9 +1680,11 @@ function applyStrataMode(): void {
 function updateStrata(): void {
   const build = strata.build;
   if (!build) return;
-  build.update({ start: timeline.start, cursor: state.timeCursor }, collapsePredicate());
-  dom.statModulesLabel.textContent = 'LEVELS';
-  dom.statModules.textContent = fmt(visibleLevels(build));
+  const range = { start: timeline.start, cursor: state.timeCursor };
+  const keep = collapsePredicate();
+  build.update(range, keep);
+  skyline?.update(range, keep);
+  renderMassingStat();
   paintStrata();
 }
 
@@ -1574,6 +1716,31 @@ function collapsePredicate(): LevelFilter | null {
 }
 
 /** Levels the eye actually counts: matching ones while a filter is up. */
+/**
+ * The stat beside FILES: what the massing on stage is actually made of.
+ *
+ * Both views stand on the same stacks, but they do not draw the same number of
+ * things — the skyline aggregates its bars and folds their levels by the row's
+ * stride — so the counter reports whichever renderer you are looking at. In the
+ * skyline the number is therefore the FOLDED count, which is what is on screen.
+ */
+function renderMassingStat(): void {
+  const stats = state.view === 'skyline' ? skyline?.stats(filterActive() ? matchesFilter : null) : null;
+  if (stats) {
+    dom.statModulesLabel.textContent = stats.stacked ? 'LEVELS' : 'MODULES';
+    dom.statModules.textContent = fmt(stats.stacked ? stats.levels : stats.bars);
+    return;
+  }
+  const build = strata.build;
+  if (build) {
+    dom.statModulesLabel.textContent = 'LEVELS';
+    dom.statModules.textContent = fmt(visibleLevels(build));
+    return;
+  }
+  dom.statModulesLabel.textContent = 'MODULES';
+  dom.statModules.textContent = fmt(city?.moduleRecords.length ?? 0);
+}
+
 function visibleLevels(build: StrataBuild): number {
   if (!filterActive()) return build.records.length;
   let n = 0;
@@ -1624,7 +1791,7 @@ function applyStrataFilter(rebuild: boolean): void {
   if (build) {
     if (rebuild) updateStrata();
     else {
-      dom.statModules.textContent = fmt(visibleLevels(build));
+      renderMassingStat();
       paintStrata();
     }
   }
@@ -1662,8 +1829,16 @@ function clearStrataFilter(): void {
 
 /** Dormant / untouched massing — the same tone the legend calls "dormant". */
 const DORMANT = new THREE.Color(0x1b2432);
-/** Dominant module kind per file, memoized: the paint runs per instance. */
+/** Dominant module kind per node, memoized: the paint runs per instance. */
 const dominantKind = new Map<VNode, THREE.Color>();
+/**
+ * Subtree answers for paint inputs that used to be file-only. Each is cleared
+ * with the thing it reads — the highlight, and the working-tree status.
+ */
+const subtree: { search: Map<VNode, number>; worktree: Map<VNode, WorkEntry | null> } = {
+  search: new Map(),
+  worktree: new Map(),
+};
 
 /**
  * Repaint the stacks for the active pass. This is the whole difference between
@@ -1671,18 +1846,26 @@ const dominantKind = new Map<VNode, THREE.Color>();
  */
 function paintStrata(): void {
   const build = strata.build;
+  const paint = currentStrataPaint();
+  // One paint, both renderers. This is the whole reason the skyline gets every
+  // overlay, the filter and the search highlight for free: it is not deciding
+  // any colors, it is drawing the answer the city already computed.
+  build?.recolor(paint);
+  skyline?.repaint(paint);
   if (!build) return;
-  if (searchPaint.on) {
-    build.recolor(searchStrataPaint());
-    collectStrataPulse(build);
-    return;
-  }
-  searchPaint.pulseStrata.length = 0;
+  if (searchPaint.on) collectStrataPulse(build);
+  else searchPaint.pulseStrata.length = 0;
+}
+
+/** What the overlay, the search highlight and the filter add up to, as one paint. */
+function currentStrataPaint(): StrataPaint {
+  if (searchPaint.on) return searchStrataPaint();
   let base = state.mode === 'strata' ? commitTypePaint : metricStrataPaint();
   if (filterActive()) base = ghostedPaint(base);
   // The working-tree layer is the outermost wrapper: a dirty tree is a statement
-  // about the city as a whole, and it overrides every mode's own paint.
-  build.recolor(workDirty() ? worktreeStrataPaint(base) : base);
+  // about the city as a whole, and it overrides every mode's own paint — in both
+  // renderers, since they share this one paint.
+  return workDirty() ? worktreeStrataPaint(base) : base;
 }
 
 /**
@@ -1716,12 +1899,10 @@ function metricStrataPaint(): StrataPaint {
 
 /** The search / tour highlight, as the stacks see it. */
 function searchStrataPaint(): StrataPaint {
-  const paths = searchPaint.paths;
   return (record, _age, target) => {
-    const real = realFileOf(record.file);
-    const hit = real && paths ? paths.get(real.path) : null;
-    return hit
-      ? target.copy(SEARCH_HL).multiplyScalar(0.45 + 0.85 * hit.w)
+    const w = searchWeightOf(record.file);
+    return w > 0
+      ? target.copy(SEARCH_HL).multiplyScalar(0.45 + 0.85 * w)
       : target.copy(DORMANT).multiplyScalar(0.55);
   };
 }
@@ -1737,13 +1918,40 @@ function collectStrataPulse(build: StrataBuild): void {
   }
 }
 
-/** The kind that owns most of a file's lines — the file's "character". */
+/**
+ * Best search weight anywhere under a node.
+ *
+ * The city always stands a FILE where a paint runs; the skyline can stand a
+ * folder, and a district holding a match has to light up or the highlight lies.
+ * Memoized per node and cleared with the highlight itself.
+ */
+function searchWeightOf(node: VNode): number {
+  const paths = searchPaint.paths;
+  if (!paths) return 0;
+  const cached = subtree.search.get(node);
+  if (cached !== undefined) return cached;
+  const real = realFileOf(node);
+  let w = 0;
+  if (real) w = paths.get(real.path)?.w ?? 0;
+  else for (const child of node.children ?? []) w = Math.max(w, searchWeightOf(child));
+  subtree.search.set(node, w);
+  return w;
+}
+
+/** The kind that owns most of a node's lines — its "character". */
 function dominantKindColor(file: VNode): THREE.Color {
   const cached = dominantKind.get(file);
   if (cached) return cached;
-  const source = realFileOf(file) ?? file;
   const totals = new Map<AnyKind, number>();
-  for (const mod of source.modules ?? []) totals.set(mod.kind, (totals.get(mod.kind) ?? 0) + Math.max(mod.loc, 1));
+  // A skyline bar can be a folder; then the character is its subtree's.
+  (function walk(node: VNode): void {
+    const source = realFileOf(node) ?? node;
+    if (source.modules?.length) {
+      for (const mod of source.modules) totals.set(mod.kind, (totals.get(mod.kind) ?? 0) + Math.max(mod.loc, 1));
+      return;
+    }
+    for (const child of node.children ?? []) walk(child);
+  })(file);
   let best = 0;
   let kind: AnyKind | null = null;
   for (const [k, loc] of totals) {
@@ -1766,6 +1974,7 @@ function setSearchHighlight(spec: HighlightSpec | null): void {
     const was = searchPaint.on;
     searchPaint.on = !!spec;
     searchPaint.paths = spec ? spec.paths : null;
+    subtree.search.clear();
     searchPaint.cursor = null;
     searchPaint.pulseRecs.length = 0;
     searchPaint.pulseMeshes.length = 0;
@@ -1778,6 +1987,7 @@ function setSearchHighlight(spec: HighlightSpec | null): void {
   }
   searchPaint.on = true;
   searchPaint.paths = spec.paths;
+  subtree.search.clear();
   searchPaint.cursor = spec.cursor || null;
   applyOverlay();
   applySearchLayerMute();
@@ -2071,10 +2281,35 @@ function workDirty(): boolean {
   return state.worktree && worktree.changes.length > 0;
 }
 
-/** The entry for a scope node's real file, or null when it is unchanged. */
+/**
+ * The working-tree verdict for a scope node, or null when nothing under it
+ * changed. The city always stands a file here, but the skyline's aggregation can
+ * stand a folder — so a node with no real file folds its descendants: any change
+ * below makes the district dirty, and the line counts sum, which is what keeps a
+ * district holding an edit from reading as clean at repo scope. Memoized, and
+ * cleared with the status it reads.
+ */
 function workEntry(node: VNode | null | undefined): WorkEntry | null {
+  if (!node) return null;
   const real = realFileOf(node);
-  return real ? worktree.byPath.get(real.path) ?? null : null;
+  if (real) return worktree.byPath.get(real.path) ?? null;
+  const cached = subtree.worktree.get(node);
+  if (cached !== undefined) return cached;
+  let added = 0;
+  let removed = 0;
+  let any = false;
+  for (const child of node.children ?? []) {
+    const entry = workEntry(child);
+    if (!entry) continue;
+    any = true;
+    added += entry.added;
+    removed += entry.removed;
+  }
+  // A district is never rubble or a new plot — those are per-file geometry
+  // treatments; it just reads as edited, at the weight of what changed inside.
+  const folded: WorkEntry | null = any ? { kind: 'modified', added, removed } : null;
+  subtree.worktree.set(node, folded);
+  return folded;
 }
 
 /**
@@ -2101,6 +2336,7 @@ async function refreshWorktree(): Promise<void> {
     }
     worktree.changes = [];
     worktree.byPath.clear();
+    subtree.worktree.clear();
     for (const c of res.changes) {
       // Porcelain deletions arrive as 'D ' (staged) or ' D' (unstaged); an
       // `rm -rf` of a tracked directory produces a wall of the latter.
@@ -2132,6 +2368,7 @@ function setWorktree(on: boolean): void {
   }
   worktree.changes = [];
   worktree.byPath.clear();
+  subtree.worktree.clear();
   pushWorktreeToSidebar();
   applyWorktreeLayer();
   applyOverlay(); // restore whatever overlay was underneath
@@ -3564,9 +3801,12 @@ function onResize(): void {
   renderer.setSize(w, h);
   composer.setSize(w, h);
   bloom.setSize(w, h);
+  skyline?.resize();
 }
 
 function updateHover(): void {
+  // The skyline owns its own pointer; raycasting a hidden scene would fight it.
+  if (state.view !== 'city') return;
   if (!pointerDirty) return;
   pointerDirty = false;
 
@@ -3725,24 +3965,36 @@ function setHover(hit: Target | null): void {
   if (!hit && !prev) return;
 
   state.hover = hit;
-  document.body.style.cursor = hit ? 'pointer' : 'default';
-  highlightPrLinks();
-  updateLeaderFocus();
+  // The 3D dressing — hover box, callout pill, PR beam highlight, label leader
+  // lines — belongs to the city. The skyline draws its own frame and readout on
+  // its own canvas; only the sidebar is shared.
+  const inCity = state.view === 'city';
+  if (inCity) {
+    document.body.style.cursor = hit ? 'pointer' : 'default';
+    highlightPrLinks();
+    updateLeaderFocus();
+  }
 
   if (!hit) {
-    hoverBox.visible = false;
-    clearCallout();
+    if (inCity) {
+      hoverBox.visible = false;
+      clearCallout();
+    }
     sidebar.setHover(null);
     return;
   }
 
-  if (hit.type === 'module' && hit.rec) boxAroundInstance(hoverBox, hit.rec);
-  else if (hit.type === 'pr') hoverBox.visible = false;
-  else frameNodeBox(hoverBox, hit.node, boxHeightFor(hit.node));
+  if (inCity) {
+    if (hit.type === 'module' && hit.rec) boxAroundInstance(hoverBox, hit.rec);
+    else if (hit.type === 'pr') hoverBox.visible = false;
+    else frameNodeBox(hoverBox, hit.node, boxHeightFor(hit.node));
+  }
 
   const desc = describe(hit);
-  if (hit.type !== 'pr' && desc) showCallout(hit, desc.name, calloutSub(hit, desc));
-  else clearCallout();
+  if (inCity) {
+    if (hit.type !== 'pr' && desc) showCallout(hit, desc.name, calloutSub(hit, desc));
+    else clearCallout();
+  }
   sidebar.setHover(desc);
 }
 
@@ -3876,7 +4128,11 @@ function animate(): void {
     selectionBox.material.opacity = 0.55 + 0.4 * (0.5 + 0.5 * Math.sin(t * 3.2));
   }
 
-  composer.render();
+  // Exactly one renderer draws. The other's per-frame work above is cheap and
+  // keeps it warm — the city stays laid out and animated while it is off stage,
+  // so switching back is instant rather than a rebuild.
+  if (state.view === 'skyline') skyline?.draw();
+  else composer.render();
 
   fpsAccum += dt;
   fpsFrames++;
