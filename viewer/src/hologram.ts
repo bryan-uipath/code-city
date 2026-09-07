@@ -1,7 +1,8 @@
 /**
  * hologram.ts — floating code readouts. A module's source is drawn to a canvas
- * and stood up in the world above its column: dark glass, cyan monospace,
- * scanlines, turned to face the camera every frame (`facePanel`).
+ * and projected straight up from its building: translucent glass, cyan
+ * monospace, scanlines, a light cone from the roof, turned to face the camera
+ * every frame (`facePanel`).
  */
 import * as THREE from 'three';
 
@@ -16,6 +17,8 @@ const MONO = '"JetBrains Mono", "SF Mono", Menlo, Consolas, monospace';
 
 export interface CodePanel {
   mesh: THREE.Mesh;
+  /** The projection cone from the roof up to the card. */
+  beam: THREE.Mesh;
   /** Canvas height over width: world height = world width × aspect. */
   aspect: number;
 }
@@ -38,9 +41,13 @@ export function makeCodePanel(header: string, sub: string, lines: string[] | nul
   const W = canvas.width;
   const H = canvas.height;
 
-  ctx.fillStyle = 'rgba(4, 10, 24, 0.88)';
+  // Glass: see-through, a little brighter toward the bottom where the beam lands.
+  const glass = ctx.createLinearGradient(0, 0, 0, H);
+  glass.addColorStop(0, 'rgba(6, 14, 30, 0.58)');
+  glass.addColorStop(1, 'rgba(10, 40, 60, 0.7)');
+  ctx.fillStyle = glass;
   ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(34, 211, 238, 0.10)';
+  ctx.fillStyle = 'rgba(34, 211, 238, 0.14)';
   ctx.fillRect(0, 0, W, HEAD_PX);
   ctx.textBaseline = 'middle';
   ctx.font = `bold 22px ${MONO}`;
@@ -88,7 +95,25 @@ export function makeCodePanel(header: string, sub: string, lines: string[] | nul
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
   mesh.renderOrder = 18;
   mesh.frustumCulled = false;
-  return { mesh, aspect: H / W };
+  return { mesh, beam: makeBeam(), aspect: H / W };
+}
+
+/** Unit light cone, base on the roof (y=0) widening to the card (y=1); scaled per frame. */
+function makeBeam(): THREE.Mesh {
+  const geom = new THREE.CylinderGeometry(1, 0.06, 1, 24, 1, true);
+  geom.translate(0, 0.5, 0);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x22d3ee,
+    transparent: true,
+    opacity: 0.1,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.renderOrder = 17;
+  mesh.frustumCulled = false;
+  return mesh;
 }
 
 /** Screen-align the panel: its text stays upright and square to the viewer. */
