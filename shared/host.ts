@@ -16,7 +16,7 @@ export interface CityHost {
   /** Source lines of a repo-relative path, or null when unavailable. */
   getSource(path: string, start?: number, end?: number): Promise<SourceResponse | null>;
   /** Recent commits touching a path, or null when unavailable. */
-  getLog(path: string): Promise<LogResponse | null>;
+  getLog(path: string, start?: number, end?: number): Promise<LogResponse | null>;
   /** `git show <hash> -- <path>`, or null when unavailable. */
   getDiff(path: string, hash: string): Promise<DiffResponse | null>;
   /** Uncommitted working-tree changes ("now"), or null when unavailable. */
@@ -54,8 +54,10 @@ export class HttpHost implements CityHost {
     return this.#getJson<SourceResponse>('/api/source?' + q.toString());
   }
 
-  getLog(path: string): Promise<LogResponse | null> {
-    return this.#getJson<LogResponse>('/api/log?' + new URLSearchParams({ path }).toString());
+  getLog(path: string, start?: number, end?: number): Promise<LogResponse | null> {
+    const q = new URLSearchParams({ path });
+    if (start !== undefined && end !== undefined) q.set('start', String(start)), q.set('end', String(end));
+    return this.#getJson<LogResponse>('/api/log?' + q.toString());
   }
 
   getDiff(path: string, hash: string): Promise<DiffResponse | null> {
