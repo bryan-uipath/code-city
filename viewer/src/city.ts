@@ -97,7 +97,7 @@ export interface ModuleRecord {
   file: VNode;
   mod: VMod;
   baseColor: THREE.Color;
-  /** World Y of the building's base (a stacked member sits above its plate). */
+  /** World Y of the building's base (its plate top). */
   base: number;
   height: number;
   center: THREE.Vector3;
@@ -135,14 +135,11 @@ export function buildCity(root: VNode): CityBuild {
     if (node.type === 'file') files.push(node);
     else folders.push(node);
   });
-  // Members share their module's footprint as stacked slabs; no plate each.
-  const plated = files.filter((f) => f.synth !== 'member');
-
   const folderPart = buildPlates(folders, false);
-  const filePart = buildPlates(plated, true);
+  const filePart = buildPlates(files, true);
   const buildings = buildBuildings(files);
   const massedMesh = buildMassedBlocks(massed);
-  const outlines = buildOutlines(folders, plated);
+  const outlines = buildOutlines(folders, files);
 
   if (folderPart.mesh) group.add(folderPart.mesh);
   if (filePart.mesh) group.add(filePart.mesh);
@@ -338,7 +335,7 @@ function buildBuildings(files: VNode[]): { meshes: THREE.InstancedMesh[]; record
       const entry = entries[i];
       if (!entry) continue;
       const { file, plot } = entry;
-      const top = (file.top ?? 0) + (plot.y0 ?? 0);
+      const top = file.top ?? 0;
       const h = plot.height ?? buildingHeight(plot.mod.loc) * (KIND_HEIGHT_SCALE[kind] ?? 1);
       pos.set(plot.x + plot.w / 2, top, plot.z + plot.h / 2);
       scale.set(Math.max(plot.w, 0.25 * s), h, Math.max(plot.h, 0.25 * s));
@@ -1091,10 +1088,9 @@ export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.ora
     const z0 = r.z - grow;
     const z1 = r.z + r.h + grow;
     const tier = n.tier ?? n.depth ?? 0;
-    // A member slab is caged around itself: its lift off the plate is not height.
-    const lift = n.plots?.[0]?.y0 ?? 0;
-    const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1 * s + lift;
-    const y1 = y0 + Math.max(tallestBuilding(n) - lift + 6 * s, 14 * s);
+    // Each node is caged from its own plate: a nested tier's lift is not height.
+    const y0 = plateTop(tier, true) - plateThickness(tier, true) - 1 * s;
+    const y1 = y0 + Math.max(tallestBuilding(n) + 6 * s, 14 * s);
 
     const c: Array<[number, number]> = [
       [x0, z0], [x1, z0], [x1, z1], [x0, z1],
@@ -1134,7 +1130,7 @@ export function buildScaffolding(fileNodes: VNode[], color: number = PALETTE.ora
 export function tallestBuilding(fileNode: VNode): number {
   let max = 0;
   if (fileNode.plots) {
-    for (const p of fileNode.plots) max = Math.max(max, (p.y0 ?? 0) + (p.height ?? buildingHeight(p.mod.loc)));
+    for (const p of fileNode.plots) max = Math.max(max, p.height ?? buildingHeight(p.mod.loc));
   }
   return max;
 }
