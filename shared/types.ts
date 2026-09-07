@@ -18,6 +18,8 @@ export interface CityData {
   files: string[];
   /** Newest-first, last 12 months. */
   commits: Commit[];
+  /** Present only when the analyzer ran with `--diff <base>..<head>`. */
+  diff?: DiffScope;
 }
 
 export interface RepoInfo {
@@ -117,6 +119,45 @@ export interface Commit {
   f: number[];
   /** Per-file `[additions, deletions]`, aligned index-for-index with `f`. */
   d?: [number, number][];
+}
+
+/**
+ * One diff, as the city sees it (see DESIGN.md "Diff scope & PR provenance").
+ *
+ * The **diff scope** is the changed-file set: a file absent from `files` is
+ * outside it. **Provenance** is the per-file bucketing carried on top — the
+ * first overlay to read this section, and not the last (import blast radius and
+ * PR tours are meant to sit on the same scope). Paths are repo-relative.
+ */
+export interface DiffScope {
+  /** Resolved commit hashes of the compared range. */
+  base: string;
+  head: string;
+  /** The range as the user named it (`develop`, `feat/x`, a short hash) — for display. */
+  baseRef?: string;
+  headRef?: string;
+  /** Changed files, biggest added-line count first. */
+  files: DiffFile[];
+  /**
+   * The branch's own commits (`git rev-list base..head`), full hashes — the
+   * stream's `Commit.h` is abbreviated, so match on a prefix.
+   */
+  commits?: string[];
+  /** Committer timestamps of base and head, unix seconds like `Commit.ts`. */
+  baseTs?: number;
+  headTs?: number;
+}
+
+export interface DiffFile {
+  path: string;
+  /** Added lines git matched as moved unchanged from elsewhere in the diff. */
+  verbatim: number;
+  /** Added lines paired with a deleted line but modified in transit. */
+  reshaped: number;
+  /** Added lines nothing in the diff explains — the logic to actually read. */
+  new: number;
+  /** Deleted lines. */
+  deleted: number;
 }
 
 // ---------------------------------------------------------------------------
