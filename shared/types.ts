@@ -67,6 +67,8 @@ export interface ModuleInfo {
   /** 1-based start line. */
   line: number;
   exported: boolean;
+  /** The interface as written: `(a: T, b?: U): R`, `extends X`, `= { … }`, `: T`. */
+  sig?: string;
   /** Class methods/properties/accessors, interface members, enum members. */
   children?: ModuleMember[];
   /** Same-file top-level modules this one's body names, with occurrence counts. */
@@ -84,6 +86,7 @@ export interface ModuleMember {
   loc: number;
   /** 1-based start line. */
   line: number;
+  sig?: string;
 }
 
 /** `a` imports `b`, `n` times (deduped per ordered pair). */
