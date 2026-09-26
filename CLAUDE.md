@@ -14,6 +14,7 @@ motion probe, and looking at the city.
 ```bash
 npm run analyze -- /path/to/repo            # -> viewer/public/data.json (analyzes the whole repo by default)
 npm run analyze -- /path/to/repo --roots src,lib --out other.json --no-prs
+npm run analyze -- /path/to/repo --diff <base>..<head>   # + diff scope & PR provenance overlay
 npm run analyze -- .                        # required before the bundled welcome tour works
 npm run dev                                 # vite dev server (source/diff/status/search API live)
 npm run typecheck                           # tsc --noEmit — the only fast whole-repo check
@@ -61,9 +62,10 @@ levels. PR markers, arcs, labels and scaffolding are all rebuilt against the
 scope — nothing may assume the real tree root.
 
 **Strata is the shared massing, not a mode.** When a commit stream exists and
-the scope root is a real folder, a file *is* its stack of per-commit slabs in
-every mode; modes only recolor. Never make a mode change the geometry — the
-whole point is that switching overlays doesn't reshuffle the skyline.
+the scope root is a real folder, a file *is* its stack of per-commit slabs; modes
+only recolor. The rule is *footprint and position never change across modes;
+height may* — Provenance is the one massing of its own (origin bands). Switching
+overlays must never reshuffle the skyline.
 
 **Camera motion is a designed system, not tuning constants.** Stage homing so
 the world never teleports, camera moved in bearing/pitch/distance rather than
