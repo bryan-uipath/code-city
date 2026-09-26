@@ -56,7 +56,9 @@ augments onto the read-only data.json tree (parent links, rects, synthetic
 file/module scopes).
 
 **The focus stack.** The city renders exactly one scope. Double-click disposes
-the current city and re-lays out that subtree at full extent
+the current city and re-lays out that subtree at the footprint it already had
+(scale-true: surroundings go away, the camera closes in; a legibility floor
+only enlarges scopes too small to place their children)
 (folder → file → module → member), with synthetic nodes for the file/module
 levels. PR markers, arcs, labels and scaffolding are all rebuilt against the
 scope — nothing may assume the real tree root.
