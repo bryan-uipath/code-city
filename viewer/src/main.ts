@@ -491,7 +491,7 @@ async function main(): Promise<void> {
   labeler = createLabeler(scene, camera);
   search = createSearch({
     getRoot: () => state.root ?? asVNode(data.tree),
-    highlight: setSearchHighlight,
+    highlight: (spec) => { if (prFocus()) setSelection(null); setSearchHighlight(spec); },
     reveal: revealPath,
     notice: showNotice,
     search: (q) => host.search(q),
@@ -939,7 +939,10 @@ function rebuildScene(
   applyWorktreeLayer();
   applySearchLayerMute();
 
-  if (state.selection && state.selection.type !== 'pr' && !scope.nodes.has(state.selection.node)) {
+  // A selection the new scope has no marker for — a node that fell out, or a PR
+  // none of whose files it touches — would leave the city dark with nothing lit.
+  const sel = state.selection;
+  if (sel && (sel.type === 'pr' ? !prTargets(sel.pr).length : !scope.nodes.has(sel.node))) {
     setSelection(null, { keepSidebar: true });
   }
   refreshSelectionBox();
@@ -2162,12 +2165,12 @@ function setSearchResults(view: SearchResultsPayload | null): void {
   );
 }
 
-/** PR beams/scaffolding would drown the highlight, so they rest while searching. */
+/** PR beams/scaffolding would drown a search highlight, so they rest while searching — but not for a PR's own highlight. */
 function applySearchLayerMute(): void {
-  const show = state.people && !searchPaint.on;
+  const show = state.people && (!searchPaint.on || prFocus() !== null);
   peopleGroup.visible = show;
   scaffoldGroup.visible = show;
-  worktreeGroup.visible = state.worktree && !searchPaint.on;
+  worktreeGroup.visible = state.worktree && (!searchPaint.on || prFocus() !== null);
 }
 
 /** Matches glow white-cyan (brighter with weight), everything else goes dark. */
@@ -2349,6 +2352,7 @@ function tourReveal(target: TourTarget): boolean {
  * target itself burns brightest; null hands the city back to its overlay.
  */
 function tourHighlight(targets: TourTarget[] | null): void {
+  if (prFocus()) setSelection(null); // the tour owns the highlight channel
   if (!targets || !targets.length) {
     setSearchHighlight(null);
     return;
@@ -2814,7 +2818,7 @@ function pushWorktreeToSidebar(): void {
  * Both live in `worktreeGroup` and are rebuilt only when the change SET moves.
  */
 function applyWorktreeLayer(): void {
-  worktreeGroup.visible = workDirty() && !searchPaint.on;
+  worktreeGroup.visible = workDirty() && (!searchPaint.on || prFocus() !== null);
   // Empty signature = nothing to invent, which is also the state a clean tree
   // and a switched-off layer report — so turning the layer off releases the
   // geometry through the same path that rebuilds it.
@@ -3473,8 +3477,19 @@ function tallest(node: VNode): number {
 // Selection / focus
 // ---------------------------------------------------------------------------
 
+/** The selected PR: its files stay lit while the rest of the city goes dark. */
+function prFocus(): Pr | null {
+  return state.selection?.type === 'pr' ? state.selection.pr : null;
+}
+
 function setSelection(target: Target | null, opts: { keepSidebar?: boolean } = {}): void {
+  const was = prFocus();
   state.selection = target;
+  // Selecting a PR lights its files the way a search does; deselecting restores.
+  const pr = prFocus();
+  if (pr !== was) {
+    setSearchHighlight(pr ? { paths: new Map(pr.files.map((p) => [p, { w: 1, mods: null }])), cursor: null } : null);
+  }
   refreshSelectionBox();
   refreshSnippet();
   if (!opts.keepSidebar) showSelection(target ? describe(target) : null);
@@ -4256,6 +4271,11 @@ function bindEvents(): void {
       }
     }
     if (e.key === 'Escape') {
+      // A lit PR is the most transient state, so it goes first.
+      if (prFocus()) {
+        setSelection(null);
+        return;
+      }
       // The results list outlives the palette, so Escape retires it before it
       // starts popping the focus stack.
       if (sidebar.hasSearch()) {
@@ -4922,6 +4942,8 @@ interface MotionProbe {
   flights(): Array<{ id: number; dur: number; ceiling: number; planY: number }>;
   focusPath(path: string): boolean;
   reveal(path: string): boolean;
+  /** Select an open PR by number (null clears), as clicking its avatar would. */
+  selectPr(n: number | null): boolean;
   up(): boolean;
   /** Eased progress of the flight in the air right now, 0..1. */
   progress(): number;
@@ -5010,6 +5032,12 @@ function createProbe(): MotionProbe | null {
       return true;
     },
     reveal(path) { return revealPath(path); },
+    selectPr(n) {
+      const pr = n === null ? null : state.data?.prs.find((p) => p.number === n);
+      if (pr === undefined) return false;
+      setSelection(pr ? { type: 'pr', pr } : null);
+      return true;
+    },
     up() {
       const parent = state.focus?.parent;
       if (!parent) return false;
