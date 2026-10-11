@@ -85,7 +85,7 @@ to have an agent write one for a PR — see [docs/tours.md](docs/tours.md).
 
 ## How it works
 
-- `analyzer/analyze.ts` — walks the repo, extracts top-level modules (and class/interface/enum members) with the TypeScript compiler API, mines churn/fix/recency and the full commit stream (with per-file `[adds, dels]`) from a single `git log --numstat` pass — cached incrementally, so re-runs only read `<cachedHead>..HEAD` — resolves import edges (including monorepo workspace packages), and pulls open PRs via `gh`. Output is one JSON file; schema in [DESIGN.md](DESIGN.md).
+- `analyzer/git.ts` — walks the repo, extracts top-level modules (and class/interface/enum members) with the TypeScript compiler API, mines churn/fix/recency and the full commit stream (with per-file `[adds, dels]`) from a single `git log --numstat` pass — cached incrementally, so re-runs only read `<cachedHead>..HEAD` — resolves import edges (including monorepo workspace packages), and pulls open PRs via `gh`, as a source-neutral Snapshot. `analyzer/compile.ts` turns it into one JSON file; schema in [DESIGN.md](DESIGN.md).
 - `viewer/` — Vite + Three.js. Squarified-treemap layout, instanced meshes (tested at ~17k buildings / 60fps+), UnrealBloom postprocessing, and a small dev-server API that serves source snippets and diffs from the analyzed repo (path-contained, localhost only). The 2D skyline is a canvas renderer over the same walked stacks and the same paints (tested at 4.2k files / 2.6k commits).
 
 ## Development

@@ -53,7 +53,7 @@ zoom-out), like unfolding a hologram.
 
 ## Data contract — `viewer/public/data.json`
 
-Produced by `analyzer/analyze.ts`. All ids are repo-relative POSIX paths.
+Produced by `analyzer/compile.ts` from an adapter's Snapshot (see "Adapters"). All ids are repo-relative POSIX paths.
 
 ```jsonc
 {
@@ -803,6 +803,49 @@ The companion piece is the agent recipe in `docs/tours.md`: read the diff, pick
 the 5–10 locations that carry the idea, emit the `.cctour`, hand the user
 `npm run dev` plus `?tour=`, a file to drop, or `window.cityTour.load`.
 
+## Adapters (in progress)
+
+Goal: the city for non-code artifacts — Confluence (space → page tree), Jira
+(project → epic → issue). The core was never code-specific: a tree with mass,
+an event stream with per-leaf deltas, references between leaves, work in
+flight. Only the leaf interior and the git-backed host are.
+
+```
+git repo ──► git.ts ─────────┐
+Confluence ► confluence.ts ──┼─► Snapshot ─► compile.ts ─► data.json ─► viewer
+Jira ──────► jira.ts ────────┤
+script/agent ► snapshot.json ┘
+```
+
+**Snapshot** (`analyzer/snapshot.ts`) is what an adapter says exists and
+happened: flat `items` (parent links, sibling order = render order), `events`
+(newest first, `touches` = per-item `[adds, dels]`, `rework` → `fixChurn`),
+`links`, `inflight`. `compile` derives everything else once: paths, folder
+sums, churn, the `files` index table, commits. The viewer contract does not
+change for this.
+
+Decisions:
+- **Paths come from keys, identity from ids.** An item has a stable `id` (repo
+  path, Jira key, page id) and a `key` (path segment); `path` = the key chain.
+  A renamed ticket keeps its plot.
+- **Adapters classify events.** `rework` (and, next, an explicit event type)
+  is the adapter's call — a Jira reopen, a git fix-shaped subject — not a regex
+  in the viewer.
+- **Vocabulary ships in data.json** (next): building kinds, event types, the
+  mass unit. Absent = today's code palette, so old datasets render unchanged.
+- **Containers with mass** (a page with children, an epic with a description):
+  first a synthetic `_self` leaf inside the folder; a contract change only if
+  that reads badly.
+- **A snapshot file is an input** (next): `--snapshot x.json` compiles what any
+  producer emits — untrusted, behind a `validateSnapshot` like tours.
+- **Detail stays server-side**: Atlassian needs auth, so `CityHost.getSource`
+  generalizes to `getDetail(id)`, proxied by the dev API; the static export
+  degrades as today. Credentials live in env vars, never data.json or cache.
+
+Stages: (1) git adapter + `compile`, data.json byte-identical — **done**;
+(2) `--snapshot` + validation; (3) vocabulary + event types; (4) Confluence;
+(5) `getDetail`; (6) Jira; (7) container mass if `_self` fails.
+
 ## Future ideas (recorded, not scheduled)
 
 - **VS Code extension** (deliberately deferred until the core UX and fit &
@@ -843,6 +886,9 @@ shared/types.ts           # the data.json contract, shared analyzer <-> viewer
 shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
 shared/tour.ts            # Tour SDK types + validateTour (the untrusted-input boundary)
 analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick] [--diff base..head]
+analyzer/snapshot.ts      # the adapter contract: items, events, links, inflight
+analyzer/compile.ts       # Snapshot -> data.json (paths, sums, churn, commit index)
+analyzer/git.ts           # git adapter: modules, history + cache, imports, PRs
 analyzer/diff-scope.ts    # one range -> changed-file set + per-file provenance buckets
 viewer/index.html         # HUD markup + CSS
 viewer/src/main.ts        # scene, interaction, overlays
