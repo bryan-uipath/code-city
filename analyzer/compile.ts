@@ -16,7 +16,7 @@ interface Churn {
 }
 
 export function compile(snap: Snapshot): CityData {
-  const churn = countChurn(snap.events);
+  const churn = countChurn(snap.events, snap.asOf);
   const paths = new Map<string, string>(); // item id -> repo-relative path
   const folders = new Map<string, FolderNode>();
   const files: string[] = [];
@@ -98,10 +98,10 @@ function sum(node: TreeNode): void {
   }
 }
 
-/** Leaf id -> churn counts over the whole stream; recent = last 30 days. */
-function countChurn(events: SourceEvent[]): Map<string, Churn> {
+/** Leaf id -> churn counts over the whole stream; recent = the 30 days before `asOf`. */
+function countChurn(events: SourceEvent[], asOf: number): Map<string, Churn> {
   const churn = new Map<string, Churn>();
-  const recentCutoff = Math.floor(Date.now() / 1000) - 30 * DAY;
+  const recentCutoff = asOf - 30 * DAY;
   for (const e of events) {
     const isRecent = e.ts >= recentCutoff;
     for (const t of e.touches) {

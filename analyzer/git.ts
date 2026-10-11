@@ -12,10 +12,10 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import ts from 'typescript';
 import type {
-  Commit, Edge, MemberKind, ModuleInfo, ModuleMember, ModuleKind, ModuleRef, Pr, PrStatus,
+  Commit, MemberKind, ModuleInfo, ModuleMember, ModuleKind, ModuleRef, Pr, PrStatus,
 } from '../shared/types.js';
 import { collectDiffScope, pathOf } from './diff-scope.js';
-import type { AdapterResult, Item, SourceEvent } from './snapshot.js';
+import type { AdapterResult, Item, Link, SourceEvent } from './snapshot.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -113,6 +113,7 @@ export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
   }
 
   const history = collectHistory(repoRoot, files, opts.quick);
+  const asOf = Math.floor(Date.now() / 1000); // churn's recency reference: when history was read
   const edges = buildEdges(repoRoot, opts.roots, parsed, fileSet);
   const prs = opts.prs && !opts.quick ? await collectPRs(repoRoot, fileSet) : [];
   const diff = opts.diff ? collectDiffScope(repoRoot, opts.diff) : null;
@@ -120,19 +121,18 @@ export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
     console.warn(`warn: --diff head ${diff.head.slice(0, 7)} is not the checkout's HEAD; files the range adds may be missing from the city`);
   }
 
-  const moduleCount = [...parsed.values()].reduce((n, f) => n + f.modules.length, 0);
   return {
     snapshot: {
       source: { name: path.basename(repoRoot), root: repoRoot, url: githubUrl(repoRoot) },
       items: treeItems(path.basename(repoRoot), files, parsed),
       events: history.commits.map((c) => eventOf(c, files)),
+      asOf,
       // Paths are the item ids, so edges and PRs pass through as-is.
-      links: edges.map((e) => ({ from: e.a, to: e.b, n: e.n })),
+      links: edges,
       inflight: prs,
       ...(diff ? { diff } : {}),
     },
     summary: [
-      `modules: ${moduleCount}`,
       `history: cache ${history.cacheHit ? `hit (+${history.fresh} new commits)` : 'miss (full pass)'}` +
         ` in ${(history.ms / 1000).toFixed(1)}s`,
     ],
@@ -679,7 +679,7 @@ function isAncestor(repoRoot: string, older: string, newer: string): boolean {
 
 // ---------- import edges ----------
 
-function buildEdges(repoRoot: string, roots: string[], parsed: Map<string, ParsedFile>, fileSet: Set<string>): Edge[] {
+function buildEdges(repoRoot: string, roots: string[], parsed: Map<string, ParsedFile>, fileSet: Set<string>): Link[] {
   const pkgDirs = scanWorkspacePackages(repoRoot, roots);
   // [[wikilink]] targets resolve by normalized markdown basename (first match wins).
   const wikiNorm = (s: string) => s.toLowerCase().replace(/\s+/g, '-');
@@ -702,7 +702,7 @@ function buildEdges(repoRoot: string, roots: string[], parsed: Map<string, Parse
   }
   return [...counts].map(([key, n]) => {
     const [a, b] = key.split(' ');
-    return { a: a ?? '', b: b ?? '', n };
+    return { from: a ?? '', to: b ?? '', n };
   });
 }
 

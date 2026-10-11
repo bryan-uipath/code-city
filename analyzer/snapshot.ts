@@ -12,6 +12,8 @@ export interface Snapshot {
   items: Item[];
   /** Newest first. */
   events: SourceEvent[];
+  /** Unix seconds the events were read at — the reference for recent churn. */
+  asOf: number;
   links: Link[];
   /** Open work in progress; `files` and `spans` keys name item ids. */
   inflight: Pr[];

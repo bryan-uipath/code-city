@@ -36,8 +36,9 @@ async function main(): Promise<void> {
 
   const last = data.commits[data.commits.length - 1];
   const oldest = last ? last.ts : null;
+  const modules = snapshot.items.reduce((n, item) => n + (item.sections?.length ?? 0), 0);
   console.log(
-    `files: ${data.files.length}\nedges: ${data.edges.length}\nprs: ${data.prs.length}\n` +
+    `files: ${data.files.length}\nmodules: ${modules}\nedges: ${data.edges.length}\nprs: ${data.prs.length}\n` +
     `commits: ${data.commits.length}${droppedCommits ? ` (dropped ${droppedCommits} oldest for size)` : ''}` +
     `${oldest ? ` back to ${new Date(oldest * 1000).toISOString().slice(0, 10)}` : ''}\n` +
     summary.map((line) => line + '\n').join('') +
