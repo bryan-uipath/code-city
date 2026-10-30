@@ -76,7 +76,10 @@ function validateVocab(x: unknown): Vocabulary {
   if (o.mass !== undefined) v.mass = text(o.mass, 'vocab.mass', MAX_WORD);
   if (o.eventTypes !== undefined) {
     const keys = new Set<string>();
-    v.eventTypes = list(o.eventTypes, 'vocab.eventTypes', MAX_EVENT_TYPES).map((t, i): EventType => {
+    const raw = list(o.eventTypes, 'vocab.eventTypes', MAX_EVENT_TYPES);
+    // Empty would read as "no vocabulary" in the viewer and revive subject parsing.
+    if (!raw.length) throw new SnapshotError('vocab.eventTypes: empty (omit it for conventional-commit types)');
+    v.eventTypes = raw.map((t, i): EventType => {
       const at = `vocab.eventTypes[${i}]`;
       const to = record(t, at);
       const key = to.key;
@@ -174,8 +177,9 @@ function validateSection(x: unknown, at: string): ModuleInfo {
 
 /**
  * Newest first, as given: strata rebuild size-at-event from this order, so it is
- * checked, not sorted. A `type` must be a declared event type; its `rework`
- * flag is the event's default.
+ * checked, not sorted. With declared types, an event's `type` must be one of
+ * them and its `rework` is the type's: the legend's Fix hotspots and the
+ * tree's `fixChurn` must count the same events.
  */
 function validateEvents(raw: unknown[], types: EventType[] | undefined): SourceEvent[] {
   const declared = new Map((types ?? []).map((t) => [t.key, t]));
@@ -197,12 +201,16 @@ function validateEvents(raw: unknown[], types: EventType[] | undefined): SourceE
       type = typeof o.type === 'string' ? declared.get(o.type) : undefined;
       if (!type) throw new SnapshotError(`${at}.type: not a key of vocab.eventTypes`);
     }
+    const rework = o.rework === undefined ? type?.rework === true : bool(o.rework, `${at}.rework`);
+    if (types && rework !== (type?.rework === true)) {
+      throw new SnapshotError(`${at}.rework: disagrees with its type (rework comes from vocab.eventTypes)`);
+    }
     return {
       id: eventId(o.id, `${at}.id`, ids),
       ts,
       actor: o.actor === undefined ? '' : text(o.actor, `${at}.actor`, MAX_NAME, true),
       subject: o.subject === undefined ? '' : text(o.subject, `${at}.subject`, MAX_TEXT, true),
-      rework: o.rework === undefined ? type?.rework === true : bool(o.rework, `${at}.rework`),
+      rework,
       ...(type ? { type: type.key } : {}),
       touches: touches.map((t, j): Touch => {
         const ta = `${at}.touches[${j}]`;
