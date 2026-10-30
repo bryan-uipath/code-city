@@ -25,6 +25,8 @@ const MAX_UNTRACKED_LINES = 10_000;
 const MAX_UNTRACKED_BYTES = 4 * 1024 * 1024;
 /** Total bytes read per /status call — the reads are sync and polled every 5s. */
 const MAX_UNTRACKED_TOTAL_BYTES = 16 * 1024 * 1024;
+/** Every git call that takes a user path: pathspec magic (`[id]`, `*`, `:(glob)`) off. Search keeps its globs. */
+const LITERAL = '--literal-pathspecs';
 /** Detail kinds by extension; everything else is code. */
 const MARKDOWN_RE = /\.mdx?$/i;
 
@@ -59,12 +61,13 @@ export function createGitProvider(root) {
       const end = intParam(endParam, 0);
       // A line range asks which commits touched those lines (`-L`); it cannot
       // be combined with --follow, and a range past EOF falls back to the file.
-      const forFile = ['log', '-n', String(LOG_COUNT), '--follow', pretty, '--', rel];
+      // Literal pathspecs so `app/[id]/page.tsx` is that file, not a glob over `app/i/…`.
+      const forFile = [LITERAL, 'log', '-n', String(LOG_COUNT), '--follow', pretty, '--', rel];
       let stdout;
       let scoped = false; // did `-L` actually answer? the caller labels the fallback
       if (start >= 1 && end >= start) {
         try {
-          ({ stdout } = await git(root, ['log', '-n', String(LOG_COUNT), '--no-patch', `-L${start},${end}:${rel}`, pretty]));
+          ({ stdout } = await git(root, [LITERAL, 'log', '-n', String(LOG_COUNT), '--no-patch', `-L${start},${end}:${rel}`, pretty]));
           scoped = true;
         } catch {
           ({ stdout } = await git(root, forFile));
@@ -84,7 +87,7 @@ export function createGitProvider(root) {
       const rel = relId(id);
       const h = event || '';
       if (!HASH_RE.test(h)) throw new Error('invalid hash');
-      const { stdout } = await git(root, ['show', h, '--', rel]);
+      const { stdout } = await git(root, [LITERAL, 'show', h, '--', rel]);
       return { diff: stdout.split('\n').slice(0, MAX_LINES).join('\n') };
     },
 
