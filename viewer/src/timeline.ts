@@ -8,6 +8,7 @@
  * Degrades to `enabled: false` (bar hidden) when the stream is absent (v1 data).
  */
 import type { CityData } from '../../shared/types.js';
+import { isCommitHash } from '../../shared/host.js';
 
 const DAY = 86400;
 const WEEK = 7 * DAY;
@@ -284,14 +285,6 @@ export function createTimeline(
       dom.date.textContent = `${hash.slice(0, 16)} · ${day}`;
     }
   }
-}
-
-/**
- * Event ids are opaque to the viewer (a Jira changelog id, a page version);
- * only a git-shaped one is linked as a commit.
- */
-export function isCommitHash(h: string): boolean {
-  return /^[0-9a-f]{7,40}$/i.test(h);
 }
 
 /** Relative time such as "3d ago" for a unix-seconds timestamp. */

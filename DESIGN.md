@@ -893,8 +893,9 @@ Prerequisites, found reviewing stage 1:
   viewer must treat `h` as a token and leave its shape to the provider.
   **Landed:** the sidebar and timeline show a non-hash id as escaped text (was
   stripped to its hex characters: `CHG-36` read `C36`) and link only
-  hash-shaped ids to GitHub; `HASH_RE` lives only in the git provider (and
-  tour diff artifacts, which are git by definition).
+  hash-shaped ids to GitHub. The viewer's one hash test is `isCommitHash`
+  (`shared/host.ts`, also gating tour diff artifacts); the git provider keeps
+  its own `HASH_RE` for the dev API.
 
 ### Leaf interior: any content
 

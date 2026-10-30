@@ -6,10 +6,10 @@
  * TOUR, takes SELECTED's place while a tour is playing.
  * Everything data-derived is escaped before it reaches innerHTML.
  */
-import type { CityHost } from '../../shared/host.js';
+import { isCommitHash, type CityHost } from '../../shared/host.js';
 import type { ContentKind, LogCommit, Pr, SourceResponse } from '../../shared/types.js';
 import type { Words } from '../../shared/vocab.js';
-import { isCommitHash, relTime, type Timeline } from './timeline.js';
+import { relTime, type Timeline } from './timeline.js';
 
 const MAX_COMMITS = 8;
 /** Commit rows shown before the "+N more" expander. */
