@@ -890,11 +890,16 @@ so responses are byte-identical except `/source` gaining `kind`.
   with its folder as root. It serves `getDetail` (`markdown` content) and
   `search`, nothing else (log, diff, status answer 501: those panes hide). No
   git calls. Its root came from a file, so containment is stricter than git's:
-  ids must be root-relative `.md`/`.mdx` paths (no absolute, `\`, `..`, NUL),
-  the real path (symlinks resolved) must stay under the real root and be a
-  regular file, notes over 4 MB are refused, and search never follows
-  symlinks, skips dot-dirs and `node_modules`, and is capped by notes, bytes
-  and results per request. What a snapshot still decides is which directory's
+  ids must be root-relative `.md` paths (the snapshot's own rule, so search
+  never finds a note the city lacks; no absolute, `\`, `..`, NUL), the real
+  path (symlinks resolved) must stay under the real root, which is re-checked
+  per request, and the read goes through one descriptor opened `O_NOFOLLOW |
+  O_NONBLOCK` and checked as a regular file under 4 MB on that descriptor.
+  Search never follows symlinks, skips dot-entries and `node_modules`, reads
+  directories one entry at a time, and is capped per request by entries
+  visited, notes, bytes and results. Residual: a local writer racing a parent
+  directory swap between the real-path check and the open — out of scope for a
+  dev server reading the user's own folder. What a snapshot still decides is which directory's
   markdown the local dev server will read — accepted: dev-only, localhost,
   markdown only.
 - **`CityHost` keeps its git-era method names** (`getSource`, `getLog`, …): a
