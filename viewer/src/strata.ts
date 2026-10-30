@@ -17,7 +17,7 @@
  * on the same footprints and through the same records.
  */
 import * as THREE from 'three';
-import type { CityData } from '../../shared/types.js';
+import type { CityData, EventType } from '../../shared/types.js';
 import { plateTop, worldScale } from './layout.js';
 import type { VNode } from './vtree.js';
 
@@ -54,7 +54,7 @@ const STUB_COLOR = new THREE.Color(0x1b2432);
  * mostly red = it keeps breaking, mostly cyan = it keeps growing features.
  * Subjects with no recognizable type fall back to the age gradient.
  */
-export const COMMIT_TYPE_COLORS: Record<string, number> = {
+const COMMIT_TYPE_COLORS: Record<string, number> = {
   feat: 0x22d3ee,
   fix: 0xef4444,
   bug: 0xef4444,
@@ -69,7 +69,7 @@ export const COMMIT_TYPE_COLORS: Record<string, number> = {
   build: 0x52525b,
 };
 /** Legend order — the types worth naming, deduped by color. */
-export const COMMIT_TYPE_ORDER = ['feat', 'fix', 'refactor', 'perf', 'test', 'docs', 'chore', 'ci'] as const;
+const COMMIT_TYPE_ORDER = ['feat', 'fix', 'refactor', 'perf', 'test', 'docs', 'chore', 'ci'] as const;
 
 /** Types that share another type's swatch, so a filter on one catches both. */
 const TYPE_ALIAS: Record<string, string> = { bug: 'fix', bugfix: 'fix', hotfix: 'fix', build: 'ci' };
@@ -80,6 +80,34 @@ const TYPE_COLORS = new Map<string, THREE.Color>(
 );
 
 /**
+ * A dataset's own event types (`vocab.eventTypes`) — e.g. a Jira `reopen` —
+ * replacing the conventional-commit palette and subject parsing; null = code.
+ */
+let declared: { types: EventType[]; colors: Map<string, THREE.Color>; rework: string[] } | null = null;
+
+/** Adopt a dataset's event types, or the code palette when it has none. Call before `buildStrataIndex`. */
+export function useEventTypes(types: EventType[] | undefined): void {
+  declared = types?.length
+    ? {
+      types,
+      colors: new Map(types.map((t) => [t.key, new THREE.Color(t.color)])),
+      rework: types.filter((t) => t.rework).map((t) => t.key),
+    }
+    : null;
+}
+
+/** The legend swatches, in order: `key` is what the filter holds, `hex` a CSS color. */
+export function legendTypes(): { key: string; label: string; hex: string }[] {
+  if (declared) return declared.types.map((t) => ({ key: t.key, label: t.label, hex: t.color }));
+  return COMMIT_TYPE_ORDER.map((key) => ({ key, label: key, hex: '#' + (COMMIT_TYPE_COLORS[key] ?? 0).toString(16).padStart(6, '0') }));
+}
+
+/** The swatches Fix hotspots filters to: `fix`, or the declared rework types. */
+export function reworkTypes(): string[] {
+  return declared ? declared.rework : ['fix'];
+}
+
+/**
  * Which legend swatch a commit belongs to — the key the legend filter works in.
  * Aliases collapse onto the swatch they share a color with, and a fix-shaped
  * subject with no type prefix still counts as `fix`, exactly as the paint does.
@@ -87,6 +115,7 @@ const TYPE_COLORS = new Map<string, THREE.Color>(
  */
 export function commitTypeKey(commit: StrataCommit): string | null {
   const type = commit.type;
+  if (declared) return type; // already a declared key, or null
   if (type !== null) {
     const key = TYPE_ALIAS[type] ?? type;
     if (LEGEND_TYPES.has(key)) return key;
@@ -101,7 +130,7 @@ export interface StrataCommit {
   s: string;
   adds: number;
   dels: number;
-  /** Conventional-commit type, lowercased, or null when the subject has none. */
+  /** Declared event type (`Commit.t`), else conventional-commit type, lowercased; null when none. */
   type: string | null;
   /** Type `fix`/`bug`/`hotfix`, or a fix-shaped subject without a type prefix. */
   fix: boolean;
@@ -285,8 +314,16 @@ export function buildStrataIndex(data: CityData): StrataIndex {
     const ts = Number(commit.ts);
     if (!Number.isFinite(ts)) continue;
     const subject = commit.s || '';
-    const type = CONVENTIONAL_RE.exec(subject)?.[1]?.toLowerCase() ?? null;
-    const fix = type === null ? FIX_RE.test(subject) : type === 'fix' || type === 'bug' || type === 'hotfix';
+    let type: string | null;
+    let fix: boolean;
+    if (declared) {
+      // The adapter classified it; subjects are not parsed.
+      type = typeof commit.t === 'string' && declared.colors.has(commit.t) ? commit.t : null;
+      fix = type !== null && declared.rework.includes(type);
+    } else {
+      type = CONVENTIONAL_RE.exec(subject)?.[1]?.toLowerCase() ?? null;
+      fix = type === null ? FIX_RE.test(subject) : type === 'fix' || type === 'bug' || type === 'hotfix';
+    }
     const deltas = commit.d;
     for (let i = 0; i < commit.f.length; i++) {
       const idx = commit.f[i];
@@ -513,7 +550,7 @@ export function createStrata(
 export const commitTypePaint: StrataPaint = (record, age, target) => {
   const commit = record.commit;
   if (!commit) return target.copy(STUB_COLOR);
-  const hue = commit.type ? TYPE_COLORS.get(commit.type) : undefined;
+  const hue = commit.type ? (declared ? declared.colors : TYPE_COLORS).get(commit.type) : undefined;
   const lift = 0.55 + 0.6 * age;
   if (hue) return target.copy(hue).multiplyScalar(lift);
   const fixHue = TYPE_COLORS.get('fix');

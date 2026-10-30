@@ -8,8 +8,9 @@
  * See DESIGN.md "Adapters".
  */
 import type {
-  MemberKind, ModuleInfo, ModuleKind, ModuleMember, ModuleRef, Pr, PrStatus,
+  EventType, MemberKind, ModuleInfo, ModuleKind, ModuleMember, ModuleRef, Noun, Pr, PrStatus, Vocabulary,
 } from '../shared/types.js';
+import { COLOR_RE, EVENT_KEY_RE, MAX_EVENT_TYPES, MAX_WORD } from '../shared/vocab.js';
 import type { Item, Link, Snapshot, SourceEvent, SourceInfo, Touch } from './snapshot.js';
 
 /** A snapshot is a city, not a payload: generous for real sources, finite for hostile ones. */
@@ -54,15 +55,47 @@ export function validateSnapshot(x: unknown): Snapshot {
   const o = record(x, 'snapshot');
   const items = validateItems(list(o.items, 'items', MAX_ITEMS));
   const asOf = time(o.asOf, 'asOf');
+  const vocab = o.vocab === undefined ? undefined : validateVocab(o.vocab);
   return {
     source: validateSource(o.source),
     items,
-    events: validateEvents(list(o.events ?? [], 'events', MAX_EVENTS)),
+    events: validateEvents(list(o.events ?? [], 'events', MAX_EVENTS), vocab?.eventTypes),
     asOf,
     links: list(o.links ?? [], 'links', MAX_LINKS).map((l, i) => validateLink(l, `links[${i}]`)),
     inflight: list(o.inflight ?? [], 'inflight', MAX_INFLIGHT).map((p, i) => validatePr(p, `inflight[${i}]`)),
     // `diff` is not read: it is git-only and its paths assume id = path.
+    ...(vocab ? { vocab } : {}),
   };
+}
+
+function validateVocab(x: unknown): Vocabulary {
+  const o = record(x, 'vocab');
+  const v: Vocabulary = {};
+  if (o.leaf !== undefined) v.leaf = validateNoun(o.leaf, 'vocab.leaf');
+  if (o.event !== undefined) v.event = validateNoun(o.event, 'vocab.event');
+  if (o.mass !== undefined) v.mass = text(o.mass, 'vocab.mass', MAX_WORD);
+  if (o.eventTypes !== undefined) {
+    const keys = new Set<string>();
+    v.eventTypes = list(o.eventTypes, 'vocab.eventTypes', MAX_EVENT_TYPES).map((t, i): EventType => {
+      const at = `vocab.eventTypes[${i}]`;
+      const to = record(t, at);
+      const key = to.key;
+      if (typeof key !== 'string' || !EVENT_KEY_RE.test(key)) throw new SnapshotError(`${at}.key: not a slug ([a-z0-9-], ≤ 32)`);
+      if (keys.has(key)) throw new SnapshotError(`${at}.key: repeats ${JSON.stringify(key)}`);
+      keys.add(key);
+      const color = to.color;
+      if (typeof color !== 'string' || !COLOR_RE.test(color)) throw new SnapshotError(`${at}.color: not #rrggbb`);
+      const label = text(to.label, `${at}.label`, MAX_WORD);
+      const rework = to.rework === undefined ? false : bool(to.rework, `${at}.rework`);
+      return rework ? { key, label, color, rework } : { key, label, color };
+    });
+  }
+  return v;
+}
+
+function validateNoun(x: unknown, at: string): Noun {
+  const o = record(x, at);
+  return { one: text(o.one, `${at}.one`, MAX_WORD), many: text(o.many, `${at}.many`, MAX_WORD) };
 }
 
 /**
@@ -139,8 +172,13 @@ function validateSection(x: unknown, at: string): ModuleInfo {
   return m;
 }
 
-/** Newest first, as given: strata rebuild size-at-event from this order, so it is checked, not sorted. */
-function validateEvents(raw: unknown[]): SourceEvent[] {
+/**
+ * Newest first, as given: strata rebuild size-at-event from this order, so it is
+ * checked, not sorted. A `type` must be a declared event type; its `rework`
+ * flag is the event's default.
+ */
+function validateEvents(raw: unknown[], types: EventType[] | undefined): SourceEvent[] {
+  const declared = new Map((types ?? []).map((t) => [t.key, t]));
   let total = 0;
   let prev = Infinity;
   const ids = new Set<string>(); // the viewer looks a selected event up by id
@@ -154,12 +192,18 @@ function validateEvents(raw: unknown[]): SourceEvent[] {
     total += touches.length;
     if (total > MAX_TOTAL_TOUCHES) throw new SnapshotError(`${at}.touches: more than ${MAX_TOTAL_TOUCHES} in all`);
     const seen = new Set<string>(); // a repeated item would count its churn twice
+    let type: EventType | undefined;
+    if (o.type !== undefined) {
+      type = typeof o.type === 'string' ? declared.get(o.type) : undefined;
+      if (!type) throw new SnapshotError(`${at}.type: not a key of vocab.eventTypes`);
+    }
     return {
       id: eventId(o.id, `${at}.id`, ids),
       ts,
       actor: o.actor === undefined ? '' : text(o.actor, `${at}.actor`, MAX_NAME, true),
       subject: o.subject === undefined ? '' : text(o.subject, `${at}.subject`, MAX_TEXT, true),
-      rework: o.rework === undefined ? false : bool(o.rework, `${at}.rework`),
+      rework: o.rework === undefined ? type?.rework === true : bool(o.rework, `${at}.rework`),
+      ...(type ? { type: type.key } : {}),
       touches: touches.map((t, j): Touch => {
         const ta = `${at}.touches[${j}]`;
         const to = record(t, ta);

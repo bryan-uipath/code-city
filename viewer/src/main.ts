@@ -34,6 +34,7 @@ import {
   type Descriptor, type Sidebar, type WorkChange, type WorkKind,
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
+import { readVocabulary, wordsOf, type Words } from '../../shared/vocab.js';
 import { createSearch, type HighlightSpec, type SearchPalette, type SearchResultsPayload } from './search.js';
 import type { TourTarget } from '../../shared/tour.js';
 import { validateCheckpoints } from '../../shared/tour.js';
@@ -44,7 +45,7 @@ import { EMBEDDED, initEmbed, type EmbedUi } from './embed.js';
 import { loadUiSettings, saveUiSetting, type UiSettings } from './uiSettings.js';
 import {
   buildStrataIndex, createStrata, commitTypePaint, commitTypeKey,
-  COMMIT_TYPE_COLORS, COMMIT_TYPE_ORDER,
+  legendTypes, reworkTypes, useEventTypes,
   type StrataBuild, type StrataCommit, type StrataIndex, type StrataPaint, type StrataRecord,
   type FileFilter, type LevelFilter, type StrataBand, type BandSource, type StrataUpdate, LEVEL_HEIGHT,
 } from './strata.js';
@@ -121,6 +122,8 @@ function cityExtent(fileCount: number): number {
   return Math.min(Math.max(Math.sqrt(fileCount) * 15, 260), 900);
 }
 let CITY_SIZE = 900;
+/** What the source calls its leaves, events and mass (`data.vocab`); code words by default. */
+let words: Words = wordsOf({});
 
 // ---------------------------------------------------------------------------
 // State
@@ -214,9 +217,11 @@ const dom = {
   breadcrumb: requireEl('breadcrumb'),
   repoName: requireEl('repo-name'),
   statFiles: requireEl('stat-files'),
+  statFilesLabel: requireEl('stat-files-label'),
   statModules: requireEl('stat-modules'),
   statModulesLabel: requireEl('stat-modules-label'),
   statLoc: requireEl('stat-loc'),
+  statLocLabel: requireEl('stat-loc-label'),
   statFps: requireEl('stat-fps'),
   legend: requireEl('legend-body'),
   modes: requireEl('modes'),
@@ -473,6 +478,11 @@ main().catch((err: unknown) => {
 async function main(): Promise<void> {
   const data = await loadData();
   state.data = data;
+  const vocab = readVocabulary(data.vocab);
+  words = wordsOf(vocab);
+  useEventTypes(vocab.eventTypes);
+  dom.statFilesLabel.textContent = words.leaf.many.toUpperCase();
+  dom.statLocLabel.textContent = words.mass.toUpperCase();
   state.root = asVNode(data.tree);
 
   normalizeTree(state.root);
@@ -487,7 +497,7 @@ async function main(): Promise<void> {
     onRange: () => { strata.dirty = true; },
   });
   checkpoints = createCheckpoints();
-  sidebar = createSidebar({ host, timeline, githubUrl: data.repo?.githubUrl });
+  sidebar = createSidebar({ host, timeline, githubUrl: data.repo?.githubUrl, words });
   labeler = createLabeler(scene, camera);
   search = createSearch({
     getRoot: () => state.root ?? asVNode(data.tree),
@@ -510,6 +520,7 @@ async function main(): Promise<void> {
       setSelection(skyTarget(hit));
     },
     onIsolate: (node) => focusNode(focusTargetFor({ type: node.type, node, rec: null })),
+    words,
   });
   rebuildScene({ instant: true });
   buildHud();
@@ -1237,7 +1248,7 @@ function buildHud(): void {
       showNotice('Provenance needs a diff — re-run the analyzer with --diff <base>..<head>');
       return;
     }
-    const asFixFilter = clicked === 'fix' && strata.build !== null;
+    const asFixFilter = clicked === 'fix' && strata.build !== null && reworkTypes().length > 0;
     const mode = asFixFilter ? 'strata' : clicked;
     state.mode = mode;
     saveUiSetting('mode', mode);
@@ -1246,7 +1257,7 @@ function buildHud(): void {
     }
     if (asFixFilter) {
       strata.filter.types.clear();
-      strata.filter.types.add('fix');
+      for (const key of reworkTypes()) strata.filter.types.add(key);
       const wasCollapse = strata.filter.collapse;
       strata.filter.collapse = false;
       // This leaves Provenance too, so the band massing has to go with it or
@@ -1254,7 +1265,7 @@ function buildHud(): void {
       if (bandMassing() !== strata.bands) startRise();
       applyOverlay();
       applyStrataFilter(wasCollapse);
-      showNotice('Fix hotspots · strata filtered to fix commits — "only" compresses to fix mass');
+      showNotice(`Fix hotspots · strata filtered to ${reworkLabel()} ${words.event.many} — "only" compresses to ${reworkLabel()} mass`);
       return;
     }
     if (mode === 'strata' && !timeline.enabled) showNotice('Strata needs a commit stream — re-run the analyzer');
@@ -1375,13 +1386,12 @@ function renderLegend(): void {
     // One level per commit, hue = the kind of change that commit was — and each
     // swatch is also the filter for that kind (see `toggleFilterType`).
     const on = filterActive();
-    for (const type of COMMIT_TYPE_ORDER) {
-      const hex = '#' + (COMMIT_TYPE_COLORS[type] ?? PALETTE.cyan).toString(16).padStart(6, '0');
-      const sel = strata.filter.types.has(type);
+    for (const { key, label, hex } of legendTypes()) {
+      const sel = strata.filter.types.has(key);
       const cls = 'row f' + (sel ? ' on' : on ? ' off' : '');
       rows.push(
-        `<div class="${cls}" data-type="${type}" title="Filter the stacks to ${type} commits">` +
-        `<i class="sw" style="background:${hex};box-shadow:0 0 8px ${hex}"></i><span>${type}</span></div>`
+        `<div class="${cls}" data-type="${escapeHtml(key)}" title="Filter the stacks to ${escapeHtml(`${label} ${words.event.many}`)}">` +
+        `<i class="sw" style="background:${hex};box-shadow:0 0 8px ${hex}"></i><span>${escapeHtml(label)}</span></div>`
       );
     }
     rows.push(filterControlsHtml());
@@ -1392,7 +1402,7 @@ function renderLegend(): void {
       `<div class="row"><span>${massingNote()}</span></div>`
     );
   } else {
-    const label = state.mode === 'churn' ? 'commits / 12mo' : 'fix commits / 12mo';
+    const label = escapeHtml(state.mode === 'churn' ? `${words.event.many} / 12mo` : `${reworkLabel()} ${words.event.many} / 12mo`);
     const max = state.mode === 'churn' ? index.max.churn : index.max.fixChurn;
     rows.push(
       `<div id="ramp"></div>`,
@@ -1475,7 +1485,13 @@ function prLegendRows(): string[] {
  * on a width.
  */
 function massingNote(): string {
-  return state.view === 'skyline' ? 'level = commit · width = loc' : 'level = commit · area = loc';
+  return escapeHtml(`level = ${words.event.one} · ${state.view === 'skyline' ? 'width' : 'area'} = ${words.mass}`);
+}
+
+/** What Fix hotspots counts, as the legend names it: `fix`, or the declared rework labels. */
+function reworkLabel(): string {
+  const rework = new Set(reworkTypes());
+  return legendTypes().filter((t) => rework.has(t.key)).map((t) => t.label).join('/') || 'rework';
 }
 
 /** The branch's own commit count, for the legend's pinned-range line. */
@@ -4087,7 +4103,7 @@ function describe(target: Target | null): Descriptor | null {
       : target.level?.band ? `${target.level.band.key} · +${fmt(target.level.band.n)} lines`
       : undefined,
     filterNote: match
-      ? `${fmt(match.matched)} of ${fmt(match.total)} commits match filter (${[...strata.filter.types].join(' ')})`
+      ? `${fmt(match.matched)} of ${fmt(match.total)} ${words.event.many} match filter (${[...strata.filter.types].join(' ')})`
       : undefined,
     provNote: provNote(node),
     loc: mod ? mod.loc : node.loc,
