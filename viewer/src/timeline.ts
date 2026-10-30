@@ -276,14 +276,22 @@ export function createTimeline(
       return;
     }
     const github = data.repo?.githubUrl;
-    const hash = at.h.replace(/[^0-9a-f]/gi, '');
-    if (github && /^https:\/\/github\.com\//.test(github)) {
+    const hash = at.h;
+    if (github && isCommitHash(hash) && /^https:\/\/github\.com\//.test(github)) {
       dom.date.innerHTML =
         `<a class="tl-hash" href="${github}/commit/${hash}" target="_blank" rel="noopener noreferrer">${hash}</a> · ${day}`;
     } else {
-      dom.date.textContent = `${hash} · ${day}`;
+      dom.date.textContent = `${hash.slice(0, 16)} · ${day}`;
     }
   }
+}
+
+/**
+ * Event ids are opaque to the viewer (a Jira changelog id, a page version);
+ * only a git-shaped one is linked as a commit.
+ */
+export function isCommitHash(h: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(h);
 }
 
 /** Relative time such as "3d ago" for a unix-seconds timestamp. */

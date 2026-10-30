@@ -267,9 +267,9 @@ Notes and limits:
 
 ## Dev API (vite plugin, dev-server only)
 
-`viewer/vite.config.js` registers middleware that shells out to git in `repo.root` (read from the generated data.json at server start). All paths validated: repo-relative, no `..`/absolute, resolved path must stay under root; invalid → 400. Endpoints:
+`viewer/vite.config.js` registers middleware that routes each endpoint to the dataset's provider — today `viewer/providers/git.js`, created for `repo.root` (re-read whenever data.json changes; no root, no provider → 404). The provider shells out to git and validates everything: paths repo-relative, no `..`/absolute, resolved path must stay under root; invalid → 400. Endpoints:
 
-- `GET /api/source?path=<repo-rel>&start=<1-based>&end=` → `{ path, start, end, lines: [...] }` (cap 400 lines)
+- `GET /api/source?path=<repo-rel>&start=<1-based>&end=` → `{ kind: 'code' | 'markdown', path, start, end, lines: [...] }` (cap 400 lines)
 - `GET /api/log?path=` → `{ commits: [{h, ts, a, s}] }` — last 15 commits touching that path
 - `GET /api/diff?path=&h=<hash>` → `{ diff: "unified diff text" }` — `git show <h> -- <path>`, cap ~400 lines; hash validated as /^[0-9a-f]{7,40}$/
 
@@ -865,14 +865,36 @@ of git. Each provider owns its own input discipline: `safeRelPath` and
 ids and keeps its token server-side. The static export works as today: a
 missing provider latches unavailable and its sections hide.
 
+**First slice (stage 4, landed):** `viewer/providers/git.js` is the git
+provider — `getDetail/getHistory/getChange/getLive/search`, with `safeRelPath`,
+`HASH_RE` and every git invocation moved out of `vite.config.js` verbatim. The
+server maps today's URLs onto those calls and passes raw query strings through,
+so responses are byte-identical except `/source` gaining `kind`. Deferred, so
+the slice stays a refactor:
+- **URLs stay `/api/source|log|…`**, not `/api/<adapter>/…`: one provider per
+  dataset needs no prefix, and `CityHost` keeps its git-era method names. The
+  prefix and the host rename come with a second provider.
+- **Provider choice is "root exists → git".** A snapshot city has no provider;
+  a non-git provider needs data.json to name its adapter (not yet in the
+  contract).
+- **Viewer still asks by path.** Nodes now carry `id` when it differs from the
+  path, but host calls still send `path`; that switch belongs with the first
+  provider whose ids aren't paths (Confluence).
+
 Prerequisites, found reviewing stage 1:
 - **Ids must reach the viewer.** `compile` keys everything by path, so a
   Confluence page `123` survives only as `space/title`, and a provider can't
   be asked about it. Emit the item `id` on a node when it differs from the
   path (optional field, so git datasets stay byte-identical).
+  **Landed:** `compile` emits it (`TreeNode.id`); git ids are paths, so git
+  data.json is unchanged.
 - **Event ids are opaque.** `Commit.h` is a hash to the viewer and the dev API
   today; a Jira changelog id fails `HASH_RE` with a 400 instead of hiding. The
   viewer must treat `h` as a token and leave its shape to the provider.
+  **Landed:** the sidebar and timeline show a non-hash id as escaped text (was
+  stripped to its hex characters: `CHG-36` read `C36`) and link only
+  hash-shaped ids to GitHub; `HASH_RE` lives only in the git provider (and
+  tour diff artifacts, which are git by definition).
 
 ### Leaf interior: any content
 
@@ -896,6 +918,12 @@ The city itself doesn't move: buildings are sections, height is mass. Only the
 panel and the span unit change. `code` + `markdown` come first (both exist,
 so it's a refactor with no visible change), then `image` — Confluence pages
 are markdown plus images.
+
+**Landed:** `getDetail` tags its lines `code` or `markdown` (by extension);
+the sidebar keeps a renderer per kind (both render lines today) and the
+snippet card mounts lines only for a known kind. An unknown kind hides the code
+pane and leaves the card a header; an absent kind (older dev API) reads as
+code. Spans keep their line unit until a non-line kind lands.
 
 ### The live layer: uncommitted work, anywhere
 
@@ -998,7 +1026,8 @@ second adapter needs one.
 
 Stages: (1) git adapter + `compile`, data.json byte-identical — **done**;
 (2) `--snapshot` + validation — **done**; (3) vocabulary + event types — **done**; (4) provider
-split + typed content (`code`, `markdown`), ids on nodes; (5) Confluence;
+split + typed content (`code`, `markdown`), ids on nodes — **first slice done**
+(see above for what is deferred); (5) Confluence;
 (6) Jira, with `getLive` for the backlog; (7) container mass if `_self` fails.
 
 ## Future ideas (recorded, not scheduled)
@@ -1047,6 +1076,8 @@ analyzer/validate.ts      # validateSnapshot: the untrusted-input boundary for -
 analyzer/compile.ts       # Snapshot -> data.json (paths, sums, churn, commit index)
 analyzer/git.ts           # git adapter: modules, history + cache, imports, PRs
 analyzer/diff-scope.ts    # one range -> changed-file set + per-file provenance buckets
+viewer/vite.config.js     # dev API router: /api/* -> the dataset's provider
+viewer/providers/git.js   # git provider: detail, history, change, live, search (owns path/hash validation)
 viewer/index.html         # HUD markup + CSS
 viewer/src/main.ts        # scene, interaction, overlays
 viewer/src/vtree.ts       # the viewer's augmented node type (layout, synthetic scopes)
