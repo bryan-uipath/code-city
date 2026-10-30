@@ -214,8 +214,20 @@ function bucketsFor(files: Map<string, Buckets>, path: string): Buckets {
  * a zero-length side (pure insertion or deletion) becomes `[a, a]`, its anchor.
  */
 export function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'base'): Record<string, [number, number][]> {
-  // Null prototype: a changed file named `constructor` or `__proto__` must not hit Object.prototype.
   const out: Record<string, [number, number][]> = Object.create(null);
+  for (const [file, hunks] of Object.entries(hunkHeaders(diff, fileSet))) {
+    out[file] = hunks.map(([a, b, c, d]) => {
+      const [start, len] = side === 'head' ? [c, d] : [a, b];
+      return len <= 0 ? [start, start] : [start, start + len - 1];
+    });
+  }
+  return out;
+}
+
+/** Every `@@ -a,b +c,d @@` header per tree file, as `[a, b, c, d]` (an omitted length is 1). */
+export function hunkHeaders(diff: string, fileSet: Set<string>): Record<string, Array<[number, number, number, number]>> {
+  // Null prototype: a changed file named `constructor` or `__proto__` must not hit Object.prototype.
+  const out: Record<string, Array<[number, number, number, number]>> = Object.create(null);
   let file: string | null = null;
   // `---`/`+++` are headers only before the first hunk of a file; added content
   // can start the same way.
@@ -231,12 +243,11 @@ export function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'ba
     if (!file || !line.startsWith('@@')) continue;
     const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (!m) continue;
-    const at = side === 'head' ? m[3] : m[1];
-    const span = side === 'head' ? m[4] : m[2];
-    const start = Number(at);
-    const len = span === undefined ? 1 : Number(span);
-    if (!Number.isFinite(start) || !Number.isFinite(len)) continue;
-    (out[file] ??= []).push(len <= 0 ? [start, start] : [start, start + len - 1]);
+    const h: [number, number, number, number] = [
+      Number(m[1]), m[2] === undefined ? 1 : Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4]),
+    ];
+    if (!h.every(Number.isFinite)) continue;
+    (out[file] ??= []).push(h);
   }
   return out;
 }

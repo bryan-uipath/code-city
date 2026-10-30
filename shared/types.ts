@@ -176,6 +176,12 @@ export interface DiffFile {
    * data.json from an older analyzer.
    */
   spans?: [number, number][];
+  /**
+   * The working copy's own edits to this file against `head`, as `-U0` hunk
+   * headers `[headStart, headLen, wcStart, wcLen]`. Module lines are working-copy
+   * lines; this maps them onto `spans`. Absent when the two agree.
+   */
+  worktree?: Array<[number, number, number, number]>;
 }
 
 // ---------------------------------------------------------------------------
