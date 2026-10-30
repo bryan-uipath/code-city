@@ -160,9 +160,11 @@ export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
 function discoverFiles(repoRoot: string, roots: string[]): string[] {
   // An empty listing is not authoritative — a repo whose sources are all
   // untracked/gitignored still deserves the fs-walk city it used to get.
-  const headFiles = gitFiles(repoRoot, ['ls-tree', '-r', 'HEAD', '--name-only', '-z', '--', ...roots]);
+  // Roots are directories, not pathspecs: literal, so `app/[id]` or `src/*` mean
+  // what they say in every listing and agree with annotateManifest's prefix test.
+  const headFiles = gitFiles(repoRoot, ['--literal-pathspecs', 'ls-tree', '-r', 'HEAD', '--name-only', '-z', '--', ...roots]);
   if (headFiles !== null && headFiles.length) return headFiles;
-  const indexFiles = gitFiles(repoRoot, ['ls-files', '--cached', '-z', '--', ...roots]);
+  const indexFiles = gitFiles(repoRoot, ['--literal-pathspecs', 'ls-files', '--cached', '-z', '--', ...roots]);
   if (indexFiles !== null && indexFiles.length) return indexFiles;
   const found: string[] = [];
   for (const root of roots) walk(path.join(repoRoot, root));

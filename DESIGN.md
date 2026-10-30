@@ -358,6 +358,12 @@ A separate manifest beats `DiffFile.status`: the buckets must stay renames-off
 to keep moved lines visible as verbatim, so the two lists disagree about what a
 rename *is*.
 
+`outside-roots` is a literal prefix test, so the listings that define the city
+treat roots literally too (`--literal-pathspecs`). Before, the HEAD listing
+(`ls-tree`) was literal while the index fallback (`ls-files`) expanded globs, so
+`--roots 'src/*'` meant two different things, and a path the glob had admitted
+could be labelled outside the roots.
+
 Deleted files get no vacant-lot marker. The working-tree rubble works because
 an uncommitted deletion still has its plate in the HEAD city. A range deletion
 has no plate at head and no stable place to put one, so it stays a sidebar row.
