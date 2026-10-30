@@ -282,8 +282,10 @@ it shows is already in data.json.
 - **Untouched importers** are files the diff does NOT touch that import a
   changed file, each with the edge that put it there (`imports types.ts +1`),
   most-implicated first. It is labelled *static imports* because that is all
-  `edges` knows: no dynamic imports, no runtime calls, no type-flow. A 2nd hop
-  (importers of those) sits folded behind a toggle and is capped at 40 — a
+  `edges` knows: no dynamic imports, no runtime calls, no type-flow. Markdown
+  links ride in `edges` too and are left out: a doc linking a file does not
+  import it. A 2nd hop (importers of those) sits folded behind a toggle and
+  keeps the 40 most-implicated (cut after sorting) — a
   pointer to where breakage would surface, not a transitive blast-radius graph,
   which on a hub file like `types.ts` is the whole repo and says nothing.
 - A row click is `revealPath` (select + fly); the selected row is marked.

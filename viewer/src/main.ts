@@ -2517,6 +2517,8 @@ function toggleDiffCollapse(): void {
 
 /** Second-hop importers listed at most — the list is a pointer, not a blast-radius graph. */
 const REVIEW_HOP2_CAP = 40;
+/** The analyzer's Markdown extensions (`MARKDOWN_EXT` in analyzer/git.ts). */
+const MARKDOWN_RE = /\.mdx?$/i;
 
 /**
  * Hand the sidebar the diff's review lists: every changed city file with its
@@ -2525,6 +2527,9 @@ const REVIEW_HOP2_CAP = 40;
  */
 function pushReviewToSidebar(): void {
   if (!diffAvailable()) return;
+  // `edges` also carries Markdown links; a doc linking a file does not import it.
+  const importersOf = (path: string): string[] =>
+    (index.edgesIn.get(path) ?? []).map((e) => e.other).filter((p) => !MARKDOWN_RE.test(p));
   const files: ReviewFile[] = [];
   const changed = new Set<string>();
   for (const [node, s] of diffScope.byNode) {
@@ -2533,23 +2538,20 @@ function pushReviewToSidebar(): void {
     files.push({
       path: node.path, verbatim: s.verbatim, reshaped: s.reshaped, new: s.new, deleted: s.deleted,
       fix: Number(node.fixChurn) || 0,
-      importers: index.edgesIn.get(node.path)?.length ?? 0,
+      importers: importersOf(node.path).length,
     });
   }
   // importer -> the files it imports that put it on the list
   const hop1 = new Map<string, string[]>();
   for (const path of changed) {
-    for (const { other } of index.edgesIn.get(path) ?? []) {
+    for (const other of importersOf(path)) {
       if (!changed.has(other)) push(hop1, other, path);
     }
   }
   const hop2 = new Map<string, string[]>();
-  let capped = false;
   for (const path of hop1.keys()) {
-    for (const { other } of index.edgesIn.get(path) ?? []) {
-      if (changed.has(other) || hop1.has(other)) continue;
-      if (!hop2.has(other) && hop2.size >= REVIEW_HOP2_CAP) { capped = true; continue; }
-      push(hop2, other, path);
+    for (const other of importersOf(path)) {
+      if (!changed.has(other) && !hop1.has(other)) push(hop2, other, path);
     }
   }
   // Most-implicated first: an importer of three changed files before one of one.
@@ -2558,8 +2560,9 @@ function pushReviewToSidebar(): void {
       .sort((a, b) => b.via.length - a.via.length || (a.path < b.path ? -1 : 1));
   sidebar.setReview({
     files,
-    consumers: [...list(hop1, 1), ...list(hop2, 2)],
-    hop2Capped: capped,
+    // The cap cuts after sorting, so the most-implicated 2nd-hop files survive it.
+    consumers: [...list(hop1, 1), ...list(hop2, 2).slice(0, REVIEW_HOP2_CAP)],
+    hop2Capped: hop2.size > REVIEW_HOP2_CAP,
     onSelect: (path) => { revealPath(path); },
   });
 }

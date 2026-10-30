@@ -557,6 +557,11 @@ export function createSidebar(
     const files = view.files.slice().sort((a, b) =>
       b[key] - a[key] || b.new - a.new || (a.path < b.path ? -1 : 1));
     const sel = state.selected?.codePath ?? null;
+    // One clickable row: name + folder, then a line of signals (`sig` is markup).
+    const rvRow = (path: string, cls: string, sig: string): string =>
+      `<div class="sb-rv${cls}${path === sel ? ' sel' : ''}" data-path="${escapeHtml(path)}">` +
+      `<div class="ln"><span class="nm">${escapeHtml(baseName(path))}</span>` +
+      `<span class="dir">${escapeHtml(dirName(path))}</span></div><div class="sig">${sig}</div></div>`;
     const sorts: ReviewSort[] = ['new', 'fix', 'importers', 'deleted'];
     const parts: string[] = [
       `<div class="h"><span>Review</span><em>${fmt(files.length)} changed</em></div>`,
@@ -573,13 +578,8 @@ export function createSidebar(
       if (f.deleted) sig.push(['deleted', `−${fmt(f.deleted)}`, 'deleted lines']);
       if (f.fix) sig.push(['fix', `fix ${fmt(f.fix)}`, 'fix-looking commits on it, last 12 months']);
       if (f.importers) sig.push(['importers', `←${fmt(f.importers)}`, 'files that statically import it']);
-      parts.push(
-        `<div class="sb-rv${f.path === sel ? ' sel' : ''}" data-path="${escapeHtml(f.path)}">` +
-        `<div class="ln"><span class="nm">${escapeHtml(baseName(f.path))}</span>` +
-        `<span class="dir">${escapeHtml(dirName(f.path))}</span></div>` +
-        `<div class="sig">${sig.map(([k, text, why]) =>
-          `<span class="${k}${k === key ? ' on' : ''}" title="${why}">${text}</span>`).join('')}</div></div>`
-      );
+      parts.push(rvRow(f.path, '', sig.map(([k, text, why]) =>
+        `<span class="${k}${k === key ? ' on' : ''}" title="${why}">${text}</span>`).join('')));
     }
 
     const hop1 = view.consumers.filter((c) => c.hop === 1);
@@ -590,13 +590,9 @@ export function createSidebar(
     );
     const row = (c: ReviewConsumer): string => {
       const more = c.via.length > 1 ? ` +${c.via.length - 1}` : '';
-      return (
-        `<div class="sb-rv consumer${c.path === sel ? ' sel' : ''}" data-path="${escapeHtml(c.path)}">` +
-        `<div class="ln"><span class="nm">${escapeHtml(baseName(c.path))}</span>` +
-        `<span class="dir">${escapeHtml(dirName(c.path))}</span></div>` +
-        `<div class="sig"><span class="via" title="${escapeHtml(c.via.join(', '))}">` +
-        `${c.hop === 1 ? 'imports' : 'via'} ${escapeHtml(baseName(c.via[0] ?? ''))}${more}</span></div></div>`
-      );
+      return rvRow(c.path, ' consumer',
+        `<span class="via" title="${escapeHtml(c.via.join(', '))}">` +
+        `${c.hop === 1 ? 'imports' : 'via'} ${escapeHtml(baseName(c.via[0] ?? ''))}${more}</span>`);
     };
     for (const c of hop1) parts.push(row(c));
     if (hop2.length) {
