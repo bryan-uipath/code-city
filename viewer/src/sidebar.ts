@@ -78,7 +78,11 @@ export interface ReviewView {
   hop2Capped: boolean;
   /** Changed paths the city has no building for. */
   offCity: ReviewOffCity[];
+  /** Paths the reviewer marked visited — live: main.ts mutates it and calls `refreshReview`. */
+  visited: ReadonlyMap<string, string>;
   onSelect(path: string): void;
+  /** The row's check was clicked. */
+  onVisit(path: string): void;
 }
 
 /** Why a changed path is not a building, as the list says it (`OffCity` order). */
@@ -191,6 +195,8 @@ export interface Sidebar {
   setWorkingTree(view: WorkingTree | null): void;
   /** The diff's read-first queue and untouched importers; null removes the section. */
   setReview(view: ReviewView | null): void;
+  /** Re-render the review lists (visited marks moved). */
+  refreshReview(): void;
   /** Current tour step; null removes the section and restores SELECTED. */
   setTour(view: TourView | null): void;
 }
@@ -318,6 +324,12 @@ export function createSidebar(
       renderReview();
       return;
     }
+    // The check marks; the rest of the row selects and flies.
+    const visit = closest(e.target, '.sb-rv-visit[data-visit]')?.dataset.visit;
+    if (visit) {
+      view.onVisit(visit);
+      return;
+    }
     const path = closest(e.target, '.sb-rv[data-path]')?.dataset.path;
     if (path) view.onSelect(path);
   });
@@ -365,6 +377,9 @@ export function createSidebar(
     },
     setReview(view) {
       state.review = view;
+      renderReview();
+    },
+    refreshReview() {
       renderReview();
     },
     setTour(view) {
@@ -585,13 +600,15 @@ export function createSidebar(
       b[key] - a[key] || b.new - a.new || (a.path < b.path ? -1 : 1));
     const sel = state.selected?.codePath ?? null;
     // One row: name + folder, then a line of signals (`sig` is markup). No `data-path`, no click.
-    const rvRow = (path: string, cls: string, sig: string, clickable = true): string =>
+    const rvRow = (path: string, cls: string, sig: string, clickable = true, lead = ''): string =>
       `<div class="sb-rv${cls}${path === sel ? ' sel' : ''}"${clickable ? ` data-path="${escapeHtml(path)}"` : ''}>` +
-      `<div class="ln"><span class="nm">${escapeHtml(baseName(path))}</span>` +
+      `<div class="ln">${lead}<span class="nm">${escapeHtml(baseName(path))}</span>` +
       `<span class="dir">${escapeHtml(dirName(path))}</span></div><div class="sig">${sig}</div></div>`;
     const sorts: ReviewSort[] = ['new', 'fix', 'importers', 'deleted'];
+    const seen = files.filter((f) => view.visited.has(f.path)).length;
     const parts: string[] = [
-      `<div class="h"><span>Review</span><em>${fmt(files.length + view.offCity.length)} changed</em></div>`,
+      `<div class="h"><span>Review</span><em>${fmt(files.length + view.offCity.length)} changed` +
+        `${seen ? ` · ${fmt(seen)}/${fmt(files.length)} visited` : ''}</em></div>`,
       `<div class="sb-sub">Read first · by ` +
         sorts.map((k) => `<span class="sb-rv-sort${k === key ? ' on' : ''}" data-sort="${k}">${k}</span>`).join(' ') +
         `</div>`,
@@ -610,8 +627,11 @@ export function createSidebar(
       if (!f.new && !f.reshaped && !f.verbatim && !f.deleted) {
         sig.push(['via', 'no substantive lines', 'blank or punctuation-only edit, or no line diff (mode change)']);
       }
-      parts.push(rvRow(f.path, '', sig.map(([k, text, why]) =>
-        `<span class="${k}${k === key ? ' on' : ''}" title="${why}">${text}</span>`).join('')));
+      const on = view.visited.has(f.path);
+      const check = `<span class="sb-rv-visit${on ? ' on' : ''}" data-visit="${escapeHtml(f.path)}" ` +
+        `title="${on ? 'Visited — click to unmark' : 'Mark visited (V)'}">&#10003;</span>`;
+      parts.push(rvRow(f.path, on ? ' visited' : '', sig.map(([k, text, why]) =>
+        `<span class="${k}${k === key ? ' on' : ''}" title="${why}">${text}</span>`).join(''), true, check));
     }
 
     // The rest of the inventory: changed paths with no building, grouped by why.
