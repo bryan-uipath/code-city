@@ -114,7 +114,11 @@ Emitted only for `npm run analyze -- <repo> --diff <base>..<head>`
       "spans": [[12, 40], [88, 88]] }             // head-side hunk ranges, -U0 (optional)
   ],
   "commits": ["4503fbb…", "0d8f748…"],           // git rev-list base..head, FULL hashes
-  "baseTs": 1788186324, "headTs": 1788278773      // committer times, same unit as Commit.ts
+  "baseTs": 1788186324, "headTs": 1788278773,     // committer times, same unit as Commit.ts
+  "manifest": [                                  // every changed path, renames on (optional)
+    { "path": "src/b.ts", "status": "renamed", "oldPath": "src/a.ts" },
+    { "path": "logo.png", "status": "modified", "binary": true, "why": "binary" }
+  ]
 }
 ```
 
@@ -324,6 +328,45 @@ deletion anchors on the line before it, as `-U0` reports it). It reuses
   function maps to nothing and reads as untouched. The one case left unmapped is
   a diff file missing from disk at a checkout HEAD other than the diff head (its
   modules come from that HEAD's blob); the analyzer warns only then.
+
+### Change inventory (implemented)
+
+`DiffScope.files` is line buckets, so it can never be the whole change: a
+binary, a blank-only edit and a deleted file have no bucket to stand in, and
+with renames off a rename is an add plus a delete. A review that only sees the
+buildings silently skips exactly those. `DiffScope.manifest` is the complete
+list — `git diff --name-status -z -M` (renames ON here, unlike the buckets),
+binaries from numstat's `-` — and the analyzer, which knows the roots and the
+listing filters, stamps every path the city has no building for with `why`:
+
+| `why` | meaning |
+|---|---|
+| `deleted` | gone at head, so nothing stands |
+| `binary` | no lines to read |
+| `outside-roots` | outside `--roots` |
+| `filtered` | a type or folder the listing skips (`index.html`, lockfiles, `dist/`, dotdirs) |
+| `not-at-head` | passes every filter but is absent from the analyzed checkout (`--diff` head ≠ HEAD) |
+
+The REVIEW section lists them under *Not in the city*, grouped by reason.
+Rows are not clickable, because there is nothing to fly to. A building the
+buckets never saw (a blank or punctuation-only edit, a mode change) still joins
+*Read first*, tagged `no substantive lines`, and its code pane still shows the
+range diff. A renamed building shows `from <old path>`. A building always beats
+a reason: a deletion that the analyzed checkout still holds (`--diff` head ≠ HEAD)
+stays in *Read first* and does not appear twice.
+A separate manifest beats `DiffFile.status`: the buckets must stay renames-off
+to keep moved lines visible as verbatim, so the two lists disagree about what a
+rename *is*.
+
+`outside-roots` is a literal prefix test, so the listings that define the city
+treat roots literally too (`--literal-pathspecs`). Before, the HEAD listing
+(`ls-tree`) was literal while the index fallback (`ls-files`) expanded globs, so
+`--roots 'src/*'` meant two different things, and a path the glob had admitted
+could be labelled outside the roots.
+
+Deleted files get no vacant-lot marker. The working-tree rubble works because
+an uncommitted deletion still has its plate in the HEAD city. A range deletion
+has no plate at head and no stable place to put one, so it stays a sidebar row.
 
 ## Dev API (vite plugin, dev-server only)
 

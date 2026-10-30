@@ -158,6 +158,28 @@ export interface DiffScope {
   /** Committer timestamps of base and head, unix seconds like `Commit.ts`. */
   baseTs?: number;
   headTs?: number;
+  /**
+   * Every path the range changes, renames detected — including what `files`
+   * cannot hold (deleted, binary, outside the roots). Absent from older data.json.
+   */
+  manifest?: DiffEntry[];
+}
+
+export type DiffStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'type';
+
+/** Why a changed path has no building in this city. */
+export type OffCity = 'deleted' | 'binary' | 'outside-roots' | 'filtered' | 'not-at-head';
+
+/** One `git diff --name-status -M` row. */
+export interface DiffEntry {
+  path: string;
+  status: DiffStatus;
+  /** The base-side path of a rename or copy. */
+  oldPath?: string;
+  /** git reports no line counts for it. */
+  binary?: boolean;
+  /** Set only when the city has no building at `path`. */
+  why?: OffCity;
 }
 
 export interface DiffFile {

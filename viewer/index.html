@@ -379,6 +379,10 @@
   .sb-rv .sig .deleted { color: #ef4444; }
   .sb-rv .sig .on { text-decoration: underline; }
   .sb-rv.consumer .nm { color: var(--accent-muted); }
+  /* No building to fly to: not clickable. */
+  .sb-rv.off { cursor: default; opacity: 0.7; }
+  .sb-rv.off:hover { background: none; }
+  .sb-rv.off.deleted .nm { color: #ef4444; text-decoration: line-through; }
 
   /* --- working-tree layer */
   #sb-worktree > .h button {

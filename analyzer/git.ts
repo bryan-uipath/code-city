@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import ts from 'typescript';
 import type {
-  Commit, DiffScope, HunkHeader, MemberKind, ModuleInfo, ModuleMember, ModuleKind, ModuleRef, Pr, PrStatus,
+  Commit, DiffEntry, DiffScope, HunkHeader, MemberKind, ModuleInfo, ModuleMember, ModuleKind, ModuleRef, OffCity, Pr, PrStatus,
 } from '../shared/types.js';
 import { collectDiffScope, hunkHeaders, hunkSpans, zeroContextDiff } from './diff-scope.js';
 import type { AdapterResult, Item, Link, SourceEvent } from './snapshot.js';
@@ -117,6 +117,7 @@ export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
   const edges = buildEdges(repoRoot, opts.roots, parsed, fileSet);
   const prs = opts.prs && !opts.quick ? await collectPRs(repoRoot, fileSet) : [];
   const diff = opts.diff ? collectDiffScope(repoRoot, opts.diff) : null;
+  if (diff?.manifest) annotateManifest(diff.manifest, fileSet, opts.roots);
   if (diff && diff.head !== gitHead(repoRoot)) {
     console.warn(`warn: --diff head ${diff.head.slice(0, 7)} is not the checkout's HEAD; files the range adds may be missing from the city`);
   }
@@ -159,9 +160,11 @@ export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
 function discoverFiles(repoRoot: string, roots: string[]): string[] {
   // An empty listing is not authoritative — a repo whose sources are all
   // untracked/gitignored still deserves the fs-walk city it used to get.
-  const headFiles = gitFiles(repoRoot, ['ls-tree', '-r', 'HEAD', '--name-only', '-z', '--', ...roots]);
+  // Roots are directories, not pathspecs: literal, so `app/[id]` or `src/*` mean
+  // what they say in every listing and agree with annotateManifest's prefix test.
+  const headFiles = gitFiles(repoRoot, ['--literal-pathspecs', 'ls-tree', '-r', 'HEAD', '--name-only', '-z', '--', ...roots]);
   if (headFiles !== null && headFiles.length) return headFiles;
-  const indexFiles = gitFiles(repoRoot, ['ls-files', '--cached', '-z', '--', ...roots]);
+  const indexFiles = gitFiles(repoRoot, ['--literal-pathspecs', 'ls-files', '--cached', '-z', '--', ...roots]);
   if (indexFiles !== null && indexFiles.length) return indexFiles;
   const found: string[] = [];
   for (const root of roots) walk(path.join(repoRoot, root));
@@ -231,18 +234,41 @@ function gitFiles(repoRoot: string, args: string[]): string[] | null {
   }
   const found: string[] = [];
   for (const rel of out.split('\0')) {
-    if (!rel) continue;
-    const base = path.basename(rel);
-    if (base.endsWith('.d.ts') || SKIP_FILES.has(base)) continue;
-    const ext = path.extname(base);
-    if (!SOURCE_EXT.has(ext) && !MARKDOWN_EXT.has(ext) && !CONFIG_EXT.has(ext)) continue;
-    // Keep the walk's exclusions: SKIP_DIRS and hidden directories. Also skip
-    // build-output variants like dist-viewer/ that repos forget to gitignore.
-    const dirs = rel.split('/').slice(0, -1);
-    if (dirs.some((d) => SKIP_DIRS.has(d) || d.startsWith('.') || d.startsWith('dist-'))) continue;
-    found.push(toPosix(rel));
+    if (rel && isDatasetPath(rel)) found.push(toPosix(rel));
   }
   return found.sort();
+}
+
+/** The listing filters: a path of a kind, and in a directory, the city holds. */
+function isDatasetPath(rel: string): boolean {
+  const base = path.basename(rel);
+  if (base.endsWith('.d.ts') || SKIP_FILES.has(base)) return false;
+  const ext = path.extname(base);
+  if (!SOURCE_EXT.has(ext) && !MARKDOWN_EXT.has(ext) && !CONFIG_EXT.has(ext)) return false;
+  // Keep the walk's exclusions: SKIP_DIRS and hidden directories. Also skip
+  // build-output variants like dist-viewer/ that repos forget to gitignore.
+  const dirs = rel.split('/').slice(0, -1);
+  return !dirs.some((d) => SKIP_DIRS.has(d) || d.startsWith('.') || d.startsWith('dist-'));
+}
+
+/**
+ * Say why each changed path the city has no building for is missing — the
+ * first reason that holds, in the order a reviewer would ask.
+ */
+function annotateManifest(entries: DiffEntry[], fileSet: Set<string>, roots: string[]): void {
+  // `.` and `./src` normalize; `.github` must keep its dot.
+  const prefixes = roots.map((r) => (r === '.' ? '' : r.replace(/^\.\//, '').replace(/\/+$/, '')));
+  const underRoots = (p: string) => prefixes.some((r) => !r || p === r || p.startsWith(r + '/'));
+  for (const e of entries) {
+    // A building first: a deletion the checkout still holds (head ≠ HEAD) is still standing.
+    const why: OffCity | null = fileSet.has(e.path) ? null
+      : e.status === 'deleted' ? 'deleted'
+      : e.binary ? 'binary'
+      : !underRoots(e.path) ? 'outside-roots'
+      : !isDatasetPath(e.path) ? 'filtered'
+      : 'not-at-head';
+    if (why) e.why = why;
+  }
 }
 
 // ---------- TS parsing ----------
