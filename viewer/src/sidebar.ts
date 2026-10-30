@@ -9,6 +9,7 @@
  */
 import type { CityHost } from '../../shared/host.js';
 import type { DiffEntry, LogCommit, OffCity, Pr, SourceResponse } from '../../shared/types.js';
+import { wordsOf, type Words } from '../../shared/vocab.js';
 import { relTime, type Timeline } from './timeline.js';
 
 const MAX_COMMITS = 8;
@@ -202,8 +203,9 @@ export interface Sidebar {
 }
 
 export function createSidebar(
-  opts: { host: CityHost; timeline: Timeline | null; githubUrl?: string | null; onWidthChange?: (wide: boolean) => void }
+  opts: { host: CityHost; timeline: Timeline | null; githubUrl?: string | null; words?: Words; onWidthChange?: (wide: boolean) => void }
 ): Sidebar {
+  const words = opts.words ?? wordsOf({});
   const root = requireEl('sidebar');
   const body = requireEl('sb-body');
   const widthBtn = requireEl('sb-width');
@@ -449,7 +451,7 @@ export function createSidebar(
   function statsHtml(d: Descriptor): string {
     const grid = d.grid
       ? d.grid.map(([k, v]) => cell(k, v)).join('')
-      : cell('LOC', d.loc) + cell('CHURN', d.churn) + cell('FIX', d.fixChurn) + cell('RECENT', d.recentChurn);
+      : cell(words.mass.toUpperCase(), d.loc) + cell('CHURN', d.churn) + cell('FIX', d.fixChurn) + cell('RECENT', d.recentChurn);
     const coupling = d.coupling
       ? `<div class="sb-sub">imports ${fmt(d.coupling.out)} &rarr; · &larr; imported by ${fmt(d.coupling.in)}</div>`
       : '';
@@ -502,7 +504,7 @@ export function createSidebar(
     if (!list.length) return '';
     const t = state.cursor;
     const title = log ? (log.scoped ? 'Commits on these lines' : 'Recent commits · file')
-      : t === null ? 'Recent commits' : 'Commits near cursor';
+      : escapeHtml(t === null ? `Recent ${words.event.many}` : `${words.event.many} near cursor`);
     const shown = state.allCommits ? list.slice(0, MAX_COMMITS) : list.slice(0, COMMIT_PEEK);
     const rows = shown.map((c) => {
       const near = t !== null && Math.abs(c.ts - t) < 2 * 86400;

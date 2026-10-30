@@ -3,8 +3,9 @@
  * notes-snapshot.mjs — an example non-git producer: a folder of markdown notes
  * as a Snapshot JSON on stdout, for `npm run analyze -- --snapshot <file>`.
  * Mass = lines, sections = top-level headings, links = [[wikilinks]], and one
- * "edited" event per note at its mtime (no history, so each note lands as a
- * single slab). See DESIGN.md "Adapters".
+ * event per note at its mtime (no history, so each note lands as a single
+ * slab), typed `new` or `edit` and labelled in the notes' own vocabulary.
+ * See DESIGN.md "Adapters".
  *
  *   node scripts/notes-snapshot.mjs ~/notes > /tmp/notes.snapshot.json
  */
@@ -13,7 +14,7 @@ import path from 'node:path';
 
 const root = path.resolve(process.argv[2] ?? '.');
 const items = [{ id: '', parent: null, key: '', name: path.basename(root), kind: 'folder', mass: 0 }];
-const notes = []; // { id, mtime, lines, wikis }
+const notes = []; // { id, mtime, born, lines, wikis }
 
 walk(root, '');
 
@@ -42,14 +43,28 @@ const links = [...counts].map(([k, n]) => {
 const events = notes
   .slice()
   .sort((a, b) => b.mtime - a.mtime)
-  .map((n, i) => ({
-    id: `edit-${i}`, ts: n.mtime, actor: 'notes', subject: `edited ${path.basename(n.id)}`,
-    rework: false, touches: [{ item: n.id, adds: n.lines, dels: 0 }],
-  }));
+  .map((n, i) => {
+    // Never touched since it was written (within a minute): a new note.
+    const type = n.mtime - n.born < 60 ? 'new' : 'edit';
+    return {
+      id: `${type}-${i}`, ts: n.mtime, actor: 'notes', subject: `${type === 'new' ? 'wrote' : 'edited'} ${path.basename(n.id)}`,
+      type, touches: [{ item: n.id, adds: n.lines, dels: 0 }],
+    };
+  });
+
+const vocab = {
+  leaf: { one: 'note', many: 'notes' },
+  event: { one: 'edit', many: 'edits' },
+  mass: 'lines',
+  eventTypes: [
+    { key: 'new', label: 'new note', color: '#22d3ee' },
+    { key: 'edit', label: 'edit', color: '#a78bfa' },
+  ],
+};
 
 process.stdout.write(JSON.stringify({
   source: { name: path.basename(root), url: null },
-  items, events, asOf: Math.floor(Date.now() / 1000), links, inflight: [],
+  items, events, asOf: Math.floor(Date.now() / 1000), links, inflight: [], vocab,
 }));
 
 function walk(dir, id) {
@@ -67,7 +82,8 @@ function walk(dir, id) {
       const lines = text.split('\n').length;
       const { sections, wikis } = parse(text, lines);
       items.push({ id: childId, parent: id, key: ent.name, name: ent.name, kind: 'file', mass: lines, sections });
-      notes.push({ id: childId, mtime: Math.floor(fs.statSync(abs).mtimeMs / 1000), lines, wikis });
+      const st = fs.statSync(abs);
+      notes.push({ id: childId, mtime: Math.floor(st.mtimeMs / 1000), born: Math.floor(st.birthtimeMs / 1000), lines, wikis });
     }
   }
 }

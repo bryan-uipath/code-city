@@ -4,7 +4,7 @@
  * exists and what happened; tree sums, churn and the commit index table are
  * derived once, in `compile`. See DESIGN.md "Adapters".
  */
-import type { DiffScope, ModuleInfo, Pr } from '../shared/types.js';
+import type { DiffScope, ModuleInfo, Pr, Vocabulary } from '../shared/types.js';
 
 export interface Snapshot {
   source: SourceInfo;
@@ -19,6 +19,8 @@ export interface Snapshot {
   inflight: Pr[];
   /** Git-only for now: its paths pass through unmapped, so it assumes id = path. */
   diff?: DiffScope;
+  /** Passed through to data.json; absent = the code vocabulary. */
+  vocab?: Vocabulary;
 }
 
 /** What an adapter hands the CLI: the snapshot plus lines for its run summary. */
@@ -56,6 +58,8 @@ export interface SourceEvent {
   subject: string;
   /** Counts toward `fixChurn` — a fix, a reopen. */
   rework: boolean;
+  /** A `vocab.eventTypes` key — the adapter's classification, not a subject regex. */
+  type?: string;
   touches: Touch[];
 }
 
