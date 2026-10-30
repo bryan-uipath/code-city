@@ -337,8 +337,11 @@ listing filters, stamps every path the city has no building for with `why`:
 
 The REVIEW section lists them under *Not in the city*, grouped by reason.
 Rows are not clickable, because there is nothing to fly to. A building the
-buckets never saw (a pure rename, a blank-only edit) still joins *Read first*,
-tagged `no substantive lines`, and a renamed building shows `from <old>`.
+buckets never saw (a blank or punctuation-only edit, a mode change) still joins
+*Read first*, tagged `no substantive lines`, and its code pane still shows the
+range diff. A renamed building shows `from <old path>`. A building always beats
+a reason: a deletion that the analyzed checkout still holds (`--diff` head ≠ HEAD)
+stays in *Read first* and does not appear twice.
 A separate manifest beats `DiffFile.status`: the buckets must stay renames-off
 to keep moved lines visible as verbatim, so the two lists disagree about what a
 rename *is*.

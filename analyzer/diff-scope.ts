@@ -158,7 +158,9 @@ function collectManifest(repoRoot: string, base: string, head: string): DiffEntr
   const binary = new Set<string>();
   const stat = git(repoRoot, [...GIT_PINS, 'diff', '--numstat', '-z', '-M', base, head]).split('\0');
   for (let i = 0; i < stat.length; i++) {
-    const [adds = '', , p = ''] = (stat[i] ?? '').split('\t');
+    const row = stat[i] ?? '';
+    const adds = row.slice(0, row.indexOf('\t'));
+    const p = row.slice(row.indexOf('\t', row.indexOf('\t') + 1) + 1); // a path may itself hold tabs
     // A rename row leaves the path empty and spends the next two fields on old, new.
     const path = p || (i += 2, stat[i] ?? '');
     if (adds === '-' && path) binary.add(path);

@@ -258,11 +258,13 @@ function isDatasetPath(rel: string): boolean {
  * first reason that holds, in the order a reviewer would ask.
  */
 function annotateManifest(entries: DiffEntry[], fileSet: Set<string>, roots: string[]): void {
-  const prefixes = roots.map((r) => r.replace(/^\.\/?/, '').replace(/\/+$/, ''));
+  // `.` and `./src` normalize; `.github` must keep its dot.
+  const prefixes = roots.map((r) => (r === '.' ? '' : r.replace(/^\.\//, '').replace(/\/+$/, '')));
   const underRoots = (p: string) => prefixes.some((r) => !r || p === r || p.startsWith(r + '/'));
   for (const e of entries) {
-    const why: OffCity | null = e.status === 'deleted' ? 'deleted'
-      : fileSet.has(e.path) ? null
+    // A building first: a deletion the checkout still holds (head ≠ HEAD) is still standing.
+    const why: OffCity | null = fileSet.has(e.path) ? null
+      : e.status === 'deleted' ? 'deleted'
       : e.binary ? 'binary'
       : !underRoots(e.path) ? 'outside-roots'
       : !isDatasetPath(e.path) ? 'filtered'

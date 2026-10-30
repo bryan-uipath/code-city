@@ -8,7 +8,7 @@
  * Everything data-derived is escaped before it reaches innerHTML.
  */
 import type { CityHost } from '../../shared/host.js';
-import type { DiffStatus, LogCommit, OffCity, Pr, SourceResponse } from '../../shared/types.js';
+import type { DiffEntry, LogCommit, OffCity, Pr, SourceResponse } from '../../shared/types.js';
 import { relTime, type Timeline } from './timeline.js';
 
 const MAX_COMMITS = 8;
@@ -56,10 +56,7 @@ export interface ReviewFile {
 }
 
 /** A changed path with no building, and the reason. */
-export interface ReviewOffCity {
-  path: string;
-  status: DiffStatus;
-  oldPath?: string;
+export interface ReviewOffCity extends DiffEntry {
   why: OffCity;
 }
 
@@ -580,9 +577,9 @@ export function createSidebar(
     const files = view.files.slice().sort((a, b) =>
       b[key] - a[key] || b.new - a.new || (a.path < b.path ? -1 : 1));
     const sel = state.selected?.codePath ?? null;
-    // One clickable row: name + folder, then a line of signals (`sig` is markup).
-    const rvRow = (path: string, cls: string, sig: string): string =>
-      `<div class="sb-rv${cls}${path === sel ? ' sel' : ''}" data-path="${escapeHtml(path)}">` +
+    // One row: name + folder, then a line of signals (`sig` is markup). No `data-path`, no click.
+    const rvRow = (path: string, cls: string, sig: string, clickable = true): string =>
+      `<div class="sb-rv${cls}${path === sel ? ' sel' : ''}"${clickable ? ` data-path="${escapeHtml(path)}"` : ''}>` +
       `<div class="ln"><span class="nm">${escapeHtml(baseName(path))}</span>` +
       `<span class="dir">${escapeHtml(dirName(path))}</span></div><div class="sig">${sig}</div></div>`;
     const sorts: ReviewSort[] = ['new', 'fix', 'importers', 'deleted'];
@@ -601,8 +598,11 @@ export function createSidebar(
       if (f.deleted) sig.push(['deleted', `−${fmt(f.deleted)}`, 'deleted lines']);
       if (f.fix) sig.push(['fix', `fix ${fmt(f.fix)}`, 'fix-looking commits on it, last 12 months']);
       if (f.importers) sig.push(['importers', `←${fmt(f.importers)}`, 'files that statically import it']);
-      if (f.oldPath) sig.push(['via', `from ${escapeHtml(baseName(f.oldPath))}`, 'renamed in this range']);
-      if (!f.new && !f.reshaped && !f.verbatim && !f.deleted) sig.push(['via', 'no substantive lines', 'blank or punctuation-only edit, or a pure rename']);
+      // The full old path: a move keeps its basename.
+      if (f.oldPath) sig.push(['via', `from ${escapeHtml(f.oldPath)}`, 'renamed in this range']);
+      if (!f.new && !f.reshaped && !f.verbatim && !f.deleted) {
+        sig.push(['via', 'no substantive lines', 'blank or punctuation-only edit, or no line diff (mode change)']);
+      }
       parts.push(rvRow(f.path, '', sig.map(([k, text, why]) =>
         `<span class="${k}${k === key ? ' on' : ''}" title="${why}">${text}</span>`).join('')));
     }
@@ -616,11 +616,7 @@ export function createSidebar(
         parts.push(`<div class="sb-hint">${label} · ${fmt(rows.length)}</div>`);
         for (const o of rows) {
           const from = o.oldPath ? ` · from ${escapeHtml(o.oldPath)}` : '';
-          parts.push(
-            `<div class="sb-rv off ${escapeHtml(o.status)}"><div class="ln"><span class="nm">${escapeHtml(baseName(o.path))}</span>` +
-            `<span class="dir">${escapeHtml(dirName(o.path))}</span></div>` +
-            `<div class="sig"><span class="via">${escapeHtml(o.status)}${from}</span></div></div>`
-          );
+          parts.push(rvRow(o.path, ` off ${escapeHtml(o.status)}`, `<span class="via">${escapeHtml(o.status)}${from}</span>`, false));
         }
       }
     }

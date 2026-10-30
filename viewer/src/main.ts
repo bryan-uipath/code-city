@@ -2523,6 +2523,8 @@ function toggleDiffCollapse(): void {
 const REVIEW_HOP2_CAP = 40;
 /** The analyzer's Markdown extensions (`MARKDOWN_EXT` in analyzer/git.ts). */
 const MARKDOWN_RE = /\.mdx?$/i;
+/** Changed buildings with no line buckets (manifest only) — still in the range diff. */
+const bucketless = new Set<string>();
 
 /**
  * Hand the sidebar the diff's review lists: every changed city file with its
@@ -2551,12 +2553,15 @@ function pushReviewToSidebar(): void {
   for (const [node, s] of diffScope.byNode) {
     if (node.type === 'file') addFile(node, s);
   }
-  // A building the line buckets never saw — a blank-only edit or a pure rename.
+  // A building the line buckets never saw: a blank or punctuation-only edit, or no line diff at all (mode change).
   const offCity: ReviewOffCity[] = [];
   for (const e of manifest) {
     const node = index.filesByPath.get(e.path);
-    if (e.why || !node) offCity.push({ path: e.path, status: e.status, oldPath: e.oldPath, why: e.why ?? 'not-at-head' });
-    else if (!changed.has(e.path)) addFile(node, { verbatim: 0, reshaped: 0, new: 0, deleted: 0 });
+    if (e.why || !node) offCity.push({ ...e, why: e.why ?? 'not-at-head' });
+    else if (!changed.has(e.path)) {
+      bucketless.add(e.path);
+      addFile(node, { verbatim: 0, reshaped: 0, new: 0, deleted: 0 });
+    }
   }
   // importer -> the files it imports that put it on the list
   const hop1 = new Map<string, string[]>();
@@ -2714,7 +2719,7 @@ function hunkSpansOf(node: VNode): [number, number][] | null {
 /** The analyzed range, for a file inside it — the sidebar's diff pane shows base→head. */
 function rangeDiffFor(real: VNode): { base: string; head: string } | undefined {
   const d = state.data?.diff;
-  if (!d || !diffScope.byNode.has(real)) return undefined;
+  if (!d || !(diffScope.byNode.has(real) || bucketless.has(real.path))) return undefined;
   return { base: String(d.base || ''), head: String(d.head || '') };
 }
 
