@@ -22,7 +22,7 @@
  * "87% of this file is verbatim — skip it".
  */
 import { execFileSync } from 'node:child_process';
-import type { DiffFile, DiffScope } from '../shared/types.js';
+import type { DiffEntry, DiffFile, DiffScope, DiffStatus } from '../shared/types.js';
 
 /** zebra palette: newMoved 1;36 / alt 1;33, oldMoved 1;35 / alt 1;34. */
 const MOVED_NEW = new Set(['1;36', '1;33']);
@@ -141,7 +141,40 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
       return s && s.length ? { path, ...b, spans: s } : { path, ...b };
     })
       .sort((x, y) => (y.verbatim + y.reshaped + y.new) - (x.verbatim + x.reshaped + x.new)),
+    manifest: collectManifest(repoRoot, base, head),
   };
+}
+
+const STATUS: Record<string, DiffStatus> = {
+  A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'copied', T: 'type',
+};
+
+/**
+ * Every changed path, renames ON — the inventory `files` cannot be: that list is
+ * line buckets, so a binary, a blank-only edit or a pure rename never shows up
+ * in it. `-z` keeps odd paths intact; numstat's `-` marks the binaries.
+ */
+function collectManifest(repoRoot: string, base: string, head: string): DiffEntry[] {
+  const binary = new Set<string>();
+  const stat = git(repoRoot, [...GIT_PINS, 'diff', '--numstat', '-z', '-M', base, head]).split('\0');
+  for (let i = 0; i < stat.length; i++) {
+    const [adds = '', , p = ''] = (stat[i] ?? '').split('\t');
+    // A rename row leaves the path empty and spends the next two fields on old, new.
+    const path = p || (i += 2, stat[i] ?? '');
+    if (adds === '-' && path) binary.add(path);
+  }
+  const out: DiffEntry[] = [];
+  const rows = git(repoRoot, [...GIT_PINS, 'diff', '--name-status', '-z', '-M', base, head]).split('\0');
+  for (let i = 0; i + 1 < rows.length; i++) {
+    const status = STATUS[(rows[i] ?? '').charAt(0)];
+    if (!status) continue;
+    const two = status === 'renamed' || status === 'copied';
+    const oldPath = two ? rows[++i] ?? '' : '';
+    const path = rows[++i] ?? '';
+    if (!path) continue;
+    out.push({ path, status, ...(two && oldPath ? { oldPath } : {}), ...(binary.has(path) ? { binary: true } : {}) });
+  }
+  return out;
 }
 
 /**

@@ -31,7 +31,7 @@ import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
 import { canSign, createTerraceSigns, type TerraceSigns } from './terrace.js';
 import {
   createSidebar, escapeHtml,
-  type Descriptor, type ReviewConsumer, type ReviewFile, type Sidebar, type WorkChange, type WorkKind,
+  type Descriptor, type ReviewConsumer, type ReviewFile, type ReviewOffCity, type Sidebar, type WorkChange, type WorkKind,
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
 import { createSearch, type HighlightSpec, type SearchPalette, type SearchResultsPayload } from './search.js';
@@ -2526,24 +2526,37 @@ const MARKDOWN_RE = /\.mdx?$/i;
 
 /**
  * Hand the sidebar the diff's review lists: every changed city file with its
- * raw signals, and the files OUTSIDE the diff that statically import one (plus a
- * capped 2nd hop) — each carrying the edges that put it there.
+ * raw signals, the files OUTSIDE the diff that statically import one (plus a
+ * capped 2nd hop) — each carrying the edges that put it there — and every changed
+ * path that has no building, with why.
  */
 function pushReviewToSidebar(): void {
-  if (!diffAvailable()) return;
+  const manifest = (state.data?.diff?.manifest ?? []).filter((e) => e && typeof e.path === 'string');
+  if (!diffAvailable() && !manifest.length) return;
   // `edges` also carries Markdown links; a doc linking a file does not import it.
   const importersOf = (path: string): string[] =>
     (index.edgesIn.get(path) ?? []).map((e) => e.other).filter((p) => !MARKDOWN_RE.test(p));
+  const byPath = new Map(manifest.map((e) => [e.path, e]));
   const files: ReviewFile[] = [];
   const changed = new Set<string>();
-  for (const [node, s] of diffScope.byNode) {
-    if (node.type !== 'file') continue;
+  const addFile = (node: VNode, s: DiffSum): void => {
     changed.add(node.path);
     files.push({
       path: node.path, verbatim: s.verbatim, reshaped: s.reshaped, new: s.new, deleted: s.deleted,
       fix: Number(node.fixChurn) || 0,
       importers: importersOf(node.path).length,
+      oldPath: byPath.get(node.path)?.oldPath,
     });
+  };
+  for (const [node, s] of diffScope.byNode) {
+    if (node.type === 'file') addFile(node, s);
+  }
+  // A building the line buckets never saw — a blank-only edit or a pure rename.
+  const offCity: ReviewOffCity[] = [];
+  for (const e of manifest) {
+    const node = index.filesByPath.get(e.path);
+    if (e.why || !node) offCity.push({ path: e.path, status: e.status, oldPath: e.oldPath, why: e.why ?? 'not-at-head' });
+    else if (!changed.has(e.path)) addFile(node, { verbatim: 0, reshaped: 0, new: 0, deleted: 0 });
   }
   // importer -> the files it imports that put it on the list
   const hop1 = new Map<string, string[]>();
@@ -2567,6 +2580,7 @@ function pushReviewToSidebar(): void {
     // The cap cuts after sorting, so the most-implicated 2nd-hop files survive it.
     consumers: [...list(hop1, 1), ...list(hop2, 2).slice(0, REVIEW_HOP2_CAP)],
     hop2Capped: hop2.size > REVIEW_HOP2_CAP,
+    offCity,
     onSelect: (path) => { revealPath(path); },
   });
 }
