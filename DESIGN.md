@@ -828,11 +828,11 @@ Decisions:
 - **Paths come from keys, identity from ids.** An item has a stable `id` (repo
   path, Jira key, page id) and a `key` (path segment); `path` = the key chain.
   A renamed ticket keeps its plot.
-- **Adapters classify events.** `rework` (and, next, an explicit event type)
-  is the adapter's call — a Jira reopen, a git fix-shaped subject — not a regex
-  in the viewer.
-- **Vocabulary ships in data.json** (next): building kinds, event types, the
-  mass unit. Absent = today's code palette, so old datasets render unchanged.
+- **Adapters classify events.** `rework` and the event `type` are the
+  adapter's call — a Jira reopen, a git fix-shaped subject — not a regex in the
+  viewer (see "Vocabulary" below).
+- **Vocabulary ships in data.json**: nouns, event types, the mass unit. Absent
+  = today's code palette, so old datasets render unchanged.
 - **Containers with mass** (a page with children, an epic with a description):
   first a synthetic `_self` leaf inside the folder; a contract change only if
   that reads badly.
@@ -953,8 +953,51 @@ clashes) stays in `compile`, which owns it for every adapter. `inflight` still
 reuses the viewer's `Pr` type keyed by ids; it gets its own input type when a
 second adapter needs one.
 
+### Vocabulary and event types (stage 3)
+
+`data.vocab` (optional) is what the source calls its things, and
+`Commit.t` (optional) is the adapter's classification of one event:
+
+```jsonc
+"vocab": {
+  "leaf":  { "one": "issue",  "many": "issues" },   // default file / files
+  "event": { "one": "change", "many": "changes" },  // default commit / commits
+  "mass":  "points",                                // default loc
+  "eventTypes": [                                   // legend order; default = conventional commits
+    { "key": "done",   "label": "done",   "color": "#4ade80" },
+    { "key": "reopen", "label": "reopen", "color": "#ef4444", "rework": true }
+  ]
+},
+"commits": [{ "h": "CHG-7", "t": "reopen", … }]
+```
+
+- **Minimum the viewer needs to label and paint.** Nouns and the unit reach the
+  HUD stats, the legend's massing note and ramps, the strata filter note, the
+  sidebar's stat grid and commit list title, and the skyline hover pill. The
+  rest of the chrome (mode names, the git-backed log titles) is code-only or
+  git-only and stays as is.
+- **Declared types replace subject parsing, wholesale.** With `eventTypes`, a
+  level's hue is its `t` and nothing else: no conventional-commit regex, no
+  fix-shaped subject fallback (a Jira summary saying "fix" is not a fix). An
+  event without `t` keeps the age gradient. Without `eventTypes`, `t` is
+  ignored and git datasets parse subjects exactly as before.
+- **`rework` types drive Fix hotspots.** The mode filters to the rework
+  swatches (`reopen`), and names them in its notice and ramp; a vocabulary with
+  none falls back to the flat `fixChurn` heat. With declared types an event's
+  `rework` is its type's flag (a contradicting one is rejected), so `fixChurn`
+  and the legend count the same events.
+- **Untrusted at both ends.** `validateSnapshot` rejects an event `type` that
+  isn't declared, an empty `eventTypes` (it would read as none), duplicate keys, keys outside `[a-z0-9-]{1,32}` (they land in
+  a `data-type` attribute), colors other than `#rrggbb` (inline CSS) and words
+  over 24 chars. The viewer re-reads `data.vocab` through `readVocabulary`
+  (`shared/vocab.ts`), dropping anything malformed, and escapes every word it
+  puts in markup — data.json may be hand-made.
+- **Not yet:** custom building (section) kinds. `ModuleKind` stays the code set
+  plus `section`; a source with richer section kinds is the trigger to add
+  them, palette and all.
+
 Stages: (1) git adapter + `compile`, data.json byte-identical — **done**;
-(2) `--snapshot` + validation — **done**; (3) vocabulary + event types; (4) provider
+(2) `--snapshot` + validation — **done**; (3) vocabulary + event types — **done**; (4) provider
 split + typed content (`code`, `markdown`), ids on nodes; (5) Confluence;
 (6) Jira, with `getLive` for the backlog; (7) container mass if `_self` fails.
 
@@ -997,6 +1040,7 @@ split + typed content (`code`, `markdown`), ids on nodes; (5) Confluence;
 shared/types.ts           # the data.json contract, shared analyzer <-> viewer
 shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
 shared/tour.ts            # Tour SDK types + validateTour (the untrusted-input boundary)
+shared/vocab.ts           # source vocabulary rules + the viewer's lenient readVocabulary
 analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick] [--diff base..head] | --snapshot x.json [--out]
 analyzer/snapshot.ts      # the adapter contract: items, events, links, inflight
 analyzer/validate.ts      # validateSnapshot: the untrusted-input boundary for --snapshot files

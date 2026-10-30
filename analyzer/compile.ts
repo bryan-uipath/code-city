@@ -75,6 +75,7 @@ export function compile(snap: Snapshot): CityData {
     files,
     commits: snap.events.flatMap((e) => commitOf(e, fileIndex)),
     ...(snap.diff ? { diff: snap.diff } : {}),
+    ...(snap.vocab ? { vocab: snap.vocab } : {}),
   };
 }
 
@@ -133,7 +134,7 @@ function commitOf(e: SourceEvent, fileIndex: Map<string, number>): Commit[] {
     f.push(idx);
     d.push([t.adds, t.dels]);
   }
-  return f.length ? [{ h: e.id, ts: e.ts, a: e.actor, s: e.subject, f, d }] : [];
+  return f.length ? [{ h: e.id, ts: e.ts, a: e.actor, s: e.subject, f, d, ...(e.type === undefined ? {} : { t: e.type }) }] : [];
 }
 
 /** Inflight work re-pointed from item ids to paths; dropped when it touches no leaf. */
