@@ -70,7 +70,9 @@ function readSnapshot(file: string): AdapterResult {
   const size = fs.statSync(file).size;
   if (size > MAX_SNAPSHOT_BYTES) throw new Error(`snapshot over ${MAX_SNAPSHOT_BYTES} bytes: ${file}`);
   const snapshot = validateSnapshot(JSON.parse(fs.readFileSync(file, 'utf8')));
-  return { snapshot, summary: [`snapshot: ${path.resolve(file)} (no source root: dev API panes off)`] };
+  const { root, provider } = snapshot.source;
+  const served = provider ? `dev API: ${provider} provider over ${root}` : 'no source root: dev API panes off';
+  return { snapshot, summary: [`snapshot: ${path.resolve(file)} (${served})`] };
 }
 
 function parseArgs(argv: string[]): Options {
