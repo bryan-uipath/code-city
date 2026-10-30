@@ -17,7 +17,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 import type { CityHost } from '../../shared/host.js';
 import { HttpHost } from '../../shared/host.js';
-import type { CityData, DiffFile, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr, SourceResponse } from '../../shared/types.js';
+import type { CityData, DiffFile, FileNode, HunkHeader, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr, SourceResponse } from '../../shared/types.js';
 import { layoutCity, plateTop, buildingHeight, streetWidth, setWorldScale, worldScale } from './layout.js';
 import {
   buildCity, buildEnvironment, disposeObject, tallestBuilding,
@@ -2717,13 +2717,12 @@ function rangeDiffFor(real: VNode, node: VNode, mod: VMod | undefined): RangeDif
  * undefined when the module carries no line at all.
  */
 function headSpanOf(node: VNode, mod: VMod): { start: number; end: number } | null | undefined {
-  if (typeof mod.line !== 'number') return undefined;
+  const lines = modLines(mod);
+  if (!lines) return undefined;
   const real = realFileOf(node);
   const edits = real ? diffScope.byPath.get(real.path)?.worktree : undefined;
-  const start = mod.line;
-  const end = start + Math.max(mod.loc, 1) - 1;
-  if (!Array.isArray(edits) || !edits.length) return { start, end };
-  const head = { start: toHeadLine(start, edits, 'start'), end: toHeadLine(end, edits, 'end') };
+  if (!Array.isArray(edits) || !edits.length) return lines;
+  const head = { start: toHeadLine(lines.start, edits, 'start'), end: toHeadLine(lines.end, edits, 'end') };
   return head.start <= head.end ? head : null;
 }
 
@@ -2732,7 +2731,7 @@ function headSpanOf(node: VNode, mod: VMod): { start: number; end: number } | nu
  * inside an edit snaps to that edit's head side: `start` to its first line,
  * `end` to its last — so a wholly uncommitted run maps to an empty range.
  */
-function toHeadLine(line: number, edits: Array<[number, number, number, number]>, edge: 'start' | 'end'): number {
+function toHeadLine(line: number, edits: HunkHeader[], edge: 'start' | 'end'): number {
   let delta = 0;
   for (const [hs, hl, ws, wl] of edits) {
     // `-U0` names the line BEFORE an empty side: `+4,0` sits between lines 4 and 5.
@@ -2750,7 +2749,7 @@ function untouchedModule(node: VNode, mod: VMod): boolean {
   const spans = hunkSpansOf(node);
   const head = spans ? headSpanOf(node, mod) : undefined;
   if (!spans || head === undefined) return false;
-  return head === null || !spans.some(([s, e]) => s <= head.end && e >= head.start);
+  return head === null || !spansOverlap(head, spans);
 }
 
 /** The inspector line: `+449 · 87% verbatim · 3% reshaped · 10% new`. */
@@ -3560,10 +3559,19 @@ function prTargets(pr: Pr): VNode[] {
 }
 
 function touchesSpans(mod: VMod | undefined, spans: [number, number][]): boolean {
-  if (!mod || typeof mod.line !== 'number') return false;
-  const a = mod.line;
-  const b = a + Math.max(mod.loc, 1) - 1;
-  return spans.some(([s, e]) => s <= b && e >= a);
+  const lines = mod ? modLines(mod) : null;
+  return lines !== null && spansOverlap(lines, spans);
+}
+
+/** A module's own 1-based line range; null when it carries no line. */
+function modLines(mod: VMod): { start: number; end: number } | null {
+  if (mod.line === undefined || !Number.isFinite(mod.line)) return null;
+  const start = Math.max(1, mod.line);
+  return { start, end: start + Math.max(mod.loc, 1) - 1 };
+}
+
+function spansOverlap(lines: { start: number; end: number }, spans: [number, number][]): boolean {
+  return spans.some(([s, e]) => s <= lines.end && e >= lines.start);
 }
 
 /** Tallest building top in the current scope (plots only — the stacks are folder-scope). */
@@ -4199,9 +4207,7 @@ function describe(target: Target | null): Descriptor | null {
   // A strata level stands for one commit on that file — say which one.
   const level = target.level?.commit;
   const match = filterMatchCount(node);
-  const modSpan = mod && mod.line !== undefined && Number.isFinite(mod.line)
-    ? { start: Math.max(1, mod.line), end: Math.max(1, mod.line) + Math.max(mod.loc, 1) - 1 }
-    : null;
+  const modSpan = mod ? modLines(mod) : null;
   return {
     name: mod ? mod.name : node.name,
     kind,

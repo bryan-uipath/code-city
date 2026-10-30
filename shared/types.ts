@@ -181,8 +181,11 @@ export interface DiffFile {
    * headers `[headStart, headLen, wcStart, wcLen]`. Module lines are working-copy
    * lines; this maps them onto `spans`. Absent when the two agree.
    */
-  worktree?: Array<[number, number, number, number]>;
+  worktree?: HunkHeader[];
 }
+
+/** One `@@ -a,b +c,d @@` header as `[a, b, c, d]`; a zero length names the line before the gap. */
+export type HunkHeader = [number, number, number, number];
 
 // ---------------------------------------------------------------------------
 // Dev API (see DESIGN.md "Dev API")
