@@ -1420,7 +1420,7 @@ function renderLegend(): void {
     rows.push(`<div class="row"><span>${massingNote()}</span></div>`);
     // The filter outlives the mode it was set in, so every mode can undo it.
     if (filterActive()) {
-      rows.push(`<div class="row"><span>filter · ${[...strata.filter.types].join(' ')}</span></div>`);
+      rows.push(`<div class="row"><span>filter · ${escapeHtml(filterLabels())}</span></div>`);
       rows.push(filterControlsHtml());
     }
   }
@@ -1486,6 +1486,12 @@ function prLegendRows(): string[] {
  */
 function massingNote(): string {
   return escapeHtml(`level = ${words.event.one} · ${state.view === 'skyline' ? 'width' : 'area'} = ${words.mass}`);
+}
+
+/** The active filter as the legend names it: labels, not keys (`new note`, not `new`). */
+function filterLabels(): string {
+  const label = new Map(legendTypes().map((t) => [t.key, t.label]));
+  return [...strata.filter.types].map((k) => label.get(k) ?? k).join(' ');
 }
 
 /** What Fix hotspots counts, as the legend names it: `fix`, or the declared rework labels. */
@@ -4103,7 +4109,7 @@ function describe(target: Target | null): Descriptor | null {
       : target.level?.band ? `${target.level.band.key} · +${fmt(target.level.band.n)} lines`
       : undefined,
     filterNote: match
-      ? `${fmt(match.matched)} of ${fmt(match.total)} ${words.event.many} match filter (${[...strata.filter.types].join(' ')})`
+      ? `${fmt(match.matched)} of ${fmt(match.total)} ${words.event.many} match filter (${filterLabels()})`
       : undefined,
     provNote: provNote(node),
     loc: mod ? mod.loc : node.loc,
