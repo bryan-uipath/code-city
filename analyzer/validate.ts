@@ -33,6 +33,8 @@ const MAX_TEXT = 1_000;
 const MAX_URL = 2_048;
 /** Counts and line numbers: integers JSON round-trips exactly. */
 const MAX_INT = Number.MAX_SAFE_INTEGER;
+/** Unix seconds, 1970..2100: a valid Date, and a timeline the viewer can bin by week. */
+const MAX_TS = 4_102_444_800;
 
 const MODULE_KINDS: readonly ModuleKind[] = ['function', 'class', 'component', 'interface', 'type', 'enum', 'const', 'section'];
 const MEMBER_KINDS: readonly MemberKind[] = ['method', 'property', 'accessor', 'member'];
@@ -49,7 +51,7 @@ export class SnapshotError extends Error {}
 export function validateSnapshot(x: unknown): Snapshot {
   const o = record(x, 'snapshot');
   const items = validateItems(list(o.items, 'items', MAX_ITEMS));
-  const asOf = finite(o.asOf, 'asOf');
+  const asOf = time(o.asOf, 'asOf');
   return {
     source: validateSource(o.source),
     items,
@@ -139,7 +141,7 @@ function validateEvents(raw: unknown[]): SourceEvent[] {
   return raw.map((x, i): SourceEvent => {
     const at = `events[${i}]`;
     const o = record(x, at);
-    const ts = finite(o.ts, `${at}.ts`);
+    const ts = time(o.ts, `${at}.ts`);
     if (ts > prev) throw new SnapshotError(`${at}.ts: not newest-first (${ts} after ${prev})`);
     prev = ts;
     const touches = list(o.touches, `${at}.touches`, MAX_TOUCHES);
@@ -245,6 +247,12 @@ function itemId(x: unknown, at: string): string {
 function finite(x: unknown, at: string): number {
   if (typeof x !== 'number' || !Number.isFinite(x)) throw new SnapshotError(`${at}: not a finite number`);
   return x;
+}
+
+function time(x: unknown, at: string): number {
+  const n = finite(x, at);
+  if (n < 0 || n > MAX_TS) throw new SnapshotError(`${at}: not unix seconds between 1970 and 2100`);
+  return n;
 }
 
 /** A non-negative integer, or (with `fractional`) any non-negative finite number — mass may be points or hours. */

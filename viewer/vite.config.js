@@ -200,8 +200,15 @@ const ROUTES = {
 // ---------- helpers ----------
 
 let cachedRoot = null;
+let cachedMtime = -1;
+// Re-read when data.json changes: a re-analysis may point at another repo, or
+// at none (a --snapshot city has root ''), and the old root must not linger.
 function repoRoot() {
-  if (cachedRoot) return cachedRoot;
+  let mtime;
+  try { mtime = fs.statSync(DATA_JSON).mtimeMs; } catch { return null; }
+  if (mtime === cachedMtime) return cachedRoot;
+  cachedMtime = mtime;
+  cachedRoot = null;
   try {
     const data = JSON.parse(fs.readFileSync(DATA_JSON, 'utf8'));
     const root = data?.repo?.root;

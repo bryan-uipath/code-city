@@ -3422,7 +3422,7 @@ function hasRect(node: VNode | undefined): node is VNode {
  */
 function prTargets(pr: Pr): VNode[] {
   const root = scope.root;
-  const spans = root?.synth === 'fileScope' && root.srcFile ? pr.spans?.[root.srcFile.path] : undefined;
+  const spans = root?.synth === 'fileScope' && root.srcFile ? prSpans(pr, root.srcFile.path) : undefined;
   if (spans && spans.length) {
     const hit: VNode[] = [];
     for (const m of root?.children ?? []) {
@@ -4108,9 +4108,14 @@ function prsTouching(path: string, mod: VMod | undefined): Pr[] {
   const list = index.prsByFile.get(path) || [];
   if (!mod || typeof mod.line !== 'number') return list;
   return list.filter((pr) => {
-    const spans = pr.spans?.[path];
+    const spans = prSpans(pr, path);
     return !spans || touchesSpans(mod, spans);
   });
+}
+
+/** A PR's hunk ranges for one path — own keys only, so a file named `constructor` reads as no spans. */
+function prSpans(pr: Pr, path: string): [number, number][] | undefined {
+  return pr.spans && Object.hasOwn(pr.spans, path) ? pr.spans[path] : undefined;
 }
 
 // ---------------------------------------------------------------------------

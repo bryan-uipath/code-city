@@ -13,20 +13,21 @@ import path from 'node:path';
 
 const root = path.resolve(process.argv[2] ?? '.');
 const items = [{ id: '', parent: null, key: '', name: path.basename(root), kind: 'folder', mass: 0 }];
-const notes = []; // { id, mtime, lines, text }
+const notes = []; // { id, mtime, lines, wikis }
 
 walk(root, '');
 
-// [[target]] / [[target|label]] resolve by lowercased basename, first match wins.
+// [[target]] / [[target|label]] resolve by normalized basename, first match wins — as git.ts does.
+const wikiNorm = (s) => s.toLowerCase().replace(/\s+/g, '-');
 const byName = new Map();
 for (const n of notes) {
-  const base = path.basename(n.id, '.md').toLowerCase();
+  const base = wikiNorm(path.basename(n.id, '.md'));
   if (!byName.has(base)) byName.set(base, n.id);
 }
 const counts = new Map(); // "from\0to" -> n
 for (const n of notes) {
-  for (const m of n.text.matchAll(/\[\[([^\]|#]+)/g)) {
-    const to = byName.get(path.basename(m[1].trim()).toLowerCase());
+  for (const name of n.wikis) {
+    const to = byName.get(wikiNorm(name));
     if (!to || to === n.id) continue;
     const k = `${n.id}\0${to}`;
     counts.set(k, (counts.get(k) ?? 0) + 1);
@@ -64,25 +65,30 @@ function walk(dir, id) {
     } else if (ent.isFile() && ent.name.endsWith('.md')) {
       const text = fs.readFileSync(abs, 'utf8');
       const lines = text.split('\n').length;
-      items.push({ id: childId, parent: id, key: ent.name, name: ent.name, kind: 'file', mass: lines, sections: sections(text, lines) });
-      notes.push({ id: childId, mtime: Math.floor(fs.statSync(abs).mtimeMs / 1000), lines, text });
+      const { sections, wikis } = parse(text, lines);
+      items.push({ id: childId, parent: id, key: ent.name, name: ent.name, kind: 'file', mass: lines, sections });
+      notes.push({ id: childId, mtime: Math.floor(fs.statSync(abs).mtimeMs / 1000), lines, wikis });
     }
   }
 }
 
-/** Top-level headings (the shallowest depth present), each spanning to the next one. */
-function sections(text, total) {
+/** Top-level headings (the shallowest depth present), each spanning to the next one, and [[wikilink]] names; fenced code skipped. */
+function parse(text, total) {
   const heads = [];
+  const wikis = [];
   let fence = false;
   text.split('\n').forEach((l, i) => {
-    if (/^\s*(```|~~~)/.test(l)) fence = !fence;
-    const m = !fence && /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(l);
+    if (/^\s*(```|~~~)/.test(l)) { fence = !fence; return; }
+    if (fence) return;
+    const m = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(l);
     if (m) heads.push({ depth: m[1].length, name: m[2].slice(0, 300), line: i + 1 });
+    for (const w of l.matchAll(/\[\[([^\]|#]+)/g)) if (w[1].trim()) wikis.push(w[1].trim());
   });
   const top = Math.min(...heads.map((h) => h.depth));
   const tops = heads.filter((h) => h.depth === top);
-  return tops.map((h, i) => {
+  const sections = tops.map((h, i) => {
     const end = (tops[i + 1]?.line ?? total + 1) - 1;
     return { name: h.name, kind: 'section', loc: Math.max(end - h.line + 1, 1), line: h.line, exported: true };
   });
+  return { sections, wikis };
 }
