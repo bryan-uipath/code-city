@@ -600,7 +600,8 @@ export function createSidebar(
     const codePath = d.codePath;
     const latest = codePath ? latestHashFor(d) : null;
     // Both loadCode and the span-log callback can reach here; append once.
-    if (!codePath || !latest || token !== state.codeToken || secCode.querySelector('.sb-diff-head')) return;
+    // A non-hash event id (`edit-3`, `CHG-36`) has no commit diff to ask for.
+    if (!codePath || !latest || !isCommitHash(latest) || token !== state.codeToken || secCode.querySelector('.sb-diff-head')) return;
     const diff = await opts.host.getDiff(codePath, latest);
     if (token !== state.codeToken || !diff || !diff.diff || secCode.querySelector('.sb-diff-head')) return;
     secCode.insertAdjacentHTML(
