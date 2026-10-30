@@ -15,8 +15,9 @@ export interface Snapshot {
   /** Unix seconds the events were read at — the reference for recent churn. */
   asOf: number;
   links: Link[];
-  /** Open work in progress; `files` and `spans` keys name item ids. */
+  /** Open work in progress. Unlike data.json's `Pr`, `files` and `spans` keys name item ids. */
   inflight: Pr[];
+  /** Git-only for now: its paths pass through unmapped, so it assumes id = path. */
   diff?: DiffScope;
 }
 
@@ -42,7 +43,7 @@ export interface Item {
   /** Display name — e.g. a ticket title. */
   name: string;
   kind: 'folder' | 'file';
-  /** Leaf size (lines, words, points); folders sum their children. */
+  /** Leaf size (lines, words, points); ignored on folders, which sum their children. */
   mass: number;
   sections?: ModuleInfo[];
 }

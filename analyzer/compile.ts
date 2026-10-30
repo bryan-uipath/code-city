@@ -23,7 +23,9 @@ export function compile(snap: Snapshot): CityData {
   const fileIndex = new Map<string, number>(); // item id -> index into `files`
   let tree: FolderNode | null = null;
 
+  const taken = new Set<string>(); // compiled paths, to catch sibling key clashes
   for (const item of snap.items) {
+    if (paths.has(item.id)) throw new Error(`snapshot item id repeats: ${item.id}`);
     if (item.parent === null) {
       if (tree) throw new Error(`snapshot has two roots: ${item.id}`);
       if (item.kind !== 'folder') throw new Error(`snapshot root is not a folder: ${item.id}`);
@@ -34,8 +36,14 @@ export function compile(snap: Snapshot): CityData {
     }
     const parent = folders.get(item.parent);
     const parentPath = paths.get(item.parent);
-    if (!parent || parentPath === undefined) throw new Error(`snapshot item before its parent folder: ${item.id}`);
+    if (!parent || parentPath === undefined) throw new Error(`snapshot item before its parent folder (or parent is a file): ${item.id}`);
+    // Keys become path segments the dev API resolves on disk: no `/`, `.`, `..`.
+    if (!item.key || item.key === '.' || item.key === '..' || item.key.includes('/')) {
+      throw new Error(`snapshot item key is not a path segment: ${JSON.stringify(item.key)} (${item.id})`);
+    }
     const p = parentPath ? `${parentPath}/${item.key}` : item.key;
+    if (taken.has(p)) throw new Error(`snapshot sibling keys clash at ${p}`);
+    taken.add(p);
     paths.set(item.id, p);
     if (item.kind === 'folder') {
       const node = folderNode(item, p);
@@ -133,7 +141,8 @@ function inflightPr(pr: Pr, fileIndex: Map<string, number>, paths: Map<string, s
   const files = pr.files.filter((id) => fileIndex.has(id)).map((id) => paths.get(id) ?? id);
   if (!files.length) return [];
   if (!pr.spans) return [{ ...pr, files }];
-  const spans: Record<string, [number, number][]> = {};
+  // No prototype: a leaf at path `__proto__` must stay an own key.
+  const spans: Record<string, [number, number][]> = Object.create(null);
   for (const [id, ranges] of Object.entries(pr.spans)) {
     const p = paths.get(id);
     if (p !== undefined && fileIndex.has(id)) spans[p] = ranges;
