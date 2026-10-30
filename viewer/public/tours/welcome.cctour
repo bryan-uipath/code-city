@@ -21,11 +21,11 @@
       ]
     },
     {
-      "target": "analyzer/analyze.ts",
+      "target": "analyzer/git.ts",
       "title": "Stop 1 — the analyzer",
       "camera": "isolate",
-      "narration": "Everything starts here, and it runs entirely on your machine. The analyzer discovers source files under the chosen roots, parses each one with the TypeScript compiler API to pull out its top-level modules (and class members, and markdown headings), and mines git for the rest.\n\nOne `git log --numstat` pass produces three things at once: churn per file, the fix-commit subset, and the full commit stream with per-file added/deleted counts. That single pass is what later powers the timeline, the recent-focus overlay and Strata mode — nothing in the viewer ever shells out to git for history.\n\nYou are now standing inside the file: each building is one exported function or constant. This is what `camera: \"isolate\"` does — it drills in and re-lays out the subtree to fill the stage.",
-      "highlight": ["shared/types.ts"]
+      "narration": "Everything starts here, and it runs entirely on your machine. The git adapter discovers source files under the chosen roots, parses each one with the TypeScript compiler API to pull out its top-level modules (and class members, and markdown headings), and mines git for the rest.\n\nOne `git log --numstat` pass produces three things at once: churn per file, the fix-commit subset, and the full commit stream with per-file added/deleted counts. That single pass is what later powers the timeline, the recent-focus overlay and Strata mode — nothing in the viewer ever shells out to git for history. The adapter emits a source-neutral snapshot; `compile.ts` turns it into the data.json the viewer reads.\n\nYou are now standing inside the file: each building is one exported function or constant. This is what `camera: \"isolate\"` does — it drills in and re-lays out the subtree to fill the stage.",
+      "highlight": ["analyzer/compile.ts", "shared/types.ts"]
     },
     {
       "target": "shared/types.ts#CityData",

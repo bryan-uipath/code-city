@@ -53,7 +53,7 @@ zoom-out), like unfolding a hologram.
 
 ## Data contract — `viewer/public/data.json`
 
-Produced by `analyzer/analyze.ts`. All ids are repo-relative POSIX paths.
+Produced by `analyzer/compile.ts` from an adapter's Snapshot (see "Adapters"). All ids are repo-relative POSIX paths.
 
 ```jsonc
 {
@@ -803,6 +803,135 @@ The companion piece is the agent recipe in `docs/tours.md`: read the diff, pick
 the 5–10 locations that carry the idea, emit the `.cctour`, hand the user
 `npm run dev` plus `?tour=`, a file to drop, or `window.cityTour.load`.
 
+## Adapters (in progress)
+
+Goal: the city for non-code artifacts — Confluence (space → page tree), Jira
+(project → epic → issue). The core was never code-specific: a tree with mass,
+an event stream with per-leaf deltas, references between leaves, work in
+flight. Only the leaf interior and the git-backed host are.
+
+```
+git repo ──► git.ts ─────────┐
+Confluence ► confluence.ts ──┼─► Snapshot ─► compile.ts ─► data.json ─► viewer
+Jira ──────► jira.ts ────────┤
+script/agent ► snapshot.json ┘
+```
+
+**Snapshot** (`analyzer/snapshot.ts`) is what an adapter says exists and
+happened: flat `items` (parent links, sibling order = render order), `events`
+(newest first, `touches` = per-item `[adds, dels]`, `rework` → `fixChurn`),
+`links`, `inflight`. `compile` derives everything else once: paths, folder
+sums, churn, the `files` index table, commits. The viewer contract does not
+change for this.
+
+Decisions:
+- **Paths come from keys, identity from ids.** An item has a stable `id` (repo
+  path, Jira key, page id) and a `key` (path segment); `path` = the key chain.
+  A renamed ticket keeps its plot.
+- **Adapters classify events.** `rework` (and, next, an explicit event type)
+  is the adapter's call — a Jira reopen, a git fix-shaped subject — not a regex
+  in the viewer.
+- **Vocabulary ships in data.json** (next): building kinds, event types, the
+  mass unit. Absent = today's code palette, so old datasets render unchanged.
+- **Containers with mass** (a page with children, an epic with a description):
+  first a synthetic `_self` leaf inside the folder; a contract change only if
+  that reads badly.
+- **A snapshot file is an input** (next): `--snapshot x.json` compiles what any
+  producer emits — untrusted, behind a `validateSnapshot` like tours.
+- **Detail stays server-side**: Atlassian needs auth, so detail is fetched at
+  runtime through a provider (below), never baked into data.json. Credentials
+  live in env vars, never data.json or cache.
+
+### An adapter has two halves
+
+Today the seam only covers build time. `git.ts` emits the Snapshot, but the
+runtime is still git-only: `viewer/vite.config.js` reads `data.repo.root` back
+and shells out to `git` for `/api/source|log|diff|status|search`, and
+`CityHost` names those calls after git. The target is one adapter, two halves:
+
+```
+adapter = collect(opts) -> Snapshot          build time (today's git.ts)
+        + provider                          runtime, behind the dev API
+            getDetail(id, span?)   -> Content     today getSource
+            getHistory(id, span?)  -> events      today getLog (git log -L)
+            getChange(id, eventId) -> Content     today getDiff (git show)
+            getLive()              -> LiveChange[] today getStatus
+            search(q)              -> matches     today search
+```
+
+The dev server only routes `/api/<adapter>/…` to the provider; it knows nothing
+of git. Each provider owns its own input discipline: `safeRelPath` and
+`HASH_RE` move into the git provider, an Atlassian provider validates its own
+ids and keeps its token server-side. The static export works as today: a
+missing provider latches unavailable and its sections hide.
+
+Prerequisites, found reviewing stage 1:
+- **Ids must reach the viewer.** `compile` keys everything by path, so a
+  Confluence page `123` survives only as `space/title`, and a provider can't
+  be asked about it. Emit the item `id` on a node when it differs from the
+  path (optional field, so git datasets stay byte-identical).
+- **Event ids are opaque.** `Commit.h` is a hash to the viewer and the dev API
+  today; a Jira changelog id fails `HASH_RE` with a 400 instead of hiding. The
+  viewer must treat `h` as a token and leave its shape to the provider.
+
+### Leaf interior: any content
+
+A leaf's interior is two things: the **layout** (sections as buildings in
+reading order — already source-neutral) and the **detail** (the code panel and
+sidebar — hard-wired to source lines). Both generalize:
+
+- **Spans get a unit.** A section addresses its leaf in the source's own
+  coordinate: lines (code, text), seconds (video), pages (slides), a region
+  (image). PR spans, diff spans and tour targets use the same address, so a
+  change can be "slides 4–6" or "1:20–2:05". `ModuleInfo` (`line`, `exported`,
+  code kinds) stays as the code case of this.
+- **Detail is typed content.** `getDetail` returns `{kind: 'code' | 'markdown'
+  | 'image' | 'video' | 'slides' | …}` and the viewer keeps one small renderer
+  per kind. An unknown kind falls back to the header card the static export
+  already shows. Content is untrusted like tours: media URLs scheme-checked,
+  text escaped before `innerHTML`, raw HTML only in a sandboxed iframe or not
+  at all.
+
+The city itself doesn't move: buildings are sections, height is mass. Only the
+panel and the span unit change. `code` + `markdown` come first (both exist,
+so it's a refactor with no visible change), then `image` — Confluence pages
+are markdown plus images.
+
+### The live layer: uncommitted work, anywhere
+
+The working-tree view is git's "now": changes that exist but aren't in the
+history yet. Every source has one:
+
+| Source | Live state | Maps to |
+|---|---|---|
+| git | uncommitted edits, untracked files, deletions | modified / under construction / vacant lot (today) |
+| Confluence | unpublished drafts of a page, a new draft page | modified / under construction |
+| Jira | backlog tickets not yet in a sprint, unsaved/unsynced edits | under construction / modified |
+| notes | unsaved or uncommitted notes | modified / under construction |
+
+So `getStatus` becomes `getLive() -> [{id, state: 'modified' | 'added' |
+'removed', adds?, dels?}]`, keyed by item id: the existing amber paint,
+construction blocks and vacant lots work unchanged. The line it draws against
+`inflight` is the time spectrum's last step: inflight is proposed and visible to
+others (a PR, a ticket in review); live is not yet proposed (a dirty tree, a
+draft, the backlog).
+
+### Snapshot gaps deferred to stage 2
+
+`compile` now rejects repeated ids, keys that aren't path segments (`/`, `.`,
+`..`, empty) and sibling key clashes. Still trusted, to check in
+`validateSnapshot`: event order (newest first — strata reconstruct LOC from it;
+`compile` must not sort, git log order isn't ts order), duplicate touches
+within one event (double-count churn), a finite `asOf`, and `mass` on folders
+(ignored). `inflight` reuses the viewer's `Pr` type but is keyed by ids, and
+`diff` passes through unmapped (git-only); both get their own input types when
+a second adapter needs them.
+
+Stages: (1) git adapter + `compile`, data.json byte-identical — **done**;
+(2) `--snapshot` + validation; (3) vocabulary + event types; (4) provider
+split + typed content (`code`, `markdown`), ids on nodes; (5) Confluence;
+(6) Jira, with `getLive` for the backlog; (7) container mass if `_self` fails.
+
 ## Future ideas (recorded, not scheduled)
 
 - **VS Code extension** (deliberately deferred until the core UX and fit &
@@ -843,6 +972,9 @@ shared/types.ts           # the data.json contract, shared analyzer <-> viewer
 shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
 shared/tour.ts            # Tour SDK types + validateTour (the untrusted-input boundary)
 analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick] [--diff base..head]
+analyzer/snapshot.ts      # the adapter contract: items, events, links, inflight
+analyzer/compile.ts       # Snapshot -> data.json (paths, sums, churn, commit index)
+analyzer/git.ts           # git adapter: modules, history + cache, imports, PRs
 analyzer/diff-scope.ts    # one range -> changed-file set + per-file provenance buckets
 viewer/index.html         # HUD markup + CSS
 viewer/src/main.ts        # scene, interaction, overlays
