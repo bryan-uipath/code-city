@@ -2445,7 +2445,7 @@ function initDiffScope(data: CityData): void {
   // The chip is the always-on tell that this city is a diff, whatever the mode.
   const t = diffScope.total;
   // The inventory's remainder, so "14 files" never reads as the whole change.
-  const offCity = (diff.manifest ?? []).filter((e) => e && e.why).length;
+  const offCity = (diff.manifest ?? []).filter((e) => e && (e.why || !index.filesByPath.has(e.path))).length;
   const ref = (name: string | undefined, hash: string): string => (name && name !== hash ? name : hash.slice(0, 7));
   dom.diffChip.innerHTML =
     `&#x2442; <b>${escapeHtml(ref(diff.baseRef, base))}</b> &rarr; ` +
@@ -2612,6 +2612,7 @@ function pushReviewToSidebar(): void {
  */
 const visited = new Map<string, string>(); // path -> fingerprint it was visited at
 const manifestFp = new Map<string, string>();
+const manifestFallback = new Map<string, string>();
 let visitedKey: string | null = null;
 /** How far a visited file recedes — still there, no longer asking to be read. */
 const VISITED_DIM = 0.45;
@@ -2621,7 +2622,10 @@ function initVisited(data: CityData): void {
   if (!d) return;
   visitedKey = `city:visited:${data.repo?.root ?? ''}:${d.baseRef || d.base}..${d.headRef || d.head}`;
   for (const e of d.manifest ?? []) {
-    if (e && typeof e.path === 'string' && typeof e.fp === 'string') manifestFp.set(e.path, e.fp);
+    if (!e || typeof e.path !== 'string') continue;
+    if (typeof e.fp === 'string') manifestFp.set(e.path, e.fp);
+    // No `fp` (older analyzer): status + old path is all a bucketless row has to go on.
+    else manifestFallback.set(e.path, `${String(e.status)}:${e.oldPath ?? ''}`);
   }
   let saved: unknown = null;
   try {
@@ -2630,18 +2634,22 @@ function initVisited(data: CityData): void {
     saved = null; // storage blocked or corrupt: start with nothing visited
   }
   if (typeof saved !== 'object' || saved === null) return;
+  let dropped = false;
   for (const [path, fp] of Object.entries(saved)) {
     if (typeof fp === 'string' && fp === diffFingerprint(path)) visited.set(path, fp);
+    else dropped = true;
   }
-  saveVisited(); // drops the marks a changed diff invalidated
+  // Rewrite only to drop invalidated marks — an idle load must not clobber another tab's.
+  if (dropped) saveVisited();
 }
 
-/** The file's diff identity: its blob pair, or (older data.json) its buckets and spans. */
+/** The file's diff identity: modes + blob pair, or (older data.json) its buckets and spans. */
 function diffFingerprint(path: string): string | null {
   const fp = manifestFp.get(path);
   if (fp) return fp;
   const f = diffScope.byPath.get(path);
-  return f ? `${f.verbatim}/${f.reshaped}/${f.new}/${f.deleted}/${(f.spans ?? []).join(';')}` : null;
+  if (f) return `${f.verbatim}/${f.reshaped}/${f.new}/${f.deleted}/${(f.spans ?? []).join(';')}`;
+  return manifestFallback.get(path) ?? null;
 }
 
 function saveVisited(): void {
@@ -3166,6 +3174,8 @@ function nearestScopeFolder(path: string): VNode | null {
  */
 function paintWorktree(): void {
   if (!city || !workDirty()) return;
+  // An unchanged visited file ghosts from its visited shade, as the stacks do via `worktreeStrataPaint`.
+  const seen = (node: VNode): number => (visited.size && realFileOf(state.focus) === null && isVisited(node) ? VISITED_DIM : 1);
 
   // Where the stacks stand there are no visible buildings; the stacks get the
   // same treatment through `worktreeStrataPaint`.
@@ -3173,7 +3183,7 @@ function paintWorktree(): void {
     for (const rec of city.moduleRecords) {
       const entry = workEntry(rec.file);
       if (entry) workPaint(entry, _color);
-      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST);
+      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST * seen(rec.file));
       rec.mesh.setColorAt(rec.instanceId, _color);
     }
     for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -3185,7 +3195,7 @@ function paintWorktree(): void {
       const entry = workEntry(rec.node);
       // Plates sit under the mass, so a changed one reads a shade quieter than it.
       if (entry) workPaint(entry, _color).multiplyScalar(0.42);
-      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST);
+      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST * seen(rec.node));
       filePlates.setColorAt(rec.instanceId, _color);
     }
     if (filePlates.instanceColor) filePlates.instanceColor.needsUpdate = true;

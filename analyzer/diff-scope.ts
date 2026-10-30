@@ -173,8 +173,8 @@ function collectManifest(repoRoot: string, base: string, head: string): DiffEntr
     const oldPath = two ? rows[++i] ?? '' : '';
     const path = rows[++i] ?? '';
     if (!path) continue;
-    // The blob pair IS this file's diff: either side moving changes it.
-    const fp = `${(meta[2] ?? '').slice(0, 12)}.${(meta[3] ?? '').slice(0, 12)}`;
+    // Modes + blob pair ARE this file's diff: a chmod or either side moving changes it.
+    const fp = `${(meta[0] ?? '').slice(1)}.${meta[1] ?? ''}.${(meta[2] ?? '').slice(0, 12)}.${(meta[3] ?? '').slice(0, 12)}`;
     out.push({ path, status, fp, ...(two && oldPath ? { oldPath } : {}), ...(binary.has(path) ? { binary: true } : {}) });
   }
   return out;

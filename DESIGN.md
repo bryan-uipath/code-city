@@ -385,9 +385,9 @@ strata paint. Inside a file the hunk dim keeps priority. The header counts
   means marks last the session). Keying by the refs, not the hashes, is the
   point: re-analyze `develop..feat/x` after a push and the marks are still there.
 - **Invalidated per file.** Each mark stores the file's diff fingerprint at the
-  moment it was set: `DiffEntry.fp`, the `<baseBlob>.<headBlob>` pair from
+  moment it was set: `DiffEntry.fp`, both modes and both blobs from
   `git diff --raw --no-abbrev`, which changes exactly when that file's diff
-  does. On load, marks whose fingerprint no longer matches are dropped and the
+  does, a chmod included. On load, marks whose fingerprint no longer matches are dropped and the
   store is rewritten. A push that touches `types.ts` but not `vite.config.js`
   un-visits only `types.ts`. Older data.json without `fp` falls back to the
   buckets plus spans.
