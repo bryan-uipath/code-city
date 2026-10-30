@@ -983,10 +983,11 @@ second adapter needs one.
   ignored and git datasets parse subjects exactly as before.
 - **`rework` types drive Fix hotspots.** The mode filters to the rework
   swatches (`reopen`), and names them in its notice and ramp; a vocabulary with
-  none falls back to the flat `fixChurn` heat. In a snapshot, an event's
-  `rework` defaults to its type's flag, so `fixChurn` and the legend agree.
+  none falls back to the flat `fixChurn` heat. With declared types an event's
+  `rework` is its type's flag (a contradicting one is rejected), so `fixChurn`
+  and the legend count the same events.
 - **Untrusted at both ends.** `validateSnapshot` rejects an event `type` that
-  isn't declared, duplicate keys, keys outside `[a-z0-9-]{1,32}` (they land in
+  isn't declared, an empty `eventTypes` (it would read as none), duplicate keys, keys outside `[a-z0-9-]{1,32}` (they land in
   a `data-type` attribute), colors other than `#rrggbb` (inline CSS) and words
   over 24 chars. The viewer re-reads `data.vocab` through `readVocabulary`
   (`shared/vocab.ts`), dropping anything malformed, and escapes every word it

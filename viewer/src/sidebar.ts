@@ -8,7 +8,7 @@
  */
 import type { CityHost } from '../../shared/host.js';
 import type { LogCommit, Pr, SourceResponse } from '../../shared/types.js';
-import { wordsOf, type Words } from '../../shared/vocab.js';
+import type { Words } from '../../shared/vocab.js';
 import { relTime, type Timeline } from './timeline.js';
 
 const MAX_COMMITS = 8;
@@ -134,9 +134,9 @@ export interface Sidebar {
 }
 
 export function createSidebar(
-  opts: { host: CityHost; timeline: Timeline | null; githubUrl?: string | null; words?: Words; onWidthChange?: (wide: boolean) => void }
+  opts: { host: CityHost; timeline: Timeline | null; githubUrl?: string | null; words: Words; onWidthChange?: (wide: boolean) => void }
 ): Sidebar {
-  const words = opts.words ?? wordsOf({});
+  const words = opts.words;
   const root = requireEl('sidebar');
   const body = requireEl('sb-body');
   const widthBtn = requireEl('sb-width');

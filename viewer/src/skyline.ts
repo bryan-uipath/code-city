@@ -26,7 +26,7 @@ import {
   type StrataPaint, type StrataRecord,
 } from './strata.js';
 import type { VNode } from './vtree.js';
-import { wordsOf, type Words } from '../../shared/vocab.js';
+import type { Words } from '../../shared/vocab.js';
 
 /**
  * The plot lives in the free strip the HUD leaves behind, measured off the
@@ -130,8 +130,8 @@ export interface SkylineOptions {
   onHover(hit: SkyHit | null): void;
   onSelect(hit: SkyHit | null): void;
   onIsolate(node: VNode): void;
-  /** Mass unit and event noun for the hover pill; code words by default. */
-  words?: Words;
+  /** Mass unit and event noun for the hover pill. */
+  words: Words;
 }
 
 export interface Skyline {
@@ -168,7 +168,7 @@ export function createSkyline(opts: SkylineOptions): Skyline {
   if (!ctx2d) throw new Error('skyline: no 2d context');
   const ctx: CanvasRenderingContext2D = ctx2d;
   opts.container.appendChild(canvas);
-  const words = opts.words ?? wordsOf({});
+  const words = opts.words;
 
   let visible = false;
   let bars: SkyBar[] = [];
