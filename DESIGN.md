@@ -267,7 +267,7 @@ Notes and limits:
 
 ## Dev API (vite plugin, dev-server only)
 
-`viewer/vite.config.js` registers middleware that routes each endpoint to the dataset's provider — today `viewer/providers/git.js`, created for `repo.root` (re-read whenever data.json changes; no root, no provider → 404). The provider shells out to git and validates everything: paths repo-relative, no `..`/absolute, resolved path must stay under root; invalid → 400. Endpoints:
+`viewer/vite.config.js` registers middleware that routes `/api/<provider>/<route>` (and the unprefixed alias `/api/<route>`) to the provider `repo.provider` names — absent = `viewer/providers/git.js` — created for `repo.root` (re-read whenever data.json changes; no root or unknown provider → 404; a route the provider lacks → 501). Items are asked for by `?id=` (aliases: `?path=`). The provider shells out to git and validates everything: paths repo-relative, no `..`/absolute, resolved path must stay under root; invalid → 400. Endpoints:
 
 - `GET /api/source?path=<repo-rel>&start=<1-based>&end=` → `{ kind: 'code' | 'markdown', path, start, end, lines: [...] }` (cap 400 lines)
 - `GET /api/log?path=` → `{ commits: [{h, ts, a, s}] }` — last 15 commits touching that path
@@ -869,17 +869,24 @@ missing provider latches unavailable and its sections hide.
 provider — `getDetail/getHistory/getChange/getLive/search`, with `safeRelPath`,
 `HASH_RE` and every git invocation moved out of `vite.config.js` verbatim. The
 server maps today's URLs onto those calls and passes raw query strings through,
-so responses are byte-identical except `/source` gaining `kind`. Deferred, so
-the slice stays a refactor:
-- **URLs stay `/api/source|log|…`**, not `/api/<adapter>/…`: one provider per
-  dataset needs no prefix, and `CityHost` keeps its git-era method names. The
-  prefix and the host rename come with a second provider.
-- **Provider choice is "root exists → git".** A snapshot city has no provider;
-  a non-git provider needs data.json to name its adapter (not yet in the
-  contract).
-- **Viewer still asks by path.** Nodes now carry `id` when it differs from the
-  path, but host calls still send `path`; that switch belongs with the first
-  provider whose ids aren't paths (Confluence).
+so responses are byte-identical except `/source` gaining `kind`.
+
+**Provider by name (landed):**
+- **data.json names its provider**: optional `repo.provider`; absent = git
+  when `root` exists, so git datasets (which never set it) stay byte-identical.
+  The dev server picks from a fixed table by that name; an unknown name gets no
+  provider at all — never a fallback to git over the same root.
+- **`/api/<provider>/<route>`** is the viewer's URL. The prefix must equal the
+  dataset's provider (anything else 404s), so a page can't reach a provider the
+  dataset didn't name. The unprefixed `/api/<route>` stays as an alias for
+  older viewers and hosts; it routes to the same provider. A route the
+  provider lacks answers 501, which `HttpHost` treats as "this pane is
+  unavailable" without latching the whole host off.
+- **The viewer asks by item id**, falling back to the path: `HttpHost` maps
+  path → `TreeNode.id` once at load (`?id=`; the aliases still take `?path=`),
+  so call sites keep passing paths. Git ids are paths, so nothing changes there.
+- **`CityHost` keeps its git-era method names** (`getSource`, `getLog`, …): a
+  rename is churn with no behavior, deferred until a host other than HTTP needs it.
 
 Prerequisites, found reviewing stage 1:
 - **Ids must reach the viewer.** `compile` keys everything by path, so a
@@ -968,11 +975,15 @@ stands between it and `compile`:
   order, and git log order isn't ts order, so `compile` must not sort), no item
   touched twice in one event (double churn), finite `asOf`.
 - **Folder `mass` is ignored** (folders sum their children), as for adapters.
-- **`source.root` is never read.** It becomes the dev API's filesystem and git
-  root — a privilege a file must not grant itself. A snapshot city has root `''`,
-  the dev API (which re-reads the root whenever data.json changes) answers 404, and the viewer hides source, log, diff, status and
-  search, as in the static export. Stage 4's provider split is where a
-  non-git source gets its runtime half.
+- **`source.root` only with a provider it names.** The root becomes the dev
+  API's filesystem root — a privilege a file must not grant itself freely. A
+  snapshot may carry one only alongside `source.provider` from a fixed list of
+  snapshot providers (never `git`: no raw git access at a directory a file
+  chose), as an absolute, normalized, existing directory; the dev server then
+  resolves that root through that provider alone. Without one the root is
+  `''`, the dev API (which re-reads data.json whenever it changes) answers 404,
+  and the viewer hides source, log, diff, status and search, as in the static
+  export.
 - **URLs are plain https.** `source.url` and `avatarUrl` reach an `href` and an
   image load; anything with quotes, spaces or another scheme is rejected.
 - **Not accepted:** `diff` (git-only, its paths assume id = path).

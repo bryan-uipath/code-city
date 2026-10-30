@@ -11,6 +11,8 @@ import type {
   EventType, MemberKind, ModuleInfo, ModuleKind, ModuleMember, ModuleRef, Noun, Pr, PrStatus, Vocabulary,
 } from '../shared/types.js';
 import { COLOR_RE, EVENT_KEY_RE, MAX_EVENT_TYPES, MAX_WORD } from '../shared/vocab.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Item, Link, Snapshot, SourceEvent, SourceInfo, Touch } from './snapshot.js';
 
 /** A snapshot is a city, not a payload: generous for real sources, finite for hostile ones. */
@@ -42,6 +44,11 @@ const MAX_TS = 4_102_444_800;
 const MODULE_KINDS: readonly ModuleKind[] = ['function', 'class', 'component', 'interface', 'type', 'enum', 'const', 'section'];
 const MEMBER_KINDS: readonly MemberKind[] = ['method', 'property', 'accessor', 'member'];
 const PR_STATUSES: readonly PrStatus[] = ['ready', 'pending', 'failing', 'draft'];
+/**
+ * Providers a snapshot may name to get a filesystem root. Never `git`: a
+ * snapshot file must not point raw git access at a directory of its choosing.
+ */
+const SNAPSHOT_PROVIDERS: readonly string[] = [];
 
 /** Thrown with the JSON location that failed, e.g. `events[3].ts: not newest-first`. */
 export class SnapshotError extends Error {}
@@ -102,13 +109,26 @@ function validateNoun(x: unknown, at: string): Noun {
 }
 
 /**
- * `root` is never read from the file: it becomes the dev API's filesystem and
- * git root, a privilege no snapshot producer gets. The git routes stay
- * unavailable for a snapshot city and the viewer hides their sections.
+ * `root` becomes the dev API's filesystem root, so a snapshot gets one only
+ * together with a provider it names from `SNAPSHOT_PROVIDERS` — the dev server
+ * then resolves it through that provider alone. Without one the root is `''`,
+ * the dev API is unavailable and the viewer hides its sections.
  */
 function validateSource(x: unknown): SourceInfo {
   const o = record(x, 'source');
-  return { name: text(o.name, 'source.name', MAX_NAME), root: '', url: optionalUrl(o.url, 'source.url') };
+  const source: SourceInfo = { name: text(o.name, 'source.name', MAX_NAME), root: '', url: optionalUrl(o.url, 'source.url') };
+  // No provider: any root is ignored, as before — `''` is the documented "none".
+  if (o.provider === undefined) return source;
+  const provider = o.provider;
+  if (typeof provider !== 'string' || !SNAPSHOT_PROVIDERS.includes(provider)) {
+    throw new SnapshotError(`source.provider: a root needs a provider, one of: ${SNAPSHOT_PROVIDERS.join(', ') || '(none)'}`);
+  }
+  const root = token(o.root, 'source.root', MAX_ID);
+  // Absolute, already normal (no `..`, no trailing `/`), an existing directory.
+  if (!path.isAbsolute(root) || path.resolve(root) !== root) throw new SnapshotError('source.root: not an absolute, normalized path');
+  if (path.dirname(root) === root) throw new SnapshotError('source.root: a filesystem root is too broad');
+  if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new SnapshotError('source.root: not a directory');
+  return { ...source, root, provider };
 }
 
 function validateItems(raw: unknown[]): Item[] {

@@ -7,8 +7,9 @@
  * plus `openFile` to jump into the real editor.
  */
 import type {
-  CityData, DiffResponse, LogResponse, SearchResponse, SourceResponse, StatusResponse,
+  CityData, DiffResponse, LogResponse, SearchResponse, SourceResponse, StatusResponse, TreeNode,
 } from './types.js';
+import { SLUG_RE } from './vocab.js';
 
 /**
  * A git commit hash, 7–40 hex. Event ids are otherwise opaque to the viewer (a
@@ -47,34 +48,47 @@ export interface CityHost {
 export class HttpHost implements CityHost {
   /** null = unknown, true/false once probed. */
   #available: boolean | null = null;
+  /** `/api/<provider>` once data.json names one (absent = git). */
+  #api = '/api/git';
+  /** path -> item id, for nodes whose id isn't their path: providers are asked by id. */
+  #ids = new Map<string, string>();
 
   async loadData(): Promise<CityData> {
     const res = await fetch('./data.json', { cache: 'no-cache' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json: unknown = await res.json();
     if (!isCityData(json)) throw new Error('malformed data.json');
+    const provider = json.repo?.provider;
+    // A name that isn't a slug can't be a provider: ask git, which 404s and latches unavailable.
+    this.#api = '/api/' + (typeof provider === 'string' && SLUG_RE.test(provider) ? provider : 'git');
+    this.#ids = itemIds(json.tree);
     return json;
   }
 
   getSource(path: string, start?: number, end?: number): Promise<SourceResponse | null> {
-    const q = new URLSearchParams({ path });
+    const q = new URLSearchParams({ id: this.#idOf(path) });
     if (start != null) q.set('start', String(start));
     if (end != null) q.set('end', String(end));
-    return this.#getJson<SourceResponse>('/api/source?' + q.toString());
+    return this.#getJson<SourceResponse>(`${this.#api}/source?` + q.toString());
   }
 
   getLog(path: string, start?: number, end?: number): Promise<LogResponse | null> {
-    const q = new URLSearchParams({ path });
+    const q = new URLSearchParams({ id: this.#idOf(path) });
     if (start !== undefined && end !== undefined) q.set('start', String(start)), q.set('end', String(end));
-    return this.#getJson<LogResponse>('/api/log?' + q.toString());
+    return this.#getJson<LogResponse>(`${this.#api}/log?` + q.toString());
   }
 
   getDiff(path: string, hash: string): Promise<DiffResponse | null> {
-    return this.#getJson<DiffResponse>('/api/diff?' + new URLSearchParams({ path, h: hash }).toString());
+    return this.#getJson<DiffResponse>(`${this.#api}/diff?` + new URLSearchParams({ id: this.#idOf(path), h: hash }).toString());
   }
 
   getStatus(): Promise<StatusResponse | null> {
-    return this.#getJson<StatusResponse>('/api/status');
+    return this.#getJson<StatusResponse>(`${this.#api}/status`);
+  }
+
+  /** The item id a provider knows this path by, falling back to the path. */
+  #idOf(path: string): string {
+    return this.#ids.get(path) ?? path;
   }
 
   /**
@@ -84,7 +98,7 @@ export class HttpHost implements CityHost {
    */
   async search(q: string): Promise<SearchResponse | null> {
     try {
-      const res = await fetch('/api/search?' + new URLSearchParams({ q }).toString(), { cache: 'no-cache' });
+      const res = await fetch(`${this.#api}/search?` + new URLSearchParams({ q }).toString(), { cache: 'no-cache' });
       const type = res.headers.get('content-type') || '';
       if (!res.ok || !type.includes('json')) return null;
       const json: unknown = await res.json();
@@ -125,6 +139,18 @@ function isCityData(value: unknown): value is CityData {
   if (!isRecord(value)) return false;
   const tree = value.tree;
   return isRecord(tree) && typeof tree.type === 'string';
+}
+
+/** path -> id for every node carrying an id (compile emits one only when it differs from the path). */
+function itemIds(tree: TreeNode): Map<string, string> {
+  const ids = new Map<string, string>();
+  const stack: TreeNode[] = [tree];
+  for (let node = stack.pop(); node; node = stack.pop()) {
+    if (typeof node.id === 'string') ids.set(node.path, node.id);
+    // One at a time: a spread of 150k siblings overflows the argument limit.
+    if (node.type === 'folder' && Array.isArray(node.children)) for (const c of node.children) stack.push(c);
+  }
+  return ids;
 }
 
 function isSearchResponse(value: unknown): value is SearchResponse {
