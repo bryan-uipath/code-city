@@ -9,6 +9,7 @@
 import type {
   CityData, DiffResponse, LogResponse, SearchResponse, SourceResponse, StatusResponse, TreeNode,
 } from './types.js';
+import { SLUG_RE } from './vocab.js';
 
 /**
  * A git commit hash, 7–40 hex. Event ids are otherwise opaque to the viewer (a
@@ -59,7 +60,7 @@ export class HttpHost implements CityHost {
     if (!isCityData(json)) throw new Error('malformed data.json');
     const provider = json.repo?.provider;
     // A name that isn't a slug can't be a provider: ask git, which 404s and latches unavailable.
-    this.#api = '/api/' + (typeof provider === 'string' && /^[a-z0-9-]{1,32}$/.test(provider) ? provider : 'git');
+    this.#api = '/api/' + (typeof provider === 'string' && SLUG_RE.test(provider) ? provider : 'git');
     this.#ids = itemIds(json.tree);
     return json;
   }
@@ -146,7 +147,8 @@ function itemIds(tree: TreeNode): Map<string, string> {
   const stack: TreeNode[] = [tree];
   for (let node = stack.pop(); node; node = stack.pop()) {
     if (typeof node.id === 'string') ids.set(node.path, node.id);
-    if (node.type === 'folder' && Array.isArray(node.children)) stack.push(...node.children);
+    // One at a time: a spread of 150k siblings overflows the argument limit.
+    if (node.type === 'folder' && Array.isArray(node.children)) for (const c of node.children) stack.push(c);
   }
   return ids;
 }

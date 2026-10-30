@@ -117,7 +117,8 @@ function validateNoun(x: unknown, at: string): Noun {
 function validateSource(x: unknown): SourceInfo {
   const o = record(x, 'source');
   const source: SourceInfo = { name: text(o.name, 'source.name', MAX_NAME), root: '', url: optionalUrl(o.url, 'source.url') };
-  if (o.provider === undefined && o.root === undefined) return source;
+  // No provider: any root is ignored, as before — `''` is the documented "none".
+  if (o.provider === undefined) return source;
   const provider = o.provider;
   if (typeof provider !== 'string' || !SNAPSHOT_PROVIDERS.includes(provider)) {
     throw new SnapshotError(`source.provider: a root needs a provider, one of: ${SNAPSHOT_PROVIDERS.join(', ') || '(none)'}`);
@@ -125,6 +126,7 @@ function validateSource(x: unknown): SourceInfo {
   const root = token(o.root, 'source.root', MAX_ID);
   // Absolute, already normal (no `..`, no trailing `/`), an existing directory.
   if (!path.isAbsolute(root) || path.resolve(root) !== root) throw new SnapshotError('source.root: not an absolute, normalized path');
+  if (path.dirname(root) === root) throw new SnapshotError('source.root: a filesystem root is too broad');
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new SnapshotError('source.root: not a directory');
   return { ...source, root, provider };
 }
