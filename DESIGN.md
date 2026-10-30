@@ -930,16 +930,18 @@ stands between it and `compile`:
 - **Rebuilt, not passed through.** Every object is rebuilt from checked fields;
   extra properties never reach data.json.
 - **Bounded.** 64 MB file cap before parsing; caps on items, depth (64),
-  sections, events, touches (per event and in all), links, inflight, string
-  lengths. Numbers finite; counts non-negative integers; mass may be fractional
-  (points, hours); line numbers ≥ 1; spans `start ≤ end`.
+  sections (per item and in all), events, touches (per event and in all),
+  links, inflight, string lengths. Numbers finite; counts non-negative integers;
+  mass may be fractional (points, hours); line numbers ≥ 1; spans `start ≤ end`;
+  timestamps 1970..2100 (a valid `Date`, a timeline the viewer can bin).
+  Event ids unique (the viewer looks a selected event up by id).
 - **Stream invariants.** Events newest-first (strata rebuild size from that
   order, and git log order isn't ts order, so `compile` must not sort), no item
   touched twice in one event (double churn), finite `asOf`.
 - **Folder `mass` is ignored** (folders sum their children), as for adapters.
 - **`source.root` is never read.** It becomes the dev API's filesystem and git
   root — a privilege a file must not grant itself. A snapshot city has root `''`,
-  the dev API answers 404, and the viewer hides source, log, diff, status and
+  the dev API (which re-reads the root whenever data.json changes) answers 404, and the viewer hides source, log, diff, status and
   search, as in the static export. Stage 4's provider split is where a
   non-git source gets its runtime half.
 - **URLs are plain https.** `source.url` and `avatarUrl` reach an `href` and an

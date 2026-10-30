@@ -18,6 +18,8 @@ const MAX_ITEMS = 200_000;
 const MAX_DEPTH = 64;
 const MAX_SECTIONS = 5_000;
 const MAX_MEMBERS = 2_000;
+/** Sections plus their members, over all items — they dominate data.json's size. */
+const MAX_TOTAL_SECTIONS = 1_000_000;
 const MAX_REFS = 500;
 const MAX_EVENTS = 100_000;
 const MAX_TOUCHES = 20_000;
@@ -75,6 +77,7 @@ function validateSource(x: unknown): SourceInfo {
 
 function validateItems(raw: unknown[]): Item[] {
   const depth = new Map<string, number>(); // item id -> depth; unknown parents are compile's error
+  let sections = 0;
   return raw.map((x, i): Item => {
     const at = `items[${i}]`;
     const o = record(x, at);
@@ -96,6 +99,8 @@ function validateItems(raw: unknown[]): Item[] {
     if (o.sections !== undefined) {
       if (kind !== 'file') throw new SnapshotError(`${at}.sections: only files have sections`);
       item.sections = list(o.sections, `${at}.sections`, MAX_SECTIONS).map((s, j) => validateSection(s, `${at}.sections[${j}]`));
+      for (const s of item.sections) sections += 1 + (s.children?.length ?? 0);
+      if (sections > MAX_TOTAL_SECTIONS) throw new SnapshotError(`${at}.sections: more than ${MAX_TOTAL_SECTIONS} sections and members in all`);
     }
     return item;
   });
@@ -138,6 +143,7 @@ function validateSection(x: unknown, at: string): ModuleInfo {
 function validateEvents(raw: unknown[]): SourceEvent[] {
   let total = 0;
   let prev = Infinity;
+  const ids = new Set<string>(); // the viewer looks a selected event up by id
   return raw.map((x, i): SourceEvent => {
     const at = `events[${i}]`;
     const o = record(x, at);
@@ -149,7 +155,7 @@ function validateEvents(raw: unknown[]): SourceEvent[] {
     if (total > MAX_TOTAL_TOUCHES) throw new SnapshotError(`${at}.touches: more than ${MAX_TOTAL_TOUCHES} in all`);
     const seen = new Set<string>(); // a repeated item would count its churn twice
     return {
-      id: token(o.id, `${at}.id`, 128),
+      id: eventId(o.id, `${at}.id`, ids),
       ts,
       actor: o.actor === undefined ? '' : text(o.actor, `${at}.actor`, MAX_NAME, true),
       subject: o.subject === undefined ? '' : text(o.subject, `${at}.subject`, MAX_TEXT, true),
@@ -166,6 +172,13 @@ function validateEvents(raw: unknown[]): SourceEvent[] {
   });
 }
 
+function eventId(x: unknown, at: string, ids: Set<string>): string {
+  const id = token(x, at, 128);
+  if (ids.has(id)) throw new SnapshotError(`${at}: repeats ${JSON.stringify(id)}`);
+  ids.add(id);
+  return id;
+}
+
 function validateLink(x: unknown, at: string): Link {
   const o = record(x, at);
   return { from: itemId(o.from, `${at}.from`), to: itemId(o.to, `${at}.to`), n: count(o.n, `${at}.n`) };
@@ -179,12 +192,13 @@ function validatePr(x: unknown, at: string): Pr {
     author: text(o.author, `${at}.author`, MAX_NAME),
     avatarUrl: optionalUrl(o.avatarUrl, `${at}.avatarUrl`),
     isDraft: bool(o.isDraft, `${at}.isDraft`),
+    // Spread in place, not assigned after: key order matches the git adapter's.
+    ...(o.status !== undefined ? { status: oneOf(o.status, PR_STATUSES, `${at}.status`) } : {}),
     updatedAt: text(o.updatedAt, `${at}.updatedAt`, 64),
     additions: count(o.additions, `${at}.additions`),
     deletions: count(o.deletions, `${at}.deletions`),
     files: list(o.files, `${at}.files`, MAX_INFLIGHT_FILES).map((f, j) => itemId(f, `${at}.files[${j}]`)),
   };
-  if (o.status !== undefined) pr.status = oneOf(o.status, PR_STATUSES, `${at}.status`);
   if (o.spans !== undefined) {
     const spans = record(o.spans, `${at}.spans`);
     // No prototype: an item id `__proto__` must stay an own key.

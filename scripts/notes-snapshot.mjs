@@ -81,7 +81,7 @@ function parse(text, total) {
     if (/^\s*(```|~~~)/.test(l)) { fence = !fence; return; }
     if (fence) return;
     const m = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(l);
-    if (m) heads.push({ depth: m[1].length, name: m[2].slice(0, 300), line: i + 1 });
+    if (m && m[2].trim()) heads.push({ depth: m[1].length, name: m[2].slice(0, 300), line: i + 1 });
     for (const w of l.matchAll(/\[\[([^\]|#]+)/g)) if (w[1].trim()) wikis.push(w[1].trim());
   });
   const top = Math.min(...heads.map((h) => h.depth));
