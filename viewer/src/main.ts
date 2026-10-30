@@ -31,7 +31,7 @@ import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
 import { canSign, createTerraceSigns, type TerraceSigns } from './terrace.js';
 import {
   createSidebar, escapeHtml,
-  type Descriptor, type Sidebar, type WorkChange, type WorkKind,
+  type Descriptor, type ReviewConsumer, type ReviewFile, type Sidebar, type WorkChange, type WorkKind,
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
 import { createSearch, type HighlightSpec, type SearchPalette, type SearchResultsPayload } from './search.js';
@@ -488,6 +488,7 @@ async function main(): Promise<void> {
   });
   checkpoints = createCheckpoints();
   sidebar = createSidebar({ host, timeline, githubUrl: data.repo?.githubUrl });
+  pushReviewToSidebar();
   labeler = createLabeler(scene, camera);
   search = createSearch({
     getRoot: () => state.root ?? asVNode(data.tree),
@@ -2512,6 +2513,58 @@ function toggleDiffCollapse(): void {
   diffScope.collapse = !diffScope.collapse;
   updateStrata();
   renderLegend();
+}
+
+/** Second-hop importers listed at most — the list is a pointer, not a blast-radius graph. */
+const REVIEW_HOP2_CAP = 40;
+/** The analyzer's Markdown extensions (`MARKDOWN_EXT` in analyzer/git.ts). */
+const MARKDOWN_RE = /\.mdx?$/i;
+
+/**
+ * Hand the sidebar the diff's review lists: every changed city file with its
+ * raw signals, and the files OUTSIDE the diff that statically import one (plus a
+ * capped 2nd hop) — each carrying the edges that put it there.
+ */
+function pushReviewToSidebar(): void {
+  if (!diffAvailable()) return;
+  // `edges` also carries Markdown links; a doc linking a file does not import it.
+  const importersOf = (path: string): string[] =>
+    (index.edgesIn.get(path) ?? []).map((e) => e.other).filter((p) => !MARKDOWN_RE.test(p));
+  const files: ReviewFile[] = [];
+  const changed = new Set<string>();
+  for (const [node, s] of diffScope.byNode) {
+    if (node.type !== 'file') continue;
+    changed.add(node.path);
+    files.push({
+      path: node.path, verbatim: s.verbatim, reshaped: s.reshaped, new: s.new, deleted: s.deleted,
+      fix: Number(node.fixChurn) || 0,
+      importers: importersOf(node.path).length,
+    });
+  }
+  // importer -> the files it imports that put it on the list
+  const hop1 = new Map<string, string[]>();
+  for (const path of changed) {
+    for (const other of importersOf(path)) {
+      if (!changed.has(other)) push(hop1, other, path);
+    }
+  }
+  const hop2 = new Map<string, string[]>();
+  for (const path of hop1.keys()) {
+    for (const other of importersOf(path)) {
+      if (!changed.has(other) && !hop1.has(other)) push(hop2, other, path);
+    }
+  }
+  // Most-implicated first: an importer of three changed files before one of one.
+  const list = (m: Map<string, string[]>, hop: 1 | 2): ReviewConsumer[] =>
+    [...m].map(([path, via]) => ({ path, hop, via }))
+      .sort((a, b) => b.via.length - a.via.length || (a.path < b.path ? -1 : 1));
+  sidebar.setReview({
+    files,
+    // The cap cuts after sorting, so the most-implicated 2nd-hop files survive it.
+    consumers: [...list(hop1, 1), ...list(hop2, 2).slice(0, REVIEW_HOP2_CAP)],
+    hop2Capped: hop2.size > REVIEW_HOP2_CAP,
+    onSelect: (path) => { revealPath(path); },
+  });
 }
 
 // ---------------------------------------------------------------------------

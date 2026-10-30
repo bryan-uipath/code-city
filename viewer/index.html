@@ -360,6 +360,26 @@
   .sb-hit-line .src { color: #b9e6f2; overflow: hidden; text-overflow: ellipsis; }
   .sb-hit mark, .sb-hit-line mark { background: rgba(250,70,22,0.28); color: #ffd9cd; }
 
+  /* --- review: read-first queue + untouched importers */
+  #sb-review { max-height: 50vh; overflow: auto; }
+  .sb-rv-sort { cursor: pointer; color: var(--foreground-subtle); }
+  .sb-rv-sort:hover { color: var(--foreground); }
+  .sb-rv-sort.on { color: var(--orange); }
+  .sb-rv { cursor: pointer; font-size: 9.5px; padding: 2px 3px; letter-spacing: 0.02em; }
+  .sb-rv:hover { background: rgba(8,145,178,0.14); }
+  .sb-rv.sel { background: rgba(8,145,178,0.24); }
+  .sb-rv .ln { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; overflow: hidden; }
+  .sb-rv .nm { color: var(--foreground); flex: none; }
+  .sb-rv .dir { color: var(--foreground-subtle); overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+  .sb-rv .sig { display: flex; flex-wrap: wrap; gap: 0 7px; font-size: 9px; color: var(--foreground-muted); padding-left: 8px; }
+  /* The provenance legend's hues (PROV_* in main.ts). */
+  .sb-rv .sig .new { color: var(--orange); }
+  .sb-rv .sig .reshaped { color: var(--violet); }
+  .sb-rv .sig .verbatim { color: var(--accent-muted); }
+  .sb-rv .sig .deleted { color: #ef4444; }
+  .sb-rv .sig .on { text-decoration: underline; }
+  .sb-rv.consumer .nm { color: var(--accent-muted); }
+
   /* --- working-tree layer */
   #sb-worktree > .h button {
     appearance: none; cursor: pointer; font-family: var(--mono); font-size: 11px; line-height: 1;

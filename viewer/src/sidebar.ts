@@ -3,7 +3,8 @@
  *
  * Three stacked sections: INSPECT (live hover), SELECTED (pinned click, with
  * PRs + commits) and CODE (source span + latest diff from the host). A fourth,
- * TOUR, takes SELECTED's place while a tour is playing.
+ * TOUR, takes SELECTED's place while a tour is playing. REVIEW lists a diff's
+ * files and their untouched importers.
  * Everything data-derived is escaped before it reaches innerHTML.
  */
 import type { CityHost } from '../../shared/host.js';
@@ -36,6 +37,39 @@ export interface WorkingTree {
   changes: WorkChange[];
   onSelect(path: string): void;
   onRefresh(): void;
+}
+
+/** One changed file of the diff and the signals the read-first queue sorts on. */
+export interface ReviewFile {
+  path: string;
+  /** Provenance buckets of its added lines, and its deleted lines. */
+  verbatim: number;
+  reshaped: number;
+  new: number;
+  deleted: number;
+  /** Fix-looking commits on it in the last 12 months. */
+  fix: number;
+  /** Files that statically import it. */
+  importers: number;
+}
+
+/** A file the diff does not touch that imports a changed one (hop 1) or a hop-1 file (hop 2). */
+export interface ReviewConsumer {
+  path: string;
+  hop: 1 | 2;
+  /** The imported files that put it here: changed files for hop 1, hop-1 files for hop 2. */
+  via: string[];
+}
+
+export type ReviewSort = 'new' | 'fix' | 'importers' | 'deleted';
+
+/** The diff's review section; null hides it. */
+export interface ReviewView {
+  files: ReviewFile[];
+  consumers: ReviewConsumer[];
+  /** True when the 2nd hop hit its cap. */
+  hop2Capped: boolean;
+  onSelect(path: string): void;
 }
 
 /** One matched source line of a content search. */
@@ -128,6 +162,8 @@ export interface Sidebar {
   hasSearch(): boolean;
   /** Working-tree change list; null removes the section. */
   setWorkingTree(view: WorkingTree | null): void;
+  /** The diff's read-first queue and untouched importers; null removes the section. */
+  setReview(view: ReviewView | null): void;
   /** Current tour step; null removes the section and restores SELECTED. */
   setTour(view: TourView | null): void;
 }
@@ -142,10 +178,11 @@ export function createSidebar(
   const secInspect = section('inspect');
   const secTour = section('tour');
   const secSearch = section('search');
+  const secReview = section('review');
   const secSelected = section('selected');
   const secWork = section('worktree');
   const secCode = section('code');
-  body.append(secInspect, secTour, secSearch, secSelected, secWork, secCode);
+  body.append(secInspect, secTour, secSearch, secReview, secSelected, secWork, secCode);
 
   const spanLogs = new Map<string, { commits: LogCommit[]; scoped: boolean }>(); // span key -> its log
   const state: {
@@ -159,6 +196,10 @@ export function createSidebar(
     openPrs: Set<number>;
     allCommits: boolean;
     work: WorkingTree | null;
+    review: ReviewView | null;
+    reviewSort: ReviewSort;
+    /** The bounded 2nd importer hop is unfolded. */
+    reviewHop2: boolean;
     tour: TourView | null;
     search: SearchResults | null;
     /** Result files expanded to their matched lines. */
@@ -174,6 +215,9 @@ export function createSidebar(
     openPrs: new Set(),
     allCommits: false,
     work: null,
+    review: null,
+    reviewSort: 'new',
+    reviewHop2: false,
     tour: null,
     search: null,
     openHits: new Set(),
@@ -233,9 +277,28 @@ export function createSidebar(
     if (path) work.onSelect(path);
   });
 
+  secReview.addEventListener('click', (e) => {
+    const view = state.review;
+    if (!view) return;
+    const sort = closest(e.target, '.sb-rv-sort[data-sort]')?.dataset.sort;
+    if (sort === 'new' || sort === 'fix' || sort === 'importers' || sort === 'deleted') {
+      state.reviewSort = sort;
+      renderReview();
+      return;
+    }
+    if (closest(e.target, '.sb-more')) {
+      state.reviewHop2 = !state.reviewHop2;
+      renderReview();
+      return;
+    }
+    const path = closest(e.target, '.sb-rv[data-path]')?.dataset.path;
+    if (path) view.onSelect(path);
+  });
+
   renderInspect();
   renderTour();
   renderSearch();
+  renderReview();
   renderSelected();
   renderWork();
   secCode.style.display = 'none';
@@ -250,6 +313,7 @@ export function createSidebar(
       state.openPrs.clear();
       state.allCommits = false;
       renderSelected();
+      renderReview(); // marks the selected row
       if (desc) loadSpanCommits(desc); // before loadCode: the tour skips renderSelected
       loadCode(desc);
       applyWidth();
@@ -271,6 +335,10 @@ export function createSidebar(
       spanLogs.clear(); // a re-read of the tree re-reads the per-span logs too
       state.work = view;
       renderWork();
+    },
+    setReview(view) {
+      state.review = view;
+      renderReview();
     },
     setTour(view) {
       state.tour = view;
@@ -467,6 +535,74 @@ export function createSidebar(
     }
     if (n > SEARCH_FILE_PEEK) parts.push(`<div class="sb-hint">+${fmt(n - SEARCH_FILE_PEEK)} more files</div>`);
     secSearch.innerHTML = head + parts.join('');
+  }
+
+  // --- review --------------------------------------------------------------
+
+  /**
+   * The read-first queue: changed files sorted by ONE signal the reader picks
+   * (ties fall to new lines), every signal shown on the row. No blended score —
+   * these are reasons to look first, not a defect estimate. Below it, the
+   * direct importers the diff left untouched.
+   */
+  function renderReview(): void {
+    const view = state.review;
+    if (!view) {
+      secReview.style.display = 'none';
+      secReview.innerHTML = '';
+      return;
+    }
+    secReview.style.display = '';
+    const key = state.reviewSort;
+    const files = view.files.slice().sort((a, b) =>
+      b[key] - a[key] || b.new - a.new || (a.path < b.path ? -1 : 1));
+    const sel = state.selected?.codePath ?? null;
+    // One clickable row: name + folder, then a line of signals (`sig` is markup).
+    const rvRow = (path: string, cls: string, sig: string): string =>
+      `<div class="sb-rv${cls}${path === sel ? ' sel' : ''}" data-path="${escapeHtml(path)}">` +
+      `<div class="ln"><span class="nm">${escapeHtml(baseName(path))}</span>` +
+      `<span class="dir">${escapeHtml(dirName(path))}</span></div><div class="sig">${sig}</div></div>`;
+    const sorts: ReviewSort[] = ['new', 'fix', 'importers', 'deleted'];
+    const parts: string[] = [
+      `<div class="h"><span>Review</span><em>${fmt(files.length)} changed</em></div>`,
+      `<div class="sb-sub">Read first · by ` +
+        sorts.map((k) => `<span class="sb-rv-sort${k === key ? ' on' : ''}" data-sort="${k}">${k}</span>`).join(' ') +
+        `</div>`,
+    ];
+    for (const f of files) {
+      // [class, text, tooltip] — only the signals this file actually has.
+      const sig: Array<[string, string, string]> = [];
+      if (f.new) sig.push(['new', `+${fmt(f.new)} new`, 'added lines nothing in the diff explains']);
+      if (f.reshaped) sig.push(['reshaped', `+${fmt(f.reshaped)} reshaped`, 'moved, modified in transit']);
+      if (f.verbatim) sig.push(['verbatim', `+${fmt(f.verbatim)} verbatim`, 'moved unchanged — prioritized lower, not verified']);
+      if (f.deleted) sig.push(['deleted', `−${fmt(f.deleted)}`, 'deleted lines']);
+      if (f.fix) sig.push(['fix', `fix ${fmt(f.fix)}`, 'fix-looking commits on it, last 12 months']);
+      if (f.importers) sig.push(['importers', `←${fmt(f.importers)}`, 'files that statically import it']);
+      parts.push(rvRow(f.path, '', sig.map(([k, text, why]) =>
+        `<span class="${k}${k === key ? ' on' : ''}" title="${why}">${text}</span>`).join('')));
+    }
+
+    const hop1 = view.consumers.filter((c) => c.hop === 1);
+    const hop2 = view.consumers.filter((c) => c.hop === 2);
+    parts.push(
+      `<div class="sb-sub">Untouched importers · ${fmt(hop1.length)}</div>`,
+      `<div class="sb-hint">${hop1.length ? 'static imports only' : 'No static importer outside the diff'}</div>`
+    );
+    const row = (c: ReviewConsumer): string => {
+      const more = c.via.length > 1 ? ` +${c.via.length - 1}` : '';
+      return rvRow(c.path, ' consumer',
+        `<span class="via" title="${escapeHtml(c.via.join(', '))}">` +
+        `${c.hop === 1 ? 'imports' : 'via'} ${escapeHtml(baseName(c.via[0] ?? ''))}${more}</span>`);
+    };
+    for (const c of hop1) parts.push(row(c));
+    if (hop2.length) {
+      parts.push(
+        `<div class="sb-more">${state.reviewHop2 ? '− hide' : '+ show'} 2nd hop · ` +
+        `${fmt(hop2.length)}${view.hop2Capped ? '+' : ''}</div>`
+      );
+      if (state.reviewHop2) for (const c of hop2) parts.push(row(c));
+    }
+    secReview.innerHTML = parts.join('');
   }
 
   // --- working tree --------------------------------------------------------
