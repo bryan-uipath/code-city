@@ -902,6 +902,8 @@ so responses are byte-identical except `/source` gaining `kind`.
   dev server reading the user's own folder. What a snapshot still decides is which directory's
   markdown the local dev server will read — accepted: dev-only, localhost,
   markdown only.
+  A snapshot-chosen root is acceptable only on localhost/dev; any non-local
+  host needs a per-user root allow-list first.
 - **`CityHost` keeps its git-era method names** (`getSource`, `getLog`, …): a
   rename is churn with no behavior, deferred until a host other than HTTP needs it.
 
