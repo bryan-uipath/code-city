@@ -137,6 +137,13 @@ export interface TourView {
   artifacts: TourArtifactView[];
 }
 
+/** The analyzed range for one file; `lines` clips to a module, in diff-head numbering (null: none at head). */
+export interface RangeDiff {
+  base: string;
+  head: string;
+  lines?: { start: number; end: number } | null;
+}
+
 /** What main.ts hands over for one hovered / selected thing. */
 export interface Descriptor {
   name: string;
@@ -153,8 +160,8 @@ export interface Descriptor {
   filterNote?: string;
   /** Its share of the analyzed diff — `+449 · 87% verbatim · 3% reshaped · 10% new`. */
   provNote?: string;
-  /** In the analyzed diff: the code pane shows base→head (clipped to `logSpan`) instead of the latest commit. */
-  rangeDiff?: { base: string; head: string };
+  /** In the analyzed diff: the code pane shows base→head instead of the latest commit. */
+  rangeDiff?: RangeDiff;
   /** Replaces the default LOC/CHURN/FIX/RECENT grid (PR descriptors). */
   grid?: Array<[string, string | number]>;
   prs: Pr[];
@@ -762,16 +769,18 @@ export function createSidebar(
       `<div class="h"><span>Code</span><em>${escapeHtml(baseName(codePath))} ` +
       `${Number(src.start) || start}–${Number(src.end) || end}</em></div>`;
     secCode.innerHTML = head + sourceHtml(src, Number(src.start) || start);
-    if (d.rangeDiff) await loadRangeDiff(d, d.rangeDiff, codePath, token);
+    if (d.rangeDiff) await loadRangeDiff(d.rangeDiff, codePath, token);
     else await loadLatestDiff(d, token);
   }
 
   /** Appends the analyzed range's diff of this file — only a module's own hunks when it is one. */
-  async function loadRangeDiff(d: Descriptor, range: { base: string; head: string }, codePath: string, token: number): Promise<void> {
-    const s = d.logSpan;
-    const res = await opts.host.getRangeDiff(codePath, range.base, range.head, s?.start, s?.end);
+  async function loadRangeDiff(range: RangeDiff, codePath: string, token: number): Promise<void> {
+    const s = range.lines;
+    // null lines: every line of the module is uncommitted, so no hunk can touch it — nothing to fetch.
+    const res = s === null ? { diff: '' }
+      : await opts.host.getRangeDiff(codePath, range.base, range.head, s?.start, s?.end);
     if (token !== state.codeToken || !res) return;
-    const label = `Diff · ${escapeHtml(range.base.slice(0, 7))}&rarr;${escapeHtml(range.head.slice(0, 7))}${s ? ' · these lines' : ''}`;
+    const label = `Diff · ${escapeHtml(range.base.slice(0, 7))}&rarr;${escapeHtml(range.head.slice(0, 7))}${s !== undefined ? ' · these lines' : ''}`;
     secCode.insertAdjacentHTML(
       'beforeend',
       `<div class="sb-sub sb-diff-head">${label}</div>` +

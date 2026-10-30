@@ -316,6 +316,18 @@ deletion anchors on the line before it, as `-U0` reports it). It reuses
   context. Both hashes pass `HASH_RE`, the path `safeRelPath`.
 - Optional all the way down: no `spans` (older data.json) dims nothing; no dev
   API (static export) latches the host and the pane falls back to source only.
+- **Two coordinate systems, one mapping.** Modules are parsed from the working
+  copy (`readSource`), spans are diff-head lines, so an uncommitted edit, or a
+  checkout that is not the diff head, would shift one against the other: 40
+  lines prepended to `vite.config.js` lit `countLines` and showed it
+  `clipHunks`'s hunk. The analyzer now records each changed file's working-copy
+  edits against the diff head (`DiffFile.worktree`, `git diff -U0 <head> --
+  <paths>`), and the viewer walks a module's lines back through them
+  (`headSpanOf`) before testing spans or asking `/api/rangediff`. A line inside
+  an uncommitted edit snaps to that edit's head side, so a wholly uncommitted
+  function maps to nothing and reads as untouched. The one case left unmapped is
+  a diff file missing from disk at a checkout HEAD other than the diff head (its
+  modules come from that HEAD's blob); the analyzer warns only then.
 
 ### Change inventory (implemented)
 

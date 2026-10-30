@@ -22,7 +22,7 @@
  * "87% of this file is verbatim — skip it".
  */
 import { execFileSync } from 'node:child_process';
-import type { DiffEntry, DiffFile, DiffScope, DiffStatus } from '../shared/types.js';
+import type { DiffEntry, DiffFile, DiffScope, DiffStatus, HunkHeader } from '../shared/types.js';
 
 /** zebra palette: newMoved 1;36 / alt 1;33, oldMoved 1;35 / alt 1;34. */
 const MOVED_NEW = new Set(['1;36', '1;33']);
@@ -123,11 +123,8 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
   const revs = git(repoRoot, ['rev-list', `${base}..${head}`]).split('\n').map((l) => l.trim()).filter(Boolean);
   // Head-side hunk ranges, zero context so a range is exactly the changed lines
   // (a pure deletion anchors at the line before it). A second pass keeps the
-  // colored parse above untouched; inter-hunk context pinned so hunks never merge.
-  const spans = hunkSpans(git(repoRoot, [
-    ...GIT_PINS, 'diff', '-U0', '--inter-hunk-context=0', '--no-color', '--no-ext-diff', '--no-renames',
-    '--src-prefix=a/', '--dst-prefix=b/', base, head,
-  ]), new Set(files.keys()), 'head');
+  // colored parse above untouched.
+  const spans = hunkSpans(zeroContextDiff(repoRoot, [base, head]), new Set(files.keys()), 'head');
   return {
     base,
     head,
@@ -245,12 +242,36 @@ function bucketsFor(files: Map<string, Buckets>, path: string): Buckets {
 }
 
 /**
+ * `git diff -U0` with every knob `hunkHeaders` depends on pinned: `a/`/`b/`
+ * prefixes, unquoted paths, hunks never merged, pathspecs literal. One rev
+ * diffs it against the working tree.
+ */
+export function zeroContextDiff(repoRoot: string, revs: string[], paths: string[] = []): string {
+  return git(repoRoot, [
+    '--literal-pathspecs', ...GIT_PINS, 'diff', '-U0', '--inter-hunk-context=0', '--no-color', '--no-ext-diff',
+    '--no-renames', '--src-prefix=a/', '--dst-prefix=b/', ...revs, '--', ...paths,
+  ]);
+}
+
+/**
  * `@@ -a,b +c,d @@` → the hunk line ranges of `side` per tree file. A hunk with
  * a zero-length side (pure insertion or deletion) becomes `[a, a]`, its anchor.
  */
 export function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'base'): Record<string, [number, number][]> {
-  // Null prototype: a changed file named `constructor` or `__proto__` must not hit Object.prototype.
   const out: Record<string, [number, number][]> = Object.create(null);
+  for (const [file, hunks] of Object.entries(hunkHeaders(diff, fileSet))) {
+    out[file] = hunks.map(([a, b, c, d]) => {
+      const [start, len] = side === 'head' ? [c, d] : [a, b];
+      return len <= 0 ? [start, start] : [start, start + len - 1];
+    });
+  }
+  return out;
+}
+
+/** Every `@@ -a,b +c,d @@` header per tree file, as `[a, b, c, d]` (an omitted length is 1). */
+export function hunkHeaders(diff: string, fileSet: Set<string>): Record<string, HunkHeader[]> {
+  // Null prototype: a changed file named `constructor` or `__proto__` must not hit Object.prototype.
+  const out: Record<string, HunkHeader[]> = Object.create(null);
   let file: string | null = null;
   // `---`/`+++` are headers only before the first hunk of a file; added content
   // can start the same way.
@@ -266,12 +287,11 @@ export function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'ba
     if (!file || !line.startsWith('@@')) continue;
     const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (!m) continue;
-    const at = side === 'head' ? m[3] : m[1];
-    const span = side === 'head' ? m[4] : m[2];
-    const start = Number(at);
-    const len = span === undefined ? 1 : Number(span);
-    if (!Number.isFinite(start) || !Number.isFinite(len)) continue;
-    (out[file] ??= []).push(len <= 0 ? [start, start] : [start, start + len - 1]);
+    const h: HunkHeader = [
+      Number(m[1]), m[2] === undefined ? 1 : Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4]),
+    ];
+    if (!h.every(Number.isFinite)) continue;
+    (out[file] ??= []).push(h);
   }
   return out;
 }
