@@ -172,7 +172,7 @@ export interface DiffFile {
   deleted: number;
   /**
    * Head-side line ranges its hunks change (`[start, end]`, 1-based, zero
-   * context; a pure deletion is `[n, n]` at the line after it). Absent in
+   * context; a pure deletion is `[n, n]` at the line before it). Absent in
    * data.json from an older analyzer.
    */
   spans?: [number, number][];

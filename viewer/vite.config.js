@@ -107,7 +107,11 @@ const ROUTES = {
     const base = params.get('base') || '';
     const head = params.get('head') || '';
     if (!HASH_RE.test(base) || !HASH_RE.test(head)) return send(res, 400, { error: 'invalid hash' });
-    const { stdout } = await git(root, ['diff', '--no-color', '--no-ext-diff', '--no-renames', base, head, '--', rel]);
+    // Pinned: clipHunks counts head lines, so blank context must keep its ' ' and every hunk its context.
+    const { stdout } = await git(root, [
+      '-c', 'diff.suppressBlankEmpty=false', 'diff', '-U3', '--no-color', '--no-ext-diff', '--no-renames',
+      base, head, '--', rel,
+    ]);
     const start = intParam(params.get('start'), 0);
     const end = intParam(params.get('end'), 0);
     const text = start >= 1 && end >= start ? clipHunks(stdout, start, end) : stdout;
@@ -283,15 +287,17 @@ function clipHunks(diff, lo, hi) {
     if (hunk?.hit) kept.push(...hunk.lines);
   };
   for (const line of diff.split('\n')) {
-    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (m) {
       flush();
-      hunk = { lines: [line], at: Number(m[1]), hit: false };
+      // `+c,0` (an emptied side) names the line BEFORE the hunk, not its first line.
+      hunk = { lines: [line], at: Number(m[1]) + (m[2] === '0' ? 1 : 0), hit: false };
       continue;
     }
     if (!hunk) { header.push(line); continue; }
     hunk.lines.push(line);
     const c = line[0];
+    if (c === '\\') continue; // "\ No newline at end of file" sits inside a run, not between two
     if (c === '+' || c === '-') {
       run ??= { first: null, last: null, anchor: hunk.at - 1 };
       if (c === '+') { run.first ??= hunk.at; run.last = hunk.at; hunk.at++; }

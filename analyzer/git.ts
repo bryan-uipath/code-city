@@ -120,6 +120,11 @@ export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
   if (diff && diff.head !== gitHead(repoRoot)) {
     console.warn(`warn: --diff head ${diff.head.slice(0, 7)} is not the checkout's HEAD; files the range adds may be missing from the city`);
   }
+  // Modules are parsed from the working copy, spans from the diff head: an edit
+  // in between shifts one against the other.
+  if (diff && worktreeDiffers(repoRoot, diff.head, diff.files.map((f) => f.path).filter((p) => fileSet.has(p)).slice(0, 2000))) {
+    console.warn('warn: uncommitted edits in diff files; module-level hunk placement may be off by those lines');
+  }
 
   return {
     snapshot: {
@@ -665,6 +670,17 @@ function gitHead(repoRoot: string): string | null {
     return execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() || null;
   } catch {
     return null;
+  }
+}
+
+/** Does the working tree differ from `rev` in any of `paths`? (`git diff --quiet` exits 1.) */
+function worktreeDiffers(repoRoot: string, rev: string, paths: string[]): boolean {
+  if (!paths.length) return false;
+  try {
+    execFileSync('git', ['-C', repoRoot, 'diff', '--quiet', rev, '--', ...paths], { stdio: 'ignore' });
+    return false;
+  } catch {
+    return true;
   }
 }
 

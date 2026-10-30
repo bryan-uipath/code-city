@@ -122,10 +122,10 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
   // timeline needs to mark the delta inside the 12-month stream.
   const revs = git(repoRoot, ['rev-list', `${base}..${head}`]).split('\n').map((l) => l.trim()).filter(Boolean);
   // Head-side hunk ranges, zero context so a range is exactly the changed lines
-  // (a pure deletion anchors at the line after it). A second pass keeps the
-  // colored parse above untouched.
+  // (a pure deletion anchors at the line before it). A second pass keeps the
+  // colored parse above untouched; inter-hunk context pinned so hunks never merge.
   const spans = hunkSpans(git(repoRoot, [
-    ...GIT_PINS, 'diff', '-U0', '--no-color', '--no-ext-diff', '--no-renames',
+    ...GIT_PINS, 'diff', '-U0', '--inter-hunk-context=0', '--no-color', '--no-ext-diff', '--no-renames',
     '--src-prefix=a/', '--dst-prefix=b/', base, head,
   ]), new Set(files.keys()), 'head');
   return {
@@ -214,7 +214,8 @@ function bucketsFor(files: Map<string, Buckets>, path: string): Buckets {
  * a zero-length side (pure insertion or deletion) becomes `[a, a]`, its anchor.
  */
 export function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'base'): Record<string, [number, number][]> {
-  const out: Record<string, [number, number][]> = {};
+  // Null prototype: a changed file named `constructor` or `__proto__` must not hit Object.prototype.
+  const out: Record<string, [number, number][]> = Object.create(null);
   let file: string | null = null;
   // `---`/`+++` are headers only before the first hunk of a file; added content
   // can start the same way.
