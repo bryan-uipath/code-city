@@ -37,6 +37,8 @@ npm install
 npm run analyze -- /path/to/your/repo            # analyzes the whole repo by default
 npm run analyze -- /path/to/repo --roots src,lib # custom roots
 npm run analyze -- /path/to/repo --no-prs        # skip GitHub PR lookup
+node scripts/notes-snapshot.mjs ~/notes > n.json # any source: emit a Snapshot...
+npm run analyze -- --snapshot n.json             # ...and compile it (no git panes)
 
 # launch the viewer
 npm run dev

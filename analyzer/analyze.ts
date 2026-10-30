@@ -1,25 +1,33 @@
 #!/usr/bin/env node
 /**
- * analyze.ts — the analyzer CLI: run an adapter, compile its Snapshot, write
- * viewer/public/data.json (see DESIGN.md "Adapters" for the pipeline).
+ * analyze.ts — the analyzer CLI: run an adapter (or read a producer's
+ * `--snapshot` file), compile its Snapshot, write viewer/public/data.json (see
+ * DESIGN.md "Adapters" for the pipeline).
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { compile } from './compile.js';
 import { collectGit, type GitOptions } from './git.js';
+import type { AdapterResult } from './snapshot.js';
+import { MAX_SNAPSHOT_BYTES, SnapshotError, validateSnapshot } from './validate.js';
 
 const MAX_JSON_BYTES = 25 * 1024 * 1024;
 
 interface Options extends GitOptions {
   out: string;
+  /** A producer's Snapshot JSON, compiled instead of running an adapter. */
+  snapshot: string | null;
 }
 
-main().catch((err: unknown) => { console.error(err); process.exit(1); });
+main().catch((err: unknown) => {
+  console.error(err instanceof SnapshotError ? `snapshot rejected: ${err.message}` : err);
+  process.exit(1);
+});
 
 async function main(): Promise<void> {
   const started = Date.now();
   const opts = parseArgs(process.argv.slice(2));
-  const { snapshot, summary } = await collectGit(opts);
+  const { snapshot, summary } = opts.snapshot ? readSnapshot(opts.snapshot) : await collectGit(opts);
   const data = compile(snapshot);
 
   const outPath = path.resolve(opts.out);
@@ -57,6 +65,14 @@ async function main(): Promise<void> {
   }
 }
 
+/** A snapshot file is untrusted: size-capped before parsing, validated before compiling. */
+function readSnapshot(file: string): AdapterResult {
+  const size = fs.statSync(file).size;
+  if (size > MAX_SNAPSHOT_BYTES) throw new Error(`snapshot over ${MAX_SNAPSHOT_BYTES} bytes: ${file}`);
+  const snapshot = validateSnapshot(JSON.parse(fs.readFileSync(file, 'utf8')));
+  return { snapshot, summary: [`snapshot: ${path.resolve(file)} (no source root: dev API panes off)`] };
+}
+
 function parseArgs(argv: string[]): Options {
   let repoPath: string | null = null;
   let roots: string[] | null = null;
@@ -64,6 +80,7 @@ function parseArgs(argv: string[]): Options {
   let prs = true;
   let quick = false;
   let diff: string | null = null;
+  let snapshot: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === undefined) continue;
@@ -73,14 +90,22 @@ function parseArgs(argv: string[]): Options {
       diff = argv[++i] ?? '';
       if (!diff || diff.startsWith('--')) throw new Error('--diff needs a range: --diff <base>..<head>');
     }
+    else if (a === '--snapshot') {
+      snapshot = argv[++i] ?? '';
+      if (!snapshot || snapshot.startsWith('--')) throw new Error('--snapshot needs a file: --snapshot <x.json>');
+    }
     else if (a === '--no-prs') prs = false;
     else if (a === '--quick') quick = true;
     else if (!a.startsWith('--')) repoPath = a;
     else throw new Error(`unknown flag: ${a}`);
   }
+  // A snapshot is the whole input: adapter options would be silently ignored.
+  if (snapshot && (repoPath || roots || diff || quick || !prs)) {
+    throw new Error('--snapshot takes only --out: no repo path, --roots, --diff, --quick or --no-prs');
+  }
   if (!repoPath) repoPath = '.';
   // Default: the whole repo. A narrower scope is an explicit --roots choice —
   // a "helpful" packages/ heuristic silently hid sibling dirs like src/.
   if (!roots) roots = ['.'];
-  return { repoPath, roots, out, prs, quick, diff };
+  return { repoPath, roots, out, prs, quick, diff, snapshot };
 }
