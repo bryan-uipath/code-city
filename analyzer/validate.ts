@@ -48,7 +48,7 @@ const PR_STATUSES: readonly PrStatus[] = ['ready', 'pending', 'failing', 'draft'
  * Providers a snapshot may name to get a filesystem root. Never `git`: a
  * snapshot file must not point raw git access at a directory of its choosing.
  */
-const SNAPSHOT_PROVIDERS: readonly string[] = [];
+const SNAPSHOT_PROVIDERS: readonly string[] = ['notes'];
 
 /** Thrown with the JSON location that failed, e.g. `events[3].ts: not newest-first`. */
 export class SnapshotError extends Error {}
