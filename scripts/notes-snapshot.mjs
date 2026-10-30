@@ -5,6 +5,8 @@
  * Mass = lines, sections = top-level headings, links = [[wikilinks]], and one
  * event per note at its mtime (no history, so each note lands as a single
  * slab), typed `new` or `edit` and labelled in the notes' own vocabulary.
+ * Names the `notes` provider with the folder as its root, so the dev server
+ * can serve a note's text and search (viewer/providers/notes.js).
  * See DESIGN.md "Adapters".
  *
  *   node scripts/notes-snapshot.mjs ~/notes > /tmp/notes.snapshot.json
@@ -63,7 +65,7 @@ const vocab = {
 };
 
 process.stdout.write(JSON.stringify({
-  source: { name: path.basename(root), url: null },
+  source: { name: path.basename(root), url: null, provider: 'notes', root },
   items, events, asOf: Math.floor(Date.now() / 1000), links, inflight: [], vocab,
 }));
 
