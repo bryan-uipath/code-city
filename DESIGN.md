@@ -265,6 +265,29 @@ Notes and limits:
   `CityHost` — deliberately not built yet; the analyzer flag covers the
   review-a-PR case with no new endpoint.
 
+### Read-first queue & untouched importers (implemented)
+
+A diff city also gets a REVIEW section in the sidebar (`renderReview` in
+`sidebar.ts`, fed by `pushReviewToSidebar` in main.ts). Viewer-only: everything
+it shows is already in data.json.
+
+- **Read first** lists every changed city file with its raw signals on the row:
+  `+new`, `+reshaped`, `+verbatim`, `−deleted`, `fix N` (12-month fix-looking
+  commits), `←N` (static importers). The reader picks ONE sort key — new, fix,
+  importers or deleted (default new; ties fall to new lines). There is no
+  blended "risk score" on purpose: a weighted sum would pretend to be a defect
+  probability it has no evidence for, while a named signal says exactly why a
+  file is up top. Verbatim mass is shown, never hidden — provenance orders the
+  reading, it does not certify moved code.
+- **Untouched importers** are files the diff does NOT touch that import a
+  changed file, each with the edge that put it there (`imports types.ts +1`),
+  most-implicated first. It is labelled *static imports* because that is all
+  `edges` knows: no dynamic imports, no runtime calls, no type-flow. A 2nd hop
+  (importers of those) sits folded behind a toggle and is capped at 40 — a
+  pointer to where breakage would surface, not a transitive blast-radius graph,
+  which on a hub file like `types.ts` is the whole repo and says nothing.
+- A row click is `revealPath` (select + fly); the selected row is marked.
+
 ## Dev API (vite plugin, dev-server only)
 
 `viewer/vite.config.js` registers middleware that shells out to git in `repo.root` (read from the generated data.json at server start). All paths validated: repo-relative, no `..`/absolute, resolved path must stay under root; invalid → 400. Endpoints:
