@@ -2724,7 +2724,8 @@ function rangeDiffFor(real: VNode, node: VNode, mod: VMod | undefined): RangeDif
   const d = state.data?.diff;
   if (!d || !(diffScope.byNode.has(real) || bucketless.has(real.path))) return undefined;
   const range = { base: String(d.base || ''), head: String(d.head || '') };
-  const lines = mod ? headSpanOf(node, mod) : undefined;
+  // Only a DiffFile carries the working-copy mapping; a bucketless file keeps its whole-file diff.
+  const lines = mod && diffScope.byPath.has(real.path) ? headSpanOf(node, mod) : undefined;
   return lines === undefined ? range : { ...range, lines };
 }
 
