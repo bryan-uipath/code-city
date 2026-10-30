@@ -74,7 +74,7 @@
       "title": "Stop 6 — the host seam",
       "camera": "isolate",
       "narration": "The viewer never fetches anything itself. It asks a `CityHost` for the dataset, for source lines, for a log, for a diff, for git status, for a content search — and every one of those may answer null.\n\n`HttpHost` is the browser implementation, backed by a small dev-server middleware that shells out to git inside the analyzed repo with every path validated against the repo root. On a static export those endpoints simply do not exist, the host latches to unavailable, and the panes that need them hide themselves.\n\nThis is also the extension point: a VS Code webview would inject a postMessage-backed host with the same six methods plus `openFile`, and nothing else in the viewer would change.",
-      "highlight": ["viewer/src/sidebar.ts", "viewer/vite.config.js"]
+      "highlight": ["viewer/src/sidebar.ts", "viewer/vite.config.js", "viewer/providers/git.js"]
     },
     {
       "target": "viewer/src/sidebar.ts#createSidebar",
