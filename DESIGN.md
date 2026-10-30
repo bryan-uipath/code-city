@@ -836,8 +836,8 @@ Decisions:
 - **Containers with mass** (a page with children, an epic with a description):
   first a synthetic `_self` leaf inside the folder; a contract change only if
   that reads badly.
-- **A snapshot file is an input** (next): `--snapshot x.json` compiles what any
-  producer emits — untrusted, behind a `validateSnapshot` like tours.
+- **A snapshot file is an input**: `--snapshot x.json` compiles what any
+  producer emits — untrusted, behind `validateSnapshot` like tours (below).
 - **Detail stays server-side**: Atlassian needs auth, so detail is fetched at
   runtime through a provider (below), never baked into data.json. Credentials
   live in env vars, never data.json or cache.
@@ -916,19 +916,45 @@ construction blocks and vacant lots work unchanged. The line it draws against
 others (a PR, a ticket in review); live is not yet proposed (a dirty tree, a
 draft, the backlog).
 
-### Snapshot gaps deferred to stage 2
+### Snapshot files (`--snapshot`, stage 2)
 
-`compile` now rejects repeated ids, keys that aren't path segments (`/`, `.`,
-`..`, empty) and sibling key clashes. Still trusted, to check in
-`validateSnapshot`: event order (newest first — strata reconstruct LOC from it;
-`compile` must not sort, git log order isn't ts order), duplicate touches
-within one event (double-count churn), a finite `asOf`, and `mass` on folders
-(ignored). `inflight` reuses the viewer's `Pr` type but is keyed by ids, and
-`diff` passes through unmapped (git-only); both get their own input types when
-a second adapter needs them.
+`npm run analyze -- --snapshot x.json` compiles a producer's Snapshot instead of
+running an adapter; `scripts/notes-snapshot.mjs <dir>` is the example producer
+(markdown notes, no git: mass = lines, top-level headings, `[[wikilinks]]`, one
+event per note at its mtime). The file is untrusted, so `analyzer/validate.ts`
+stands between it and `compile`:
+
+- **Reject, never repair.** The first violation fails the run with its JSON
+  location (`events[3].ts: not newest-first`). A silently repaired stream would
+  render a plausible, wrong city.
+- **Rebuilt, not passed through.** Every object is rebuilt from checked fields;
+  extra properties never reach data.json.
+- **Bounded.** 64 MB file cap before parsing; caps on items, depth (64),
+  sections (per item and in all), events, touches (per event and in all),
+  links, inflight, string lengths. Numbers finite; counts non-negative integers;
+  mass may be fractional (points, hours); line numbers ≥ 1; spans `start ≤ end`;
+  timestamps 1970..2100 (a valid `Date`, a timeline the viewer can bin).
+  Event ids unique (the viewer looks a selected event up by id).
+- **Stream invariants.** Events newest-first (strata rebuild size from that
+  order, and git log order isn't ts order, so `compile` must not sort), no item
+  touched twice in one event (double churn), finite `asOf`.
+- **Folder `mass` is ignored** (folders sum their children), as for adapters.
+- **`source.root` is never read.** It becomes the dev API's filesystem and git
+  root — a privilege a file must not grant itself. A snapshot city has root `''`,
+  the dev API (which re-reads the root whenever data.json changes) answers 404, and the viewer hides source, log, diff, status and
+  search, as in the static export. Stage 4's provider split is where a
+  non-git source gets its runtime half.
+- **URLs are plain https.** `source.url` and `avatarUrl` reach an `href` and an
+  image load; anything with quotes, spaces or another scheme is rejected.
+- **Not accepted:** `diff` (git-only, its paths assume id = path).
+
+Tree structure (one root, parents first, keys as path segments, sibling
+clashes) stays in `compile`, which owns it for every adapter. `inflight` still
+reuses the viewer's `Pr` type keyed by ids; it gets its own input type when a
+second adapter needs one.
 
 Stages: (1) git adapter + `compile`, data.json byte-identical — **done**;
-(2) `--snapshot` + validation; (3) vocabulary + event types; (4) provider
+(2) `--snapshot` + validation — **done**; (3) vocabulary + event types; (4) provider
 split + typed content (`code`, `markdown`), ids on nodes; (5) Confluence;
 (6) Jira, with `getLive` for the backlog; (7) container mass if `_self` fails.
 
@@ -971,8 +997,9 @@ split + typed content (`code`, `markdown`), ids on nodes; (5) Confluence;
 shared/types.ts           # the data.json contract, shared analyzer <-> viewer
 shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
 shared/tour.ts            # Tour SDK types + validateTour (the untrusted-input boundary)
-analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick] [--diff base..head]
+analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick] [--diff base..head] | --snapshot x.json [--out]
 analyzer/snapshot.ts      # the adapter contract: items, events, links, inflight
+analyzer/validate.ts      # validateSnapshot: the untrusted-input boundary for --snapshot files
 analyzer/compile.ts       # Snapshot -> data.json (paths, sums, churn, commit index)
 analyzer/git.ts           # git adapter: modules, history + cache, imports, PRs
 analyzer/diff-scope.ts    # one range -> changed-file set + per-file provenance buckets
@@ -988,4 +1015,5 @@ viewer/src/skyline.ts     # the 2D skyline view: the same stacks as an elevation
 viewer/src/tour.ts        # tour player: HUD panel, steps, autoplay, tour loading
 viewer/public/tours/       # bundled tours (welcome.cctour = this repo's own architecture)
 viewer/public/data.json   # generated (gitignored)
+scripts/notes-snapshot.mjs # example non-git producer: a markdown folder as a Snapshot
 ```
