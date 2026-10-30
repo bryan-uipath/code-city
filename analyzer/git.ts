@@ -14,7 +14,7 @@ import ts from 'typescript';
 import type {
   Commit, MemberKind, ModuleInfo, ModuleMember, ModuleKind, ModuleRef, Pr, PrStatus,
 } from '../shared/types.js';
-import { collectDiffScope, pathOf } from './diff-scope.js';
+import { collectDiffScope, hunkSpans } from './diff-scope.js';
 import type { AdapterResult, Item, Link, SourceEvent } from './snapshot.js';
 
 const execFileAsync = promisify(execFile);
@@ -965,41 +965,6 @@ async function contains(repoRoot: string, oid: string | undefined): Promise<bool
     await execFileAsync('git', ['-C', repoRoot, 'merge-base', '--is-ancestor', oid, 'HEAD']);
     return true;
   } catch { return false; }
-}
-
-/**
- * `@@ -a,b +c,d @@` → the hunk line ranges of `side` per tree file. A hunk with
- * a zero-length side (pure insertion or deletion) becomes `[a, a]`, its anchor.
- */
-function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'base'): Record<string, [number, number][]> {
-  const out: Record<string, [number, number][]> = {};
-  let file: string | null = null;
-  // `---`/`+++` are headers only before the first hunk of a file; added content
-  // can start the same way.
-  let inHeader = false;
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('diff --git ')) { inHeader = true; file = null; continue; }
-    if (inHeader) {
-      if (line.startsWith('--- ')) file ??= treeFile(pathOf(line.slice(4), 'a/'), fileSet);
-      else if (line.startsWith('+++ ')) file = treeFile(pathOf(line.slice(4), 'b/'), fileSet) ?? file;
-      else if (line.startsWith('@@')) inHeader = false;
-      if (inHeader) continue;
-    }
-    if (!file || !line.startsWith('@@')) continue;
-    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (!m) continue;
-    const at = side === 'head' ? m[3] : m[1];
-    const span = side === 'head' ? m[4] : m[2];
-    const start = Number(at);
-    const len = span === undefined ? 1 : Number(span);
-    if (!Number.isFinite(start) || !Number.isFinite(len)) continue;
-    (out[file] ??= []).push(len <= 0 ? [start, start] : [start, start + len - 1]);
-  }
-  return out;
-}
-
-function treeFile(p: string | null, fileSet: Set<string>): string | null {
-  return p && fileSet.has(p) ? p : null;
 }
 
 function isPr(pr: Pr | null | undefined): pr is Pr {

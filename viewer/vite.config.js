@@ -101,6 +101,19 @@ const ROUTES = {
     send(res, 200, { diff: stdout.split('\n').slice(0, MAX_LINES).join('\n') });
   },
 
+  // A path's diff across the analyzed range, optionally only the hunks that
+  // change head lines start..end — a module's slice of the PR.
+  '/rangediff': async ({ res, root, rel, params }) => {
+    const base = params.get('base') || '';
+    const head = params.get('head') || '';
+    if (!HASH_RE.test(base) || !HASH_RE.test(head)) return send(res, 400, { error: 'invalid hash' });
+    const { stdout } = await git(root, ['diff', '--no-color', '--no-ext-diff', '--no-renames', base, head, '--', rel]);
+    const start = intParam(params.get('start'), 0);
+    const end = intParam(params.get('end'), 0);
+    const text = start >= 1 && end >= start ? clipHunks(stdout, start, end) : stdout;
+    send(res, 200, { diff: text.split('\n').slice(0, MAX_LINES).join('\n') });
+  },
+
   // Working-tree state: modified / added / deleted / untracked (the "now" view),
   // each entry carrying the per-file line balance the city paints it with.
   '/status': Object.assign(async ({ res, root, params }) => {
@@ -245,6 +258,50 @@ function countLines(root, relPath, budget) {
   } catch {
     return 0;
   }
+}
+
+/**
+ * Keep the file header and the hunks with a change inside head lines lo..hi
+ * ('' when none). A change is each run of +/- lines, ranged exactly as `-U0`
+ * would (the analyzer's `DiffFile.spans`): its added lines, or for a pure
+ * deletion the head line before it — so context lines never count as touched.
+ */
+function clipHunks(diff, lo, hi) {
+  const header = [];
+  const kept = [];
+  let hunk = null; // { lines, at: next head line, hit }
+  let run = null; // { first, last } of the open +/- run; first = null until a '+'
+  const close = () => {
+    if (!run || !hunk) return;
+    const a = run.first ?? run.anchor;
+    const b = run.first === null ? run.anchor : run.last;
+    if (a <= hi && b >= lo) hunk.hit = true;
+    run = null;
+  };
+  const flush = () => {
+    close();
+    if (hunk?.hit) kept.push(...hunk.lines);
+  };
+  for (const line of diff.split('\n')) {
+    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (m) {
+      flush();
+      hunk = { lines: [line], at: Number(m[1]), hit: false };
+      continue;
+    }
+    if (!hunk) { header.push(line); continue; }
+    hunk.lines.push(line);
+    const c = line[0];
+    if (c === '+' || c === '-') {
+      run ??= { first: null, last: null, anchor: hunk.at - 1 };
+      if (c === '+') { run.first ??= hunk.at; run.last = hunk.at; hunk.at++; }
+    } else {
+      close();
+      if (c === ' ') hunk.at++;
+    }
+  }
+  flush();
+  return kept.length ? [...header, ...kept].join('\n') : '';
 }
 
 function git(root, args) {

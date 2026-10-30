@@ -135,6 +135,8 @@ export interface Descriptor {
   filterNote?: string;
   /** Its share of the analyzed diff — `+449 · 87% verbatim · 3% reshaped · 10% new`. */
   provNote?: string;
+  /** In the analyzed diff: the code pane shows base→head (clipped to `logSpan`) instead of the latest commit. */
+  rangeDiff?: { base: string; head: string };
   /** Replaces the default LOC/CHURN/FIX/RECENT grid (PR descriptors). */
   grid?: Array<[string, string | number]>;
   prs: Pr[];
@@ -723,11 +725,26 @@ export function createSidebar(
       `<div class="h"><span>Code</span><em>${escapeHtml(baseName(codePath))} ` +
       `${Number(src.start) || start}–${Number(src.end) || end}</em></div>`;
     secCode.innerHTML = head + sourceHtml(src, Number(src.start) || start);
-    await loadLatestDiff(d, token);
+    if (d.rangeDiff) await loadRangeDiff(d, d.rangeDiff, codePath, token);
+    else await loadLatestDiff(d, token);
+  }
+
+  /** Appends the analyzed range's diff of this file — only a module's own hunks when it is one. */
+  async function loadRangeDiff(d: Descriptor, range: { base: string; head: string }, codePath: string, token: number): Promise<void> {
+    const s = d.logSpan;
+    const res = await opts.host.getRangeDiff(codePath, range.base, range.head, s?.start, s?.end);
+    if (token !== state.codeToken || !res) return;
+    const label = `Diff · ${escapeHtml(range.base.slice(0, 7))}&rarr;${escapeHtml(range.head.slice(0, 7))}${s ? ' · these lines' : ''}`;
+    secCode.insertAdjacentHTML(
+      'beforeend',
+      `<div class="sb-sub sb-diff-head">${label}</div>` +
+      (res.diff ? diffHtml(res.diff) : `<div class="sb-hint">No hunk of the diff touches these lines</div>`)
+    );
   }
 
   /** Appends the newest commit's diff under the source pane — the tail of loadCode. */
   async function loadLatestDiff(d: Descriptor, token: number): Promise<void> {
+    if (d.rangeDiff) return; // the span-log callback lands here too; the range diff owns the pane
     const codePath = d.codePath;
     const latest = codePath ? latestHashFor(d) : null;
     // Both loadCode and the span-log callback can reach here; append once.

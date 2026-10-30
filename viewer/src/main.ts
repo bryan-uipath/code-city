@@ -1615,7 +1615,11 @@ function applyOverlay(): void {
   // of invisible instances would be pure cost.
   if (!strata.build) {
     for (const rec of city.moduleRecords) {
-      if (inFile || mode === 'structure' || mode === 'strata') {
+      if (inFile) {
+        // The one per-building fact a diff has: which modules its hunks touch.
+        _color.copy(rec.baseColor);
+        if (outsideHunks(rec)) _color.multiplyScalar(HUNK_DIM);
+      } else if (mode === 'structure' || mode === 'strata') {
         _color.copy(rec.baseColor);
       } else if (mode === 'prov') {
         provColor(rec.file, _color);
@@ -2683,8 +2687,33 @@ const provBandPaint: StrataPaint = (record, _age, target) => {
   return color ? target.copy(color) : target.copy(DORMANT);
 };
 
+/** How far a module the diff's hunks miss drops inside a changed file — present, not lit. */
+const HUNK_DIM = 0.2;
+
+/** Head-side hunk ranges of a changed file; null for files outside the diff or older data. */
+function hunkSpansOf(node: VNode): [number, number][] | null {
+  const real = realFileOf(node);
+  const spans = real ? diffScope.byPath.get(real.path)?.spans : undefined;
+  return Array.isArray(spans) && spans.length ? spans : null;
+}
+
+/** The analyzed range, for a file inside it — the sidebar's diff pane shows base→head. */
+function rangeDiffFor(real: VNode): { base: string; head: string } | undefined {
+  const d = state.data?.diff;
+  if (!d || !diffScope.byNode.has(real)) return undefined;
+  return { base: String(d.base || ''), head: String(d.head || '') };
+}
+
+/** A module of a changed file that none of the diff's hunks touch. */
+function outsideHunks(rec: ModuleRecord): boolean {
+  const spans = hunkSpansOf(rec.file);
+  return spans !== null && !touchesSpans(rec.mod, spans);
+}
+
 /** The inspector line: `+449 · 87% verbatim · 3% reshaped · 10% new`. */
-function provNote(node: VNode): string | undefined {
+function provNote(node: VNode, mod?: VMod): string | undefined {
+  const spans = mod ? hunkSpansOf(node) : null;
+  if (spans && !touchesSpans(mod, spans)) return 'untouched by the diff';
   const sum = diffSum(node);
   if (!sum) return undefined;
   const adds = sum.verbatim + sum.reshaped + sum.new;
@@ -4142,7 +4171,8 @@ function describe(target: Target | null): Descriptor | null {
     filterNote: match
       ? `${fmt(match.matched)} of ${fmt(match.total)} commits match filter (${[...strata.filter.types].join(' ')})`
       : undefined,
-    provNote: provNote(node),
+    provNote: provNote(node, mod),
+    rangeDiff: real ? rangeDiffFor(real) : undefined,
     loc: mod ? mod.loc : node.loc,
     churn: node.churn,
     fixChurn: node.fixChurn,

@@ -110,7 +110,8 @@ Emitted only for `npm run analyze -- <repo> --diff <base>..<head>`
   "files": [                                     // most added lines first
     { "path": "packages/a/x.ts",
       "verbatim": 392, "reshaped": 12, "new": 45, // added lines, by origin
-      "deleted": 0 }                              // removed lines
+      "deleted": 0,                               // removed lines
+      "spans": [[12, 40], [88, 88]] }             // head-side hunk ranges, -U0 (optional)
   ],
   "commits": ["4503fbb…", "0d8f748…"],           // git rev-list base..head, FULL hashes
   "baseTs": 1788186324, "headTs": 1788278773      // committer times, same unit as Commit.ts
@@ -290,6 +291,28 @@ it shows is already in data.json.
   which on a hub file like `types.ts` is the whole repo and says nothing.
 - A row click is `revealPath` (select + fly); the selected row is marked.
 
+### Hunk-level scope (implemented)
+
+The file list says *which files*; inside a 1,000-line file that is not enough.
+`DiffFile.spans` carries each file's head-side hunk ranges from a second
+`git diff -U0` (zero context, so a range is exactly the changed lines; a pure
+deletion anchors on the line before it, as `-U0` reports it). It reuses
+`hunkSpans`, the parser `Pr.spans` already uses, moved into `diff-scope.ts`.
+
+- **Isolating a changed file dims the modules no hunk touches** (×0.2, kind
+  hue kept), in every mode — inside a file the overlays have nothing else
+  per-building to say, and this is the one per-module fact a diff has. A class
+  touched only in one method lights that member and its plate, not its siblings.
+  The inspector says `untouched by the diff` on such a module.
+- **The code pane shows the range diff**, not the latest commit: for a file in
+  the diff, `GET /api/rangediff?path&base&head[&start&end]` returns
+  `git diff base head -- path`, and for a module only the hunks with a change
+  inside its lines. "A change" is judged per +/- run exactly as `-U0` would, so
+  the hunk list agrees with the dimming even though the pane keeps 3 lines of
+  context. Both hashes pass `HASH_RE`, the path `safeRelPath`.
+- Optional all the way down: no `spans` (older data.json) dims nothing; no dev
+  API (static export) latches the host and the pane falls back to source only.
+
 ## Dev API (vite plugin, dev-server only)
 
 `viewer/vite.config.js` registers middleware that shells out to git in `repo.root` (read from the generated data.json at server start). All paths validated: repo-relative, no `..`/absolute, resolved path must stay under root; invalid → 400. Endpoints:
@@ -297,6 +320,7 @@ it shows is already in data.json.
 - `GET /api/source?path=<repo-rel>&start=<1-based>&end=` → `{ path, start, end, lines: [...] }` (cap 400 lines)
 - `GET /api/log?path=` → `{ commits: [{h, ts, a, s}] }` — last 15 commits touching that path
 - `GET /api/diff?path=&h=<hash>` → `{ diff: "unified diff text" }` — `git show <h> -- <path>`, cap ~400 lines; hash validated as /^[0-9a-f]{7,40}$/
+- `GET /api/rangediff?path=&base=&head=[&start=&end=]` → `{ diff }` — `git diff <base> <head> -- <path>`, optionally only the hunks changing head lines start..end; both hashes validated the same way
 
 Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippet/diff sections.
 

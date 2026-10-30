@@ -121,6 +121,13 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
   // The branch's own commits and its two endpoints in time — what the viewer's
   // timeline needs to mark the delta inside the 12-month stream.
   const revs = git(repoRoot, ['rev-list', `${base}..${head}`]).split('\n').map((l) => l.trim()).filter(Boolean);
+  // Head-side hunk ranges, zero context so a range is exactly the changed lines
+  // (a pure deletion anchors at the line after it). A second pass keeps the
+  // colored parse above untouched.
+  const spans = hunkSpans(git(repoRoot, [
+    ...GIT_PINS, 'diff', '-U0', '--no-color', '--no-ext-diff', '--no-renames',
+    '--src-prefix=a/', '--dst-prefix=b/', base, head,
+  ]), new Set(files.keys()), 'head');
   return {
     base,
     head,
@@ -129,7 +136,10 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
     commits: revs,
     baseTs: commitTs(repoRoot, base),
     headTs: commitTs(repoRoot, head),
-    files: [...files].map(([path, b]) => ({ path, ...b }))
+    files: [...files].map(([path, b]) => {
+      const s = Object.hasOwn(spans, path) ? spans[path] : undefined;
+      return s && s.length ? { path, ...b, spans: s } : { path, ...b };
+    })
       .sort((x, y) => (y.verbatim + y.reshaped + y.new) - (x.verbatim + x.reshaped + x.new)),
   };
 }
@@ -197,6 +207,41 @@ function bucketsFor(files: Map<string, Buckets>, path: string): Buckets {
   let b = files.get(path);
   if (!b) files.set(path, (b = { verbatim: 0, reshaped: 0, new: 0, deleted: 0 }));
   return b;
+}
+
+/**
+ * `@@ -a,b +c,d @@` → the hunk line ranges of `side` per tree file. A hunk with
+ * a zero-length side (pure insertion or deletion) becomes `[a, a]`, its anchor.
+ */
+export function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'base'): Record<string, [number, number][]> {
+  const out: Record<string, [number, number][]> = {};
+  let file: string | null = null;
+  // `---`/`+++` are headers only before the first hunk of a file; added content
+  // can start the same way.
+  let inHeader = false;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) { inHeader = true; file = null; continue; }
+    if (inHeader) {
+      if (line.startsWith('--- ')) file ??= treeFile(pathOf(line.slice(4), 'a/'), fileSet);
+      else if (line.startsWith('+++ ')) file = treeFile(pathOf(line.slice(4), 'b/'), fileSet) ?? file;
+      else if (line.startsWith('@@')) inHeader = false;
+      if (inHeader) continue;
+    }
+    if (!file || !line.startsWith('@@')) continue;
+    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!m) continue;
+    const at = side === 'head' ? m[3] : m[1];
+    const span = side === 'head' ? m[4] : m[2];
+    const start = Number(at);
+    const len = span === undefined ? 1 : Number(span);
+    if (!Number.isFinite(start) || !Number.isFinite(len)) continue;
+    (out[file] ??= []).push(len <= 0 ? [start, start] : [start, start + len - 1]);
+  }
+  return out;
+}
+
+function treeFile(p: string | null, fileSet: Set<string>): string | null {
+  return p && fileSet.has(p) ? p : null;
 }
 
 /** `a/foo.ts` → `foo.ts`; `/dev/null` → null. Quoted paths are unquoted. */
