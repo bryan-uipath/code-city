@@ -163,15 +163,19 @@ function collectManifest(repoRoot: string, base: string, head: string): DiffEntr
     if (adds === '-' && path) binary.add(path);
   }
   const out: DiffEntry[] = [];
-  const rows = git(repoRoot, [...GIT_PINS, 'diff', '--name-status', '-z', '-M', base, head]).split('\0');
+  // `--raw`: `:<mode> <mode> <oldBlob> <newBlob> <status>`, then the path(s).
+  const rows = git(repoRoot, [...GIT_PINS, 'diff', '--raw', '--no-abbrev', '-z', '-M', base, head]).split('\0');
   for (let i = 0; i + 1 < rows.length; i++) {
-    const status = STATUS[(rows[i] ?? '').charAt(0)];
+    const meta = (rows[i] ?? '').split(' ');
+    const status = STATUS[(meta[4] ?? '').charAt(0)];
     if (!status) continue;
     const two = status === 'renamed' || status === 'copied';
     const oldPath = two ? rows[++i] ?? '' : '';
     const path = rows[++i] ?? '';
     if (!path) continue;
-    out.push({ path, status, ...(two && oldPath ? { oldPath } : {}), ...(binary.has(path) ? { binary: true } : {}) });
+    // The blob pair IS this file's diff: either side moving changes it.
+    const fp = `${(meta[2] ?? '').slice(0, 12)}.${(meta[3] ?? '').slice(0, 12)}`;
+    out.push({ path, status, fp, ...(two && oldPath ? { oldPath } : {}), ...(binary.has(path) ? { binary: true } : {}) });
   }
   return out;
 }
