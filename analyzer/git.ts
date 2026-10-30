@@ -12,9 +12,9 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import ts from 'typescript';
 import type {
-  Commit, MemberKind, ModuleInfo, ModuleMember, ModuleKind, ModuleRef, Pr, PrStatus,
+  Commit, DiffScope, HunkHeader, MemberKind, ModuleInfo, ModuleMember, ModuleKind, ModuleRef, Pr, PrStatus,
 } from '../shared/types.js';
-import { collectDiffScope, pathOf } from './diff-scope.js';
+import { collectDiffScope, hunkHeaders, hunkSpans, zeroContextDiff } from './diff-scope.js';
 import type { AdapterResult, Item, Link, SourceEvent } from './snapshot.js';
 
 const execFileAsync = promisify(execFile);
@@ -120,6 +120,7 @@ export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
   if (diff && diff.head !== gitHead(repoRoot)) {
     console.warn(`warn: --diff head ${diff.head.slice(0, 7)} is not the checkout's HEAD; files the range adds may be missing from the city`);
   }
+  if (diff) mapWorktree(repoRoot, diff, fileSet);
 
   return {
     snapshot: {
@@ -668,6 +669,52 @@ function gitHead(repoRoot: string): string | null {
   }
 }
 
+/** Paths per `git diff -- <paths>` call: well under ARG_MAX at any sane path length. */
+const PATHS_PER_CALL = 500;
+
+/**
+ * Module lines are working-copy lines (`readSource`), spans are diff-head lines.
+ * Record each changed file's working-copy edits against the diff head as `-U0`
+ * headers (`DiffFile.worktree`) so the viewer can carry one onto the other. A
+ * file read from the checkout's HEAD blob (absent on disk) has no working copy
+ * to diff; only when that HEAD is not the diff head are its lines unmapped. A
+ * file on disk but out of the index (`git rm --cached`) diffs as deleted, so it
+ * is left unmapped too rather than mapped through a false whole-file deletion.
+ */
+function mapWorktree(repoRoot: string, diff: DiffScope, fileSet: Set<string>): void {
+  const paths = diff.files.filter((f) => f.spans && fileSet.has(f.path)).map((f) => f.path);
+  const onDisk = paths.filter((p) => fs.existsSync(path.join(repoRoot, p)));
+  const edits: Record<string, HunkHeader[]> = Object.create(null);
+  let unindexed = 0;
+  for (let i = 0; i < onDisk.length; i += PATHS_PER_CALL) {
+    const chunk = onDisk.slice(i, i + PATHS_PER_CALL);
+    let indexed: Set<string>;
+    let out: string;
+    try {
+      indexed = new Set(execFileSync('git', ['-C', repoRoot, '--literal-pathspecs', 'ls-files', '-z', '--', ...chunk], {
+        encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+      }).split('\0').filter(Boolean));
+      const tracked = chunk.filter((p) => indexed.has(p));
+      unindexed += chunk.length - tracked.length;
+      if (!tracked.length) continue;
+      out = zeroContextDiff(repoRoot, [diff.head], tracked);
+    } catch {
+      console.warn('warn: could not diff the working copy against --diff head; module-level hunk placement may be off');
+      return;
+    }
+    Object.assign(edits, hunkHeaders(out, indexed));
+  }
+  for (const f of diff.files) {
+    const e = Object.hasOwn(edits, f.path) ? edits[f.path] : undefined;
+    if (e && e.length) f.worktree = e;
+  }
+  const missing = paths.length - onDisk.length;
+  const unmapped = unindexed + (diff.head !== gitHead(repoRoot) ? missing : 0);
+  if (unmapped) {
+    console.warn(`warn: ${unmapped} diff file(s) could not be mapped to the working copy (absent from disk or the index); their module-level hunk placement may be off`);
+  }
+}
+
 function isAncestor(repoRoot: string, older: string, newer: string): boolean {
   try {
     execFileSync('git', ['-C', repoRoot, 'merge-base', '--is-ancestor', older, newer], { stdio: 'ignore' });
@@ -965,41 +1012,6 @@ async function contains(repoRoot: string, oid: string | undefined): Promise<bool
     await execFileAsync('git', ['-C', repoRoot, 'merge-base', '--is-ancestor', oid, 'HEAD']);
     return true;
   } catch { return false; }
-}
-
-/**
- * `@@ -a,b +c,d @@` → the hunk line ranges of `side` per tree file. A hunk with
- * a zero-length side (pure insertion or deletion) becomes `[a, a]`, its anchor.
- */
-function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'base'): Record<string, [number, number][]> {
-  const out: Record<string, [number, number][]> = {};
-  let file: string | null = null;
-  // `---`/`+++` are headers only before the first hunk of a file; added content
-  // can start the same way.
-  let inHeader = false;
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('diff --git ')) { inHeader = true; file = null; continue; }
-    if (inHeader) {
-      if (line.startsWith('--- ')) file ??= treeFile(pathOf(line.slice(4), 'a/'), fileSet);
-      else if (line.startsWith('+++ ')) file = treeFile(pathOf(line.slice(4), 'b/'), fileSet) ?? file;
-      else if (line.startsWith('@@')) inHeader = false;
-      if (inHeader) continue;
-    }
-    if (!file || !line.startsWith('@@')) continue;
-    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (!m) continue;
-    const at = side === 'head' ? m[3] : m[1];
-    const span = side === 'head' ? m[4] : m[2];
-    const start = Number(at);
-    const len = span === undefined ? 1 : Number(span);
-    if (!Number.isFinite(start) || !Number.isFinite(len)) continue;
-    (out[file] ??= []).push(len <= 0 ? [start, start] : [start, start + len - 1]);
-  }
-  return out;
-}
-
-function treeFile(p: string | null, fileSet: Set<string>): string | null {
-  return p && fileSet.has(p) ? p : null;
 }
 
 function isPr(pr: Pr | null | undefined): pr is Pr {

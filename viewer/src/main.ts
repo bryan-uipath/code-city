@@ -17,7 +17,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 import type { CityHost } from '../../shared/host.js';
 import { HttpHost } from '../../shared/host.js';
-import type { CityData, DiffFile, FileNode, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr, SourceResponse } from '../../shared/types.js';
+import type { CityData, DiffFile, FileNode, HunkHeader, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr, SourceResponse } from '../../shared/types.js';
 import { layoutCity, plateTop, buildingHeight, streetWidth, setWorldScale, worldScale } from './layout.js';
 import {
   buildCity, buildEnvironment, disposeObject, tallestBuilding,
@@ -31,7 +31,7 @@ import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
 import { canSign, createTerraceSigns, type TerraceSigns } from './terrace.js';
 import {
   createSidebar, escapeHtml,
-  type Descriptor, type ReviewConsumer, type ReviewFile, type Sidebar, type WorkChange, type WorkKind,
+  type Descriptor, type RangeDiff, type ReviewConsumer, type ReviewFile, type Sidebar, type WorkChange, type WorkKind,
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
 import { createSearch, type HighlightSpec, type SearchPalette, type SearchResultsPayload } from './search.js';
@@ -1615,7 +1615,11 @@ function applyOverlay(): void {
   // of invisible instances would be pure cost.
   if (!strata.build) {
     for (const rec of city.moduleRecords) {
-      if (inFile || mode === 'structure' || mode === 'strata') {
+      if (inFile) {
+        // The one per-building fact a diff has: which modules its hunks touch.
+        _color.copy(rec.baseColor);
+        if (untouchedModule(rec.file, rec.mod)) _color.multiplyScalar(HUNK_DIM);
+      } else if (mode === 'structure' || mode === 'strata') {
         _color.copy(rec.baseColor);
       } else if (mode === 'prov') {
         provColor(rec.file, _color);
@@ -2683,8 +2687,74 @@ const provBandPaint: StrataPaint = (record, _age, target) => {
   return color ? target.copy(color) : target.copy(DORMANT);
 };
 
+/** How far a module the diff's hunks miss drops inside a changed file — present, not lit. */
+const HUNK_DIM = 0.2;
+
+/** Head-side hunk ranges of a changed file; null for files outside the diff or older data. */
+function hunkSpansOf(node: VNode): [number, number][] | null {
+  const real = realFileOf(node);
+  const spans = real ? diffScope.byPath.get(real.path)?.spans : undefined;
+  return Array.isArray(spans) && spans.length ? spans : null;
+}
+
+/**
+ * The analyzed range, for a file inside it — the sidebar's diff pane shows
+ * base→head; for a module, clipped to its head lines (null: it has none).
+ */
+function rangeDiffFor(real: VNode, node: VNode, mod: VMod | undefined): RangeDiff | undefined {
+  const d = state.data?.diff;
+  if (!d || !diffScope.byNode.has(real)) return undefined;
+  const range = { base: String(d.base || ''), head: String(d.head || '') };
+  const lines = mod ? headSpanOf(node, mod) : undefined;
+  return lines === undefined ? range : { ...range, lines };
+}
+
+/**
+ * A module's lines in diff-head numbering — what `spans` and `/api/rangediff`
+ * count in. Modules are parsed from the working copy, so its own edits against
+ * head (`DiffFile.worktree`) are walked back out; null when every line of the
+ * module is an uncommitted addition, i.e. the diff cannot have touched it;
+ * undefined when the module carries no line at all.
+ */
+function headSpanOf(node: VNode, mod: VMod): { start: number; end: number } | null | undefined {
+  const lines = modLines(mod);
+  if (!lines) return undefined;
+  const real = realFileOf(node);
+  const edits = real ? diffScope.byPath.get(real.path)?.worktree : undefined;
+  if (!Array.isArray(edits) || !edits.length) return lines;
+  const head = { start: toHeadLine(lines.start, edits, 'start'), end: toHeadLine(lines.end, edits, 'end') };
+  return head.start <= head.end ? head : null;
+}
+
+/**
+ * One working-copy line → diff-head line across `-U0` edits (ascending). A line
+ * inside an edit snaps to that edit's head side: `start` to its first line,
+ * `end` to its last — so a wholly uncommitted run maps to an empty range.
+ */
+function toHeadLine(line: number, edits: HunkHeader[], edge: 'start' | 'end'): number {
+  let delta = 0;
+  for (const [hs, hl, ws, wl] of edits) {
+    // `-U0` names the line BEFORE an empty side: `+4,0` sits between lines 4 and 5.
+    const wBegin = wl ? ws : ws + 1;
+    const hBegin = hl ? hs : hs + 1;
+    if (line < wBegin) break;
+    if (line < wBegin + wl) return edge === 'start' ? hBegin : hBegin + hl - 1;
+    delta = hBegin + hl - (wBegin + wl);
+  }
+  return line + delta;
+}
+
+/** A module of a changed file that none of the diff's hunks touch (false when it cannot be told). */
+function untouchedModule(node: VNode, mod: VMod): boolean {
+  const spans = hunkSpansOf(node);
+  const head = spans ? headSpanOf(node, mod) : undefined;
+  if (!spans || head === undefined) return false;
+  return head === null || !spansOverlap(head, spans);
+}
+
 /** The inspector line: `+449 · 87% verbatim · 3% reshaped · 10% new`. */
-function provNote(node: VNode): string | undefined {
+function provNote(node: VNode, mod?: VMod): string | undefined {
+  if (mod && untouchedModule(node, mod)) return 'untouched by the diff';
   const sum = diffSum(node);
   if (!sum) return undefined;
   const adds = sum.verbatim + sum.reshaped + sum.new;
@@ -3489,10 +3559,19 @@ function prTargets(pr: Pr): VNode[] {
 }
 
 function touchesSpans(mod: VMod | undefined, spans: [number, number][]): boolean {
-  if (!mod || typeof mod.line !== 'number') return false;
-  const a = mod.line;
-  const b = a + Math.max(mod.loc, 1) - 1;
-  return spans.some(([s, e]) => s <= b && e >= a);
+  const lines = mod ? modLines(mod) : null;
+  return lines !== null && spansOverlap(lines, spans);
+}
+
+/** A module's own 1-based line range; null when it carries no line. */
+function modLines(mod: VMod): { start: number; end: number } | null {
+  if (mod.line === undefined || !Number.isFinite(mod.line)) return null;
+  const start = Math.max(1, mod.line);
+  return { start, end: start + Math.max(mod.loc, 1) - 1 };
+}
+
+function spansOverlap(lines: { start: number; end: number }, spans: [number, number][]): boolean {
+  return spans.some(([s, e]) => s <= lines.end && e >= lines.start);
 }
 
 /** Tallest building top in the current scope (plots only — the stacks are folder-scope). */
@@ -4128,9 +4207,7 @@ function describe(target: Target | null): Descriptor | null {
   // A strata level stands for one commit on that file — say which one.
   const level = target.level?.commit;
   const match = filterMatchCount(node);
-  const modSpan = mod && mod.line !== undefined && Number.isFinite(mod.line)
-    ? { start: Math.max(1, mod.line), end: Math.max(1, mod.line) + Math.max(mod.loc, 1) - 1 }
-    : null;
+  const modSpan = mod ? modLines(mod) : null;
   return {
     name: mod ? mod.name : node.name,
     kind,
@@ -4142,7 +4219,8 @@ function describe(target: Target | null): Descriptor | null {
     filterNote: match
       ? `${fmt(match.matched)} of ${fmt(match.total)} commits match filter (${[...strata.filter.types].join(' ')})`
       : undefined,
-    provNote: provNote(node),
+    provNote: provNote(node, mod),
+    rangeDiff: real ? rangeDiffFor(real, node, mod) : undefined,
     loc: mod ? mod.loc : node.loc,
     churn: node.churn,
     fixChurn: node.fixChurn,

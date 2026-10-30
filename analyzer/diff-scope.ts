@@ -22,7 +22,7 @@
  * "87% of this file is verbatim — skip it".
  */
 import { execFileSync } from 'node:child_process';
-import type { DiffFile, DiffScope } from '../shared/types.js';
+import type { DiffFile, DiffScope, HunkHeader } from '../shared/types.js';
 
 /** zebra palette: newMoved 1;36 / alt 1;33, oldMoved 1;35 / alt 1;34. */
 const MOVED_NEW = new Set(['1;36', '1;33']);
@@ -121,6 +121,10 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
   // The branch's own commits and its two endpoints in time — what the viewer's
   // timeline needs to mark the delta inside the 12-month stream.
   const revs = git(repoRoot, ['rev-list', `${base}..${head}`]).split('\n').map((l) => l.trim()).filter(Boolean);
+  // Head-side hunk ranges, zero context so a range is exactly the changed lines
+  // (a pure deletion anchors at the line before it). A second pass keeps the
+  // colored parse above untouched.
+  const spans = hunkSpans(zeroContextDiff(repoRoot, [base, head]), new Set(files.keys()), 'head');
   return {
     base,
     head,
@@ -129,7 +133,10 @@ export function collectDiffScope(repoRoot: string, range: string): DiffScope {
     commits: revs,
     baseTs: commitTs(repoRoot, base),
     headTs: commitTs(repoRoot, head),
-    files: [...files].map(([path, b]) => ({ path, ...b }))
+    files: [...files].map(([path, b]) => {
+      const s = Object.hasOwn(spans, path) ? spans[path] : undefined;
+      return s && s.length ? { path, ...b, spans: s } : { path, ...b };
+    })
       .sort((x, y) => (y.verbatim + y.reshaped + y.new) - (x.verbatim + x.reshaped + x.new)),
   };
 }
@@ -197,6 +204,65 @@ function bucketsFor(files: Map<string, Buckets>, path: string): Buckets {
   let b = files.get(path);
   if (!b) files.set(path, (b = { verbatim: 0, reshaped: 0, new: 0, deleted: 0 }));
   return b;
+}
+
+/**
+ * `git diff -U0` with every knob `hunkHeaders` depends on pinned: `a/`/`b/`
+ * prefixes, unquoted paths, hunks never merged, pathspecs literal. One rev
+ * diffs it against the working tree.
+ */
+export function zeroContextDiff(repoRoot: string, revs: string[], paths: string[] = []): string {
+  return git(repoRoot, [
+    '--literal-pathspecs', ...GIT_PINS, 'diff', '-U0', '--inter-hunk-context=0', '--no-color', '--no-ext-diff',
+    '--no-renames', '--src-prefix=a/', '--dst-prefix=b/', ...revs, '--', ...paths,
+  ]);
+}
+
+/**
+ * `@@ -a,b +c,d @@` → the hunk line ranges of `side` per tree file. A hunk with
+ * a zero-length side (pure insertion or deletion) becomes `[a, a]`, its anchor.
+ */
+export function hunkSpans(diff: string, fileSet: Set<string>, side: 'head' | 'base'): Record<string, [number, number][]> {
+  const out: Record<string, [number, number][]> = Object.create(null);
+  for (const [file, hunks] of Object.entries(hunkHeaders(diff, fileSet))) {
+    out[file] = hunks.map(([a, b, c, d]) => {
+      const [start, len] = side === 'head' ? [c, d] : [a, b];
+      return len <= 0 ? [start, start] : [start, start + len - 1];
+    });
+  }
+  return out;
+}
+
+/** Every `@@ -a,b +c,d @@` header per tree file, as `[a, b, c, d]` (an omitted length is 1). */
+export function hunkHeaders(diff: string, fileSet: Set<string>): Record<string, HunkHeader[]> {
+  // Null prototype: a changed file named `constructor` or `__proto__` must not hit Object.prototype.
+  const out: Record<string, HunkHeader[]> = Object.create(null);
+  let file: string | null = null;
+  // `---`/`+++` are headers only before the first hunk of a file; added content
+  // can start the same way.
+  let inHeader = false;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) { inHeader = true; file = null; continue; }
+    if (inHeader) {
+      if (line.startsWith('--- ')) file ??= treeFile(pathOf(line.slice(4), 'a/'), fileSet);
+      else if (line.startsWith('+++ ')) file = treeFile(pathOf(line.slice(4), 'b/'), fileSet) ?? file;
+      else if (line.startsWith('@@')) inHeader = false;
+      if (inHeader) continue;
+    }
+    if (!file || !line.startsWith('@@')) continue;
+    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!m) continue;
+    const h: HunkHeader = [
+      Number(m[1]), m[2] === undefined ? 1 : Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4]),
+    ];
+    if (!h.every(Number.isFinite)) continue;
+    (out[file] ??= []).push(h);
+  }
+  return out;
+}
+
+function treeFile(p: string | null, fileSet: Set<string>): string | null {
+  return p && fileSet.has(p) ? p : null;
 }
 
 /** `a/foo.ts` → `foo.ts`; `/dev/null` → null. Quoted paths are unquoted. */
