@@ -107,9 +107,10 @@ const ROUTES = {
     const base = params.get('base') || '';
     const head = params.get('head') || '';
     if (!HASH_RE.test(base) || !HASH_RE.test(head)) return send(res, 400, { error: 'invalid hash' });
-    // Pinned: clipHunks counts head lines, so blank context must keep its ' ' and every hunk its context.
+    // Pinned: clipHunks counts head lines, so blank context must keep its ' ' and every hunk its context;
+    // literal pathspecs so `app/[id]/page.tsx` is that file, not a glob.
     const { stdout } = await git(root, [
-      '-c', 'diff.suppressBlankEmpty=false', 'diff', '-U3', '--no-color', '--no-ext-diff', '--no-renames',
+      '--literal-pathspecs', '-c', 'diff.suppressBlankEmpty=false', 'diff', '-U3', '--no-color', '--no-ext-diff', '--no-renames',
       base, head, '--', rel,
     ]);
     const start = intParam(params.get('start'), 0);
