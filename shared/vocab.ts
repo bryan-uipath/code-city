@@ -6,8 +6,10 @@
  */
 import type { EventType, Noun, Vocabulary } from './types.js';
 
-/** Keys land in a `data-type` attribute and `Commit.t`: a short slug, nothing to escape. */
-export const EVENT_KEY_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/** A short slug, nothing to escape: event-type keys, provider names. */
+export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/** Keys land in a `data-type` attribute and `Commit.t`. */
+export const EVENT_KEY_RE = SLUG_RE;
 /** Colors land in inline CSS: `#rrggbb` only. */
 export const COLOR_RE = /^#[0-9a-f]{6}$/i;
 export const MAX_EVENT_TYPES = 16;

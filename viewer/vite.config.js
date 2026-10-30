@@ -33,9 +33,8 @@ function devApiPlugin() {
         try {
           const current = currentProvider();
           // A prefix must name the dataset's own provider: no reaching another one.
-          if (!current || (name !== null && name !== current.name)) {
-            return send(res, 404, { error: 'data.json not found — run the analyzer first' });
-          }
+          if (!current) return send(res, 404, { error: 'data.json not found — run the analyzer first' });
+          if (name !== null && name !== current.name) return send(res, 404, { error: 'not this dataset\'s provider' });
           const call = current.provider[method];
           if (typeof call !== 'function') return send(res, 501, { error: `${current.name} has no ${route}` });
           send(res, 200, await call(args(url.searchParams)));
