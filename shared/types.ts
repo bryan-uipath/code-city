@@ -69,6 +69,8 @@ interface NodeStats {
   name: string;
   /** Repo-relative POSIX path; '' for the repo root node. */
   path: string;
+  /** The source's item id (page id, ticket key), only when it differs from `path` — what a provider is asked about. */
+  id?: string;
   loc: number;
   /** Commits touching the node in the last 12 months. */
   churn: number;
@@ -251,7 +253,12 @@ export type HunkHeader = [number, number, number, number];
 // Dev API (see DESIGN.md "Dev API")
 // ---------------------------------------------------------------------------
 
+/** Detail kinds the viewer renders today; any other kind falls back to the header card. */
+export type ContentKind = 'code' | 'markdown';
+
+/** A leaf's detail: typed content. Both current kinds are lines; absent kind = code (older dev API). */
 export interface SourceResponse {
+  kind?: string;
   path: string;
   start: number;
   end: number;

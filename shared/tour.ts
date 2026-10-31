@@ -9,6 +9,8 @@
  * as markup — so a hostile tour file can style nothing and script nothing.
  */
 
+import { isCommitHash } from './host.js';
+
 // ---------------------------------------------------------------------------
 // The contract
 // ---------------------------------------------------------------------------
@@ -94,7 +96,6 @@ const MAX_HIGHLIGHTS = 60;
 const MAX_TITLE = 200;
 const MAX_NARRATION = 4000;
 const MAX_URL = 4096;
-const HASH_RE = /^[0-9a-f]{7,40}$/;
 
 // ---------------------------------------------------------------------------
 // Targets
@@ -234,7 +235,7 @@ function validateArtifact(x: unknown): TourArtifact | null {
   if (!isRecord(x)) return null;
   if (x.type === 'diff') {
     const commit = str(x.commit, 40);
-    if (!commit || !HASH_RE.test(commit)) return null;
+    if (!commit || !isCommitHash(commit)) return null;
     const path = str(x.path, 400);
     return path ? { type: 'diff', commit, path } : { type: 'diff', commit };
   }
