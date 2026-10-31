@@ -44,7 +44,8 @@ optional: a non-JSON response latches the host unavailable and callers hide thei
 sections — that is what makes the static export work.
 
 **`viewer/vite.config.js` is the dev API** (`/api/source|log|diff|status|search`),
-dev-server only. It only routes, to the dataset's provider;
+dev-server only. It only routes `/api/<provider>/<route>` (unprefixed = alias)
+to the provider `data.repo.provider` names (absent = git);
 `viewer/providers/git.js` shells out to `git -C <data.repo.root>`, and owns the
 input discipline: paths go through `safeRelPath` (no absolute, no `..`, must
 resolve under root and exist) and hashes through `HASH_RE`. Keep that
