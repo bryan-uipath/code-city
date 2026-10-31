@@ -16,6 +16,7 @@ npm run analyze -- /path/to/repo            # -> viewer/public/data.json (analyz
 npm run analyze -- /path/to/repo --roots src,lib --out other.json --no-prs
 npm run analyze -- /path/to/repo --diff <base>..<head>   # + diff scope & PR provenance overlay
 npm run analyze -- .                        # required before the bundled welcome tour works
+npm run analyze -- --snapshot x.json        # compile any producer's Snapshot (untrusted; see DESIGN.md "Adapters")
 npm run dev                                 # vite dev server (source/diff/status/search API live)
 npm run typecheck                           # tsc --noEmit — the only fast whole-repo check
 npm run build / npm run export              # bundle / static self-contained bundle with data.json baked in

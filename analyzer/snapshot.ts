@@ -29,7 +29,7 @@ export interface AdapterResult {
 
 export interface SourceInfo {
   name: string;
-  /** Where the source lives (repo dir, site URL) — what the dev API resolves against. */
+  /** Where the source lives (repo dir) — what the dev API resolves against; `''` = none. */
   root: string;
   url: string | null;
 }
