@@ -26,6 +26,7 @@ import {
   type StrataPaint, type StrataRecord,
 } from './strata.js';
 import type { VNode } from './vtree.js';
+import type { Words } from '../../shared/vocab.js';
 
 /**
  * The plot lives in the free strip the HUD leaves behind, measured off the
@@ -129,6 +130,8 @@ export interface SkylineOptions {
   onHover(hit: SkyHit | null): void;
   onSelect(hit: SkyHit | null): void;
   onIsolate(node: VNode): void;
+  /** Mass unit and event noun for the hover pill. */
+  words: Words;
 }
 
 export interface Skyline {
@@ -165,6 +168,7 @@ export function createSkyline(opts: SkylineOptions): Skyline {
   if (!ctx2d) throw new Error('skyline: no 2d context');
   const ctx: CanvasRenderingContext2D = ctx2d;
   opts.container.appendChild(canvas);
+  const words = opts.words;
 
   let visible = false;
   let bars: SkyBar[] = [];
@@ -699,11 +703,11 @@ export function createSkyline(opts: SkylineOptions): Skyline {
     const commits = commitCount(hit.bar);
     const tail = commit
       ? level && level.group > 1
-        ? `${fmt(level.group)} commits · ${commit.h} · ${commit.s}`
+        ? `${fmt(level.group)} ${words.event.many} · ${commit.h} · ${commit.s}`
         : `${commit.h} · ${commit.s}`
       : commits
-        ? `${fmt(node.loc)} loc · ${fmt(commits)} commits`
-        : `${fmt(node.loc)} loc · untouched in range`;
+        ? `${fmt(node.loc)} ${words.mass} · ${fmt(commits)} ${words.event.many}`
+        : `${fmt(node.loc)} ${words.mass} · untouched in range`;
     const head = node.name;
 
     ctx.font = FONT_PILL;

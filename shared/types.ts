@@ -20,6 +20,40 @@ export interface CityData {
   commits: Commit[];
   /** Present only when the analyzer ran with `--diff <base>..<head>`. */
   diff?: DiffScope;
+  /** What the source calls its things; absent = code (files, loc, commits). */
+  vocab?: Vocabulary;
+}
+
+/**
+ * A source's words and event types, for labels and the strata legend. Every
+ * field is optional and falls back to the code default, so a dataset without
+ * one renders exactly as before.
+ */
+export interface Vocabulary {
+  /** Leaf noun — default file / files. */
+  leaf?: Noun;
+  /** Event noun — default commit / commits. */
+  event?: Noun;
+  /** Leaf mass unit, short — default `loc`; e.g. `lines`, `words`, `points`. */
+  mass?: string;
+  /** Legend order. Absent = conventional-commit types parsed from subjects. */
+  eventTypes?: EventType[];
+}
+
+export interface Noun {
+  one: string;
+  many: string;
+}
+
+/** One kind of event, as the adapter classified it (`Commit.t`). */
+export interface EventType {
+  /** `[a-z0-9-]`, at most 32 chars. */
+  key: string;
+  label: string;
+  /** `#rrggbb`. */
+  color: string;
+  /** A fix, a reopen: Fix hotspots filters the strata to these. */
+  rework?: boolean;
 }
 
 export interface RepoInfo {
@@ -131,6 +165,8 @@ export interface Commit {
   f: number[];
   /** Per-file `[additions, deletions]`, aligned index-for-index with `f`. */
   d?: [number, number][];
+  /** Event type key from `vocab.eventTypes`; absent = parsed from the subject. */
+  t?: string;
 }
 
 /**
