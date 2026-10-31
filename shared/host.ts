@@ -19,6 +19,11 @@ export interface CityHost {
   getLog(path: string, start?: number, end?: number): Promise<LogResponse | null>;
   /** `git show <hash> -- <path>`, or null when unavailable. */
   getDiff(path: string, hash: string): Promise<DiffResponse | null>;
+  /**
+   * `git diff <base> <head> -- <path>`, clipped to the hunks that touch head
+   * lines `start..end` when given; null when unavailable.
+   */
+  getRangeDiff(path: string, base: string, head: string, start?: number, end?: number): Promise<DiffResponse | null>;
   /** Uncommitted working-tree changes ("now"), or null when unavailable. */
   getStatus(): Promise<StatusResponse | null>;
   /** Content search over the repo, or null when unavailable. */
@@ -62,6 +67,12 @@ export class HttpHost implements CityHost {
 
   getDiff(path: string, hash: string): Promise<DiffResponse | null> {
     return this.#getJson<DiffResponse>('/api/diff?' + new URLSearchParams({ path, h: hash }).toString());
+  }
+
+  getRangeDiff(path: string, base: string, head: string, start?: number, end?: number): Promise<DiffResponse | null> {
+    const q = new URLSearchParams({ path, base, head });
+    if (start !== undefined && end !== undefined) q.set('start', String(start)), q.set('end', String(end));
+    return this.#getJson<DiffResponse>('/api/rangediff?' + q.toString());
   }
 
   getStatus(): Promise<StatusResponse | null> {
