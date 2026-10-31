@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGitProvider } from './providers/git.js';
+import { createNotesProvider } from './providers/notes.js';
 
 const DATA_JSON = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'public/data.json');
 
@@ -64,6 +65,7 @@ const ROUTES = {
 /** Providers by the name data.json gives (`repo.provider`); absent = git. */
 const PROVIDERS = {
   git: createGitProvider,
+  notes: createNotesProvider,
 };
 
 // ---------- helpers ----------

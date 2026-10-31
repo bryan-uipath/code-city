@@ -1013,6 +1013,25 @@ so responses are byte-identical except `/source` gaining `kind`.
 - **The viewer asks by item id**, falling back to the path: `HttpHost` maps
   path → `TreeNode.id` once at load (`?id=`; the aliases still take `?path=`),
   so call sites keep passing paths. Git ids are paths, so nothing changes there.
+- **The notes provider** (`viewer/providers/notes.js`) is the second one and
+  the first a snapshot may name: `notes-snapshot.mjs` emits `provider: 'notes'`
+  with its folder as root. It serves `getDetail` (`markdown` content) and
+  `search`, nothing else (log, diff, status answer 501: those panes hide). No
+  git calls. Its root came from a file, so containment is stricter than git's:
+  ids must be root-relative `.md` paths (the snapshot's own rule, so search
+  never finds a note the city lacks; no absolute, `\`, `..`, NUL), the real
+  path (symlinks resolved) must stay under the real root, which is re-checked
+  per request, and the read goes through one descriptor opened `O_NOFOLLOW |
+  O_NONBLOCK` and checked as a regular file under 4 MB on that descriptor.
+  Search never follows symlinks, skips dot-entries and `node_modules`, reads
+  directories one entry at a time, and is capped per request by entries
+  visited, notes, bytes and results. Residual: a local writer racing a parent
+  directory swap between the real-path check and the open — out of scope for a
+  dev server reading the user's own folder. What a snapshot still decides is which directory's
+  markdown the local dev server will read — accepted: dev-only, localhost,
+  markdown only.
+  A snapshot-chosen root is acceptable only on localhost/dev; any non-local
+  host needs a per-user root allow-list first.
 - **`CityHost` keeps its git-era method names** (`getSource`, `getLog`, …): a
   rename is churn with no behavior, deferred until a host other than HTTP needs it.
 
@@ -1218,6 +1237,7 @@ analyzer/git.ts           # git adapter: modules, history + cache, imports, PRs
 analyzer/diff-scope.ts    # one range -> changed-file set + per-file provenance buckets
 viewer/vite.config.js     # dev API router: /api/* -> the dataset's provider
 viewer/providers/git.js   # git provider: detail, history, change, live, search (owns path/hash validation)
+viewer/providers/notes.js # notes provider: markdown detail + search under its root, no git
 viewer/index.html         # HUD markup + CSS
 viewer/src/main.ts        # scene, interaction, overlays
 viewer/src/vtree.ts       # the viewer's augmented node type (layout, synthetic scopes)

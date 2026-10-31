@@ -9,9 +9,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { intParam, lineWindow } from './lines.js';
 
 const execFileAsync = promisify(execFile);
 
+/** Diff lines returned per /diff call. */
 const MAX_LINES = 400;
 const LOG_COUNT = 15;
 const MAX_SEARCH_RESULTS = 500;
@@ -44,13 +46,8 @@ export function createGitProvider(root) {
     async getDetail({ id, start: startParam, end: endParam }) {
       const rel = relId(id);
       const text = fs.readFileSync(path.resolve(root, rel), 'utf8');
-      const all = text.split('\n');
-      const total = all.length;
-      const start = clamp(intParam(startParam, 1), 1, total);
-      const requestedEnd = clamp(intParam(endParam, total), start, total);
-      const end = Math.min(requestedEnd, start + MAX_LINES - 1);
       const kind = MARKDOWN_RE.test(rel) ? 'markdown' : 'code';
-      return { path: rel, start, end, total, lines: all.slice(start - 1, end), kind };
+      return { path: rel, ...lineWindow(text.split('\n'), startParam, endParam), kind };
     },
 
     /** Recent commits touching a file, or a line range of it. */
@@ -296,11 +293,3 @@ function git(root, args) {
   return execFileAsync('git', ['-C', root, ...args], { maxBuffer: 16 * 1024 * 1024, timeout: 10_000 });
 }
 
-function intParam(value, fallback) {
-  const n = Number.parseInt(value ?? '', 10);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function clamp(n, lo, hi) {
-  return Math.min(Math.max(n, lo), hi);
-}
