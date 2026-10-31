@@ -30,7 +30,7 @@ import {
 import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
 import { canSign, createTerraceSigns, type TerraceSigns } from './terrace.js';
 import {
-  createSidebar, escapeHtml,
+  contentKind, createSidebar, escapeHtml,
   type Descriptor, type RangeDiff, type ReviewConsumer, type ReviewFile, type ReviewOffCity, type Sidebar, type WorkChange, type WorkKind,
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
@@ -4931,7 +4931,8 @@ function refreshSnippet(): void {
     pending = host.getSource(file.path, line, end);
     sourceCache.set(key, pending);
   }
-  pending.then((src) => mount(src ? src.lines : null, src ? src.start : line));
+  // Both current kinds are lines; any other kind leaves the card a header.
+  pending.then((src) => mount(src && contentKind(src) ? src.lines : null, src ? src.start : line));
 }
 
 function clearSnippet(): void {

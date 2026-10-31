@@ -7,8 +7,8 @@
  * files and their untouched importers.
  * Everything data-derived is escaped before it reaches innerHTML.
  */
-import type { CityHost } from '../../shared/host.js';
-import type { DiffEntry, LogCommit, OffCity, Pr, SourceResponse } from '../../shared/types.js';
+import { isCommitHash, type CityHost } from '../../shared/host.js';
+import type { ContentKind, DiffEntry, LogCommit, OffCity, Pr, SourceResponse } from '../../shared/types.js';
 import type { Words } from '../../shared/vocab.js';
 import { relTime, type Timeline } from './timeline.js';
 
@@ -509,11 +509,13 @@ export function createSidebar(
     const rows = shown.map((c) => {
       const near = t !== null && Math.abs(c.ts - t) < 2 * 86400;
       const when = t === null ? shortAge(relTime(c.ts)) : new Date(c.ts * 1000).toISOString().slice(5, 10);
-      const shortHash = String(c.h || '').slice(0, 7).replace(/[^0-9a-f]/gi, '');
+      const id = String(c.h || '');
+      const isHash = isCommitHash(id);
+      const shortHash = isHash ? id.slice(0, 7) : truncate(id, 12);
       const github = opts.githubUrl;
-      const hashHtml = github && /^https:\/\/github\.com\//.test(github)
+      const hashHtml = github && isHash && /^https:\/\/github\.com\//.test(github)
         ? `<a class="h" href="${github}/commit/${shortHash}" target="_blank" rel="noopener noreferrer">${shortHash}</a>`
-        : `<span class="h">${shortHash}</span>`;
+        : `<span class="h">${escapeHtml(shortHash)}</span>`;
       return (
         `<div class="sb-commit${near ? ' near' : ''}">` +
         `${hashHtml}<span class="msg">${escapeHtml(truncate(c.s || '', 44))}</span>` +
@@ -782,7 +784,8 @@ export function createSidebar(
     const end = d.span ? d.span.end : start + 160;
     const src = await opts.host.getSource(codePath, start, end);
     if (token !== state.codeToken) return;
-    if (!src) {
+    const kind = src ? contentKind(src) : null;
+    if (!src || !kind) {
       secCode.style.display = 'none';
       return;
     }
@@ -790,7 +793,7 @@ export function createSidebar(
     const head =
       `<div class="h"><span>Code</span><em>${escapeHtml(baseName(codePath))} ` +
       `${Number(src.start) || start}–${Number(src.end) || end}</em></div>`;
-    secCode.innerHTML = head + sourceHtml(src, Number(src.start) || start);
+    secCode.innerHTML = head + CONTENT_RENDERERS[kind](src, Number(src.start) || start);
     if (d.rangeDiff) await loadRangeDiff(d.rangeDiff, codePath, token);
     else await loadLatestDiff(d, token);
   }
@@ -816,7 +819,8 @@ export function createSidebar(
     const codePath = d.codePath;
     const latest = codePath ? latestHashFor(d) : null;
     // Both loadCode and the span-log callback can reach here; append once.
-    if (!codePath || !latest || token !== state.codeToken || secCode.querySelector('.sb-diff-head')) return;
+    // A non-hash event id (`edit-3`, `CHG-36`) has no commit diff to ask for.
+    if (!codePath || !latest || !isCommitHash(latest) || token !== state.codeToken || secCode.querySelector('.sb-diff-head')) return;
     const diff = await opts.host.getDiff(codePath, latest);
     if (token !== state.codeToken || !diff || !diff.diff || secCode.querySelector('.sb-diff-head')) return;
     secCode.insertAdjacentHTML(
@@ -854,6 +858,18 @@ export function createSidebar(
 // ---------------------------------------------------------------------------
 // Rendering helpers
 // ---------------------------------------------------------------------------
+
+/** One renderer per detail kind. Markdown renders as its lines for now: same pane, no visible change. */
+const CONTENT_RENDERERS: Record<ContentKind, (src: SourceResponse, start: number) => string> = {
+  code: sourceHtml,
+  markdown: sourceHtml,
+};
+
+/** The kind a detail renders as, or null for one this viewer has no renderer for (-> header card). */
+export function contentKind(src: SourceResponse): ContentKind | null {
+  const kind = src.kind ?? 'code'; // absent: a dev API older than typed content
+  return kind === 'code' || kind === 'markdown' ? kind : null;
+}
 
 function sourceHtml(src: SourceResponse, start: number): string {
   const lines = Array.isArray(src.lines) ? src.lines.slice(0, 400) : [];

@@ -8,6 +8,7 @@
  * Degrades to `enabled: false` (bar hidden) when the stream is absent (v1 data).
  */
 import type { CityData } from '../../shared/types.js';
+import { isCommitHash } from '../../shared/host.js';
 
 const DAY = 86400;
 const WEEK = 7 * DAY;
@@ -276,12 +277,12 @@ export function createTimeline(
       return;
     }
     const github = data.repo?.githubUrl;
-    const hash = at.h.replace(/[^0-9a-f]/gi, '');
-    if (github && /^https:\/\/github\.com\//.test(github)) {
+    const hash = at.h;
+    if (github && isCommitHash(hash) && /^https:\/\/github\.com\//.test(github)) {
       dom.date.innerHTML =
         `<a class="tl-hash" href="${github}/commit/${hash}" target="_blank" rel="noopener noreferrer">${hash}</a> · ${day}`;
     } else {
-      dom.date.textContent = `${hash} · ${day}`;
+      dom.date.textContent = `${hash.slice(0, 16)} · ${day}`;
     }
   }
 }

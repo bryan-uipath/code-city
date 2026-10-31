@@ -80,7 +80,7 @@ export function compile(snap: Snapshot): CityData {
 }
 
 function folderNode(item: Item, path: string): FolderNode {
-  return { type: 'folder', name: item.name, path, loc: 0, churn: 0, fixChurn: 0, recentChurn: 0, children: [] };
+  return { type: 'folder', name: item.name, path, ...idOf(item, path), loc: 0, churn: 0, fixChurn: 0, recentChurn: 0, children: [] };
 }
 
 function fileNode(item: Item, path: string, c: Churn | undefined): FileNode {
@@ -88,12 +88,18 @@ function fileNode(item: Item, path: string, c: Churn | undefined): FileNode {
     type: 'file',
     name: item.name,
     path,
+    ...idOf(item, path),
     loc: item.mass,
     churn: c?.churn ?? 0,
     fixChurn: c?.fixChurn ?? 0,
     recentChurn: c?.recentChurn ?? 0,
     modules: item.sections ?? [],
   };
+}
+
+/** The item id, only when it isn't the path (git: never), so git datasets stay byte-identical. */
+function idOf(item: Item, path: string): { id?: string } {
+  return item.id === path ? {} : { id: item.id };
 }
 
 function sum(node: TreeNode): void {

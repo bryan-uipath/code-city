@@ -10,6 +10,15 @@ import type {
   CityData, DiffResponse, LogResponse, SearchResponse, SourceResponse, StatusResponse,
 } from './types.js';
 
+/**
+ * A git commit hash, 7–40 hex. Event ids are otherwise opaque to the viewer (a
+ * Jira changelog id, a page version): only hash-shaped ones link as commits or
+ * go to `getDiff`.
+ */
+export function isCommitHash(h: string): boolean {
+  return /^[0-9a-f]{7,40}$/.test(h);
+}
+
 export interface CityHost {
   /** The analyzed city. Rejects when no dataset is reachable. */
   loadData(): Promise<CityData>;
