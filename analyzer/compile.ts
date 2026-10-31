@@ -64,6 +64,7 @@ export function compile(snap: Snapshot): CityData {
       root: snap.source.root,
       analyzedAt: new Date().toISOString(),
       githubUrl: snap.source.url,
+      ...(snap.source.provider ? { provider: snap.source.provider } : {}),
     },
     tree,
     edges: snap.links.flatMap((l): Edge[] => {

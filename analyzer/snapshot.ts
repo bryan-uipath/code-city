@@ -34,6 +34,8 @@ export interface SourceInfo {
   /** Where the source lives (repo dir) — what the dev API resolves against; `''` = none. */
   root: string;
   url: string | null;
+  /** The provider that serves `root` at runtime; absent = git (the git adapter never sets it). */
+  provider?: string;
 }
 
 export interface Item {

@@ -61,6 +61,8 @@ export interface RepoInfo {
   root: string;
   analyzedAt: string;
   githubUrl: string | null;
+  /** The dev API provider that serves `root` (`notes`); absent = git when `root` exists. */
+  provider?: string;
 }
 
 export type TreeNode = FolderNode | FileNode;
