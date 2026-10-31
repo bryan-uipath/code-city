@@ -383,6 +383,14 @@
   .sb-rv.off { cursor: default; opacity: 0.7; }
   .sb-rv.off:hover { background: none; }
   .sb-rv.off.deleted .nm { color: #ef4444; text-decoration: line-through; }
+  /* Review progress: the check marks, a visited row recedes like its building. */
+  .sb-rv-visit {
+    flex: none; width: 11px; text-align: center; font-size: 9px; line-height: 11px; cursor: pointer;
+    color: transparent; border: 1px solid var(--border);
+  }
+  .sb-rv-visit:hover { border-color: var(--brand); color: var(--foreground-subtle); }
+  .sb-rv-visit.on { color: var(--green); border-color: var(--green); }
+  .sb-rv.visited .nm, .sb-rv.visited .sig { opacity: 0.45; }
 
   /* --- working-tree layer */
   #sb-worktree > .h button {
