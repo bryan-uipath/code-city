@@ -368,6 +368,30 @@ Deleted files get no vacant-lot marker. The working-tree rubble works because
 an uncommitted deletion still has its plate in the HEAD city. A range deletion
 has no plate at head and no stable place to put one, so it stays a sidebar row.
 
+The diff chip ends with `· N not in city`, so the building count never reads as
+the whole change.
+
+### Review progress (implemented)
+
+A *Read first* row carries a check, and V toggles the selected file. Both are
+explicit acts: selecting, hovering or flying to a file never marks it, because
+none of those means it was read. A visited file recedes (×0.45) at folder scope
+in every mode, including in the stacks and the skyline through the one shared
+strata paint. Inside a file the hunk dim keeps priority. The header counts
+`k/n visited`, and the legend says what the dim means.
+
+- **Persisted per range as named.** The key is `city:visited:<root>:<baseRef>..<headRef>`
+  in `localStorage`, every access wrapped in try/catch (blocked storage just
+  means marks last the session). Keying by the refs, not the hashes, is the
+  point: re-analyze `develop..feat/x` after a push and the marks are still there.
+- **Invalidated per file.** Each mark stores the file's diff fingerprint at the
+  moment it was set: `DiffEntry.fp`, both modes and both blobs from
+  `git diff --raw --no-abbrev`, which changes exactly when that file's diff
+  does, a chmod included. On load, marks whose fingerprint no longer matches are dropped and the
+  store is rewritten. A push that touches `types.ts` but not `vite.config.js`
+  un-visits only `types.ts`. Older data.json without `fp` falls back to the
+  buckets plus spans.
+
 ## Dev API (vite plugin, dev-server only)
 
 `viewer/vite.config.js` registers middleware that shells out to git in `repo.root` (read from the generated data.json at server start). All paths validated: repo-relative, no `..`/absolute, resolved path must stay under root; invalid → 400. Endpoints:

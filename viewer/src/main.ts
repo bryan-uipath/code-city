@@ -488,6 +488,7 @@ async function main(): Promise<void> {
   });
   checkpoints = createCheckpoints();
   sidebar = createSidebar({ host, timeline, githubUrl: data.repo?.githubUrl });
+  initVisited(data);
   pushReviewToSidebar();
   labeler = createLabeler(scene, camera);
   search = createSearch({
@@ -1428,6 +1429,9 @@ function renderLegend(): void {
   if (stacked && timeline.rangeIsDiff) {
     rows.push(`<div class="row"><span>range = diff · ${fmt(diffCommitCount())} commits (Esc)</span></div>`);
   }
+  if (visited.size) {
+    rows.push(`<div class="row"><span>dimmed = visited · ${fmt(visited.size)} (V toggles)</span></div>`);
+  }
   rows.push(...worktreeLegendRows());
   rows.push(...prLegendRows());
   dom.legend.innerHTML = rows.join('');
@@ -1630,6 +1634,8 @@ function applyOverlay(): void {
       } else {
         heatColor(Math.sqrt(Math.max(heatValue(rec.file), 0)) / denom, _color);
       }
+      // Visited recedes at folder scope; inside the file the hunk dim is the reading.
+      if (!inFile && visited.size && isVisited(rec.file)) _color.multiplyScalar(VISITED_DIM);
       rec.mesh.setColorAt(rec.instanceId, _color);
     }
     for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -1649,6 +1655,7 @@ function applyOverlay(): void {
       } else {
         heatColor(Math.sqrt(Math.max(heatValue(rec.node), 0)) / denom, _color).multiplyScalar(0.42);
       }
+      if (!inFile && visited.size && isVisited(rec.node)) _color.multiplyScalar(VISITED_DIM);
       filePlates.setColorAt(rec.instanceId, _color);
     }
     if (filePlates.instanceColor) filePlates.instanceColor.needsUpdate = true;
@@ -2017,6 +2024,7 @@ function currentStrataPaint(): StrataPaint {
   if (searchPaint.on) return searchStrataPaint();
   let base: StrataPaint = bandMassing() ? (record, age, target) => record.band ? provBandPaint(record, age, target) : provColor(record.file, target) : state.mode === 'strata' ? commitTypePaint : metricStrataPaint();
   if (filterActive()) base = ghostedPaint(base);
+  if (visited.size) base = visitedStrataPaint(base);
   // The working-tree layer is the outermost wrapper: a dirty tree is a statement
   // about the city as a whole, and it overrides every mode's own paint — in both
   // renderers, since they share this one paint.
@@ -2436,11 +2444,14 @@ function initDiffScope(data: CityData): void {
   dom.provBtn.style.display = '';
   // The chip is the always-on tell that this city is a diff, whatever the mode.
   const t = diffScope.total;
+  // The inventory's remainder, so "14 files" never reads as the whole change.
+  const offCity = (diff.manifest ?? []).filter((e) => e && (e.why || !index.filesByPath.has(e.path))).length;
   const ref = (name: string | undefined, hash: string): string => (name && name !== hash ? name : hash.slice(0, 7));
   dom.diffChip.innerHTML =
     `&#x2442; <b>${escapeHtml(ref(diff.baseRef, base))}</b> &rarr; ` +
     `<b>${escapeHtml(ref(diff.headRef, head))}</b>` +
-    ` &middot; ${fmt(diffScope.files)} files &middot; +${fmt(t.verbatim + t.reshaped + t.new)}`;
+    ` &middot; ${fmt(diffScope.files)} files &middot; +${fmt(t.verbatim + t.reshaped + t.new)}` +
+    (offCity ? ` &middot; ${fmt(offCity)} not in city` : '');
   dom.diffChip.style.display = '';
   dom.diffChip.addEventListener('click', () => dom.provBtn.click());
 }
@@ -2586,8 +2597,90 @@ function pushReviewToSidebar(): void {
     consumers: [...list(hop1, 1), ...list(hop2, 2).slice(0, REVIEW_HOP2_CAP)],
     hop2Capped: hop2.size > REVIEW_HOP2_CAP,
     offCity,
+    visited,
     onSelect: (path) => { revealPath(path); },
+    onVisit: toggleVisited,
   });
+}
+
+/**
+ * Review progress. A file is visited only by explicit action — the row's check
+ * or V on a selected file — never by hovering or flying past it. Marks persist
+ * per range as the user named it (`develop..feat/x`), so re-analyzing after a
+ * push keeps them, and each carries the file's diff fingerprint at the time: a
+ * file the push changed comes back unvisited.
+ */
+const visited = new Map<string, string>(); // path -> fingerprint it was visited at
+const manifestFp = new Map<string, string>();
+const manifestFallback = new Map<string, string>();
+let visitedKey: string | null = null;
+/** How far a visited file recedes — still there, no longer asking to be read. */
+const VISITED_DIM = 0.45;
+
+function initVisited(data: CityData): void {
+  const d = data.diff;
+  if (!d) return;
+  visitedKey = `city:visited:${data.repo?.root ?? ''}:${d.baseRef || d.base}..${d.headRef || d.head}`;
+  for (const e of d.manifest ?? []) {
+    if (!e || typeof e.path !== 'string') continue;
+    if (typeof e.fp === 'string') manifestFp.set(e.path, e.fp);
+    // No `fp` (older analyzer): status + old path is all a bucketless row has to go on.
+    else manifestFallback.set(e.path, `${String(e.status)}:${e.oldPath ?? ''}`);
+  }
+  let saved: unknown = null;
+  try {
+    saved = JSON.parse(window.localStorage.getItem(visitedKey) ?? 'null');
+  } catch {
+    saved = null; // storage blocked or corrupt: start with nothing visited
+  }
+  if (typeof saved !== 'object' || saved === null) return;
+  let dropped = false;
+  for (const [path, fp] of Object.entries(saved)) {
+    if (typeof fp === 'string' && fp === diffFingerprint(path)) visited.set(path, fp);
+    else dropped = true;
+  }
+  // Rewrite only to drop invalidated marks — an idle load must not clobber another tab's.
+  if (dropped) saveVisited();
+}
+
+/** The file's diff identity: modes + blob pair, or (older data.json) its buckets and spans. */
+function diffFingerprint(path: string): string | null {
+  const fp = manifestFp.get(path);
+  if (fp) return fp;
+  const f = diffScope.byPath.get(path);
+  if (f) return `${f.verbatim}/${f.reshaped}/${f.new}/${f.deleted}/${(f.spans ?? []).join(';')}`;
+  return manifestFallback.get(path) ?? null;
+}
+
+function saveVisited(): void {
+  if (!visitedKey) return;
+  try {
+    window.localStorage.setItem(visitedKey, JSON.stringify(Object.fromEntries(visited)));
+  } catch { /* storage unavailable — marks last the session */ }
+}
+
+function toggleVisited(path: string): void {
+  const fp = diffFingerprint(path);
+  if (!fp) return;
+  if (visited.has(path)) visited.delete(path);
+  else visited.set(path, fp);
+  saveVisited();
+  sidebar.refreshReview();
+  applyOverlay();
+  renderLegend();
+}
+
+function isVisited(node: VNode): boolean {
+  const real = realFileOf(node);
+  return real !== null && visited.has(real.path);
+}
+
+/** Strata/skyline mirror of the visited dim, wrapped around whatever the mode paints. */
+function visitedStrataPaint(base: StrataPaint): StrataPaint {
+  return (record, age, target) => {
+    base(record, age, target);
+    return isVisited(record.file) ? target.multiplyScalar(VISITED_DIM) : target;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3081,6 +3174,8 @@ function nearestScopeFolder(path: string): VNode | null {
  */
 function paintWorktree(): void {
   if (!city || !workDirty()) return;
+  // An unchanged visited file ghosts from its visited shade, as the stacks do via `worktreeStrataPaint`.
+  const seen = (node: VNode): number => (visited.size && realFileOf(state.focus) === null && isVisited(node) ? VISITED_DIM : 1);
 
   // Where the stacks stand there are no visible buildings; the stacks get the
   // same treatment through `worktreeStrataPaint`.
@@ -3088,7 +3183,7 @@ function paintWorktree(): void {
     for (const rec of city.moduleRecords) {
       const entry = workEntry(rec.file);
       if (entry) workPaint(entry, _color);
-      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST);
+      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST * seen(rec.file));
       rec.mesh.setColorAt(rec.instanceId, _color);
     }
     for (const mesh of city.buildingMeshes) if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -3100,7 +3195,7 @@ function paintWorktree(): void {
       const entry = workEntry(rec.node);
       // Plates sit under the mass, so a changed one reads a shade quieter than it.
       if (entry) workPaint(entry, _color).multiplyScalar(0.42);
-      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST);
+      else _color.copy(rec.baseColor).multiplyScalar(WORK_GHOST * seen(rec.node));
       filePlates.setColorAt(rec.instanceId, _color);
     }
     if (filePlates.instanceColor) filePlates.instanceColor.needsUpdate = true;
@@ -4465,6 +4560,15 @@ function bindEvents(): void {
       }
       const up = state.focus?.parent;
       if (up) focusNode(up);
+    }
+    // V marks the selected file of the diff visited (or not) — the explicit act, never a side effect.
+    if ((e.key === 'v' || e.key === 'V') && !e.metaKey && !e.ctrlKey) {
+      const sel = state.selection;
+      const real = sel && sel.type !== 'pr' ? realFileOf(sel.node) : null;
+      if (!real || !diffFingerprint(real.path)) return;
+      toggleVisited(real.path);
+      showNotice((visited.has(real.path) ? 'Visited: ' : 'Not visited: ') + real.path);
+      return;
     }
     if (e.key === 'c' && !e.metaKey && !e.ctrlKey) {
       const sel = state.selection;

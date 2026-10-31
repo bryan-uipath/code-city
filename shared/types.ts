@@ -178,6 +178,8 @@ export interface DiffEntry {
   oldPath?: string;
   /** git reports no line counts for it. */
   binary?: boolean;
+  /** `<baseMode>.<headMode>.<baseBlob>.<headBlob>` (blobs 12 hex): changes exactly when this path's diff does. */
+  fp?: string;
   /** Set only when the city has no building at `path`. */
   why?: OffCity;
 }
