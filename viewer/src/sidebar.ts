@@ -8,7 +8,7 @@
  * Everything data-derived is escaped before it reaches innerHTML.
  */
 import type { CityHost } from '../../shared/host.js';
-import type { LogCommit, Pr, SourceResponse } from '../../shared/types.js';
+import type { DiffEntry, LogCommit, OffCity, Pr, SourceResponse } from '../../shared/types.js';
 import { relTime, type Timeline } from './timeline.js';
 
 const MAX_COMMITS = 8;
@@ -51,6 +51,13 @@ export interface ReviewFile {
   fix: number;
   /** Files that statically import it. */
   importers: number;
+  /** Its base-side path, when the range renamed it. */
+  oldPath?: string;
+}
+
+/** A changed path with no building, and the reason. */
+export interface ReviewOffCity extends DiffEntry {
+  why: OffCity;
 }
 
 /** A file the diff does not touch that imports a changed one (hop 1) or a hop-1 file (hop 2). */
@@ -69,8 +76,19 @@ export interface ReviewView {
   consumers: ReviewConsumer[];
   /** True when the 2nd hop hit its cap. */
   hop2Capped: boolean;
+  /** Changed paths the city has no building for. */
+  offCity: ReviewOffCity[];
   onSelect(path: string): void;
 }
+
+/** Why a changed path is not a building, as the list says it (`OffCity` order). */
+const OFF_CITY_WHY: Array<[OffCity, string]> = [
+  ['deleted', 'deleted — nothing to stand at head'],
+  ['binary', 'binary — no lines to read'],
+  ['outside-roots', 'outside the analyzed roots'],
+  ['filtered', 'a type or folder the analyzer skips'],
+  ['not-at-head', 'not in the analyzed checkout'],
+];
 
 /** One matched source line of a content search. */
 export interface SearchLine {
@@ -566,14 +584,14 @@ export function createSidebar(
     const files = view.files.slice().sort((a, b) =>
       b[key] - a[key] || b.new - a.new || (a.path < b.path ? -1 : 1));
     const sel = state.selected?.codePath ?? null;
-    // One clickable row: name + folder, then a line of signals (`sig` is markup).
-    const rvRow = (path: string, cls: string, sig: string): string =>
-      `<div class="sb-rv${cls}${path === sel ? ' sel' : ''}" data-path="${escapeHtml(path)}">` +
+    // One row: name + folder, then a line of signals (`sig` is markup). No `data-path`, no click.
+    const rvRow = (path: string, cls: string, sig: string, clickable = true): string =>
+      `<div class="sb-rv${cls}${path === sel ? ' sel' : ''}"${clickable ? ` data-path="${escapeHtml(path)}"` : ''}>` +
       `<div class="ln"><span class="nm">${escapeHtml(baseName(path))}</span>` +
       `<span class="dir">${escapeHtml(dirName(path))}</span></div><div class="sig">${sig}</div></div>`;
     const sorts: ReviewSort[] = ['new', 'fix', 'importers', 'deleted'];
     const parts: string[] = [
-      `<div class="h"><span>Review</span><em>${fmt(files.length)} changed</em></div>`,
+      `<div class="h"><span>Review</span><em>${fmt(files.length + view.offCity.length)} changed</em></div>`,
       `<div class="sb-sub">Read first · by ` +
         sorts.map((k) => `<span class="sb-rv-sort${k === key ? ' on' : ''}" data-sort="${k}">${k}</span>`).join(' ') +
         `</div>`,
@@ -587,8 +605,27 @@ export function createSidebar(
       if (f.deleted) sig.push(['deleted', `−${fmt(f.deleted)}`, 'deleted lines']);
       if (f.fix) sig.push(['fix', `fix ${fmt(f.fix)}`, 'fix-looking commits on it, last 12 months']);
       if (f.importers) sig.push(['importers', `←${fmt(f.importers)}`, 'files that statically import it']);
+      // The full old path: a move keeps its basename.
+      if (f.oldPath) sig.push(['via', `from ${escapeHtml(f.oldPath)}`, 'renamed in this range']);
+      if (!f.new && !f.reshaped && !f.verbatim && !f.deleted) {
+        sig.push(['via', 'no substantive lines', 'blank or punctuation-only edit, or no line diff (mode change)']);
+      }
       parts.push(rvRow(f.path, '', sig.map(([k, text, why]) =>
         `<span class="${k}${k === key ? ' on' : ''}" title="${why}">${text}</span>`).join('')));
+    }
+
+    // The rest of the inventory: changed paths with no building, grouped by why.
+    if (view.offCity.length) {
+      parts.push(`<div class="sb-sub">Not in the city · ${fmt(view.offCity.length)}</div>`);
+      for (const [why, label] of OFF_CITY_WHY) {
+        const rows = view.offCity.filter((o) => o.why === why);
+        if (!rows.length) continue;
+        parts.push(`<div class="sb-hint">${label} · ${fmt(rows.length)}</div>`);
+        for (const o of rows) {
+          const from = o.oldPath ? ` · from ${escapeHtml(o.oldPath)}` : '';
+          parts.push(rvRow(o.path, ` off ${escapeHtml(o.status)}`, `<span class="via">${escapeHtml(o.status)}${from}</span>`, false));
+        }
+      }
     }
 
     const hop1 = view.consumers.filter((c) => c.hop === 1);
