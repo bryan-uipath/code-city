@@ -170,7 +170,22 @@ export interface DiffFile {
   new: number;
   /** Deleted lines. */
   deleted: number;
+  /**
+   * Head-side line ranges its hunks change (`[start, end]`, 1-based, zero
+   * context; a pure deletion is `[n, n]` at the line before it). Absent in
+   * data.json from an older analyzer.
+   */
+  spans?: [number, number][];
+  /**
+   * The working copy's own edits to this file against `head`, as `-U0` hunk
+   * headers `[headStart, headLen, wcStart, wcLen]`. Module lines are working-copy
+   * lines; this maps them onto `spans`. Absent when the two agree.
+   */
+  worktree?: HunkHeader[];
 }
+
+/** One `@@ -a,b +c,d @@` header as `[a, b, c, d]`; a zero length names the line before the gap. */
+export type HunkHeader = [number, number, number, number];
 
 // ---------------------------------------------------------------------------
 // Dev API (see DESIGN.md "Dev API")
