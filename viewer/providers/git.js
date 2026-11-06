@@ -91,10 +91,15 @@ export function createGitProvider(root) {
     // A path's diff across the analyzed range, optionally only the hunks that
     // change head lines start..end — a module's slice of the PR.
     async getRangeDiff({ id, base: baseParam, head: headParam, start: startParam, end: endParam }) {
-      const rel = relId(id);
+      // Read from commits, never the worktree: a path deleted or absent at HEAD still has a diff.
+      const rel = safeRelPath(id, root, { mustExist: false });
+      if (!rel) throw new Error('invalid path');
       const base = baseParam || '';
       const head = headParam || '';
       if (!HASH_RE.test(base) || !HASH_RE.test(head)) throw new Error('invalid hash');
+      // The lexical check admits directories; clipHunks needs one file, a blob on at least one side.
+      const isBlob = (rev) => git(root, ['cat-file', '-t', `${rev}:${rel}`]).then((r) => r.stdout.trim() === 'blob', () => false);
+      if (!(await isBlob(head)) && !(await isBlob(base))) throw new Error('invalid path');
       // Pinned: clipHunks counts head lines, so blank context must keep its ' ' and every hunk its context;
       // literal pathspecs so `app/[id]/page.tsx` is that file, not a glob.
       const { stdout } = await git(root, [
@@ -259,14 +264,14 @@ function capDiff(text) {
   return { diff: lines.slice(0, MAX_LINES).join('\n'), truncated: lines.length };
 }
 
-// Repo-relative, no absolute/backslash/`..`, resolved under root, and must exist.
-function safeRelPath(p, root) {
+// Repo-relative, no absolute/backslash/`..`, resolved under root, and (by default) must exist.
+function safeRelPath(p, root, { mustExist = true } = {}) {
   if (!p || typeof p !== 'string') return null;
   if (p.includes('\\') || path.isAbsolute(p)) return null;
   if (p.split('/').some((seg) => seg === '..')) return null;
   const abs = path.resolve(root, p);
   if (!abs.startsWith(root + path.sep)) return null;
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
+  if (mustExist && (!fs.existsSync(abs) || !fs.statSync(abs).isFile())) return null;
   return p;
 }
 

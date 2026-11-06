@@ -81,7 +81,12 @@ export interface ReviewView {
   offCity: ReviewOffCity[];
   /** Paths the reviewer marked visited — live: main.ts mutates it and calls `refreshReview`. */
   visited: ReadonlyMap<string, string>;
+  /** The analyzed range, for the diff of a path with no building. */
+  base: string;
+  head: string;
   onSelect(path: string): void;
+  /** An off-city row opened its diff: drop the city selection it replaces. */
+  onOpenOffCity(): void;
   /** The row's check was clicked. */
   onVisit(path: string): void;
 }
@@ -235,6 +240,8 @@ export function createSidebar(
     reviewSort: ReviewSort;
     /** The bounded 2nd importer hop is unfolded. */
     reviewHop2: boolean;
+    /** The off-city path whose diff fills the code pane; a city selection clears it. */
+    offSel: string | null;
     tour: TourView | null;
     search: SearchResults | null;
     /** Result files expanded to their matched lines. */
@@ -253,6 +260,7 @@ export function createSidebar(
     review: null,
     reviewSort: 'new',
     reviewHop2: false,
+    offSel: null,
     tour: null,
     search: null,
     openHits: new Set(),
@@ -332,6 +340,12 @@ export function createSidebar(
       view.onVisit(visit);
       return;
     }
+    const off = closest(e.target, '.sb-rv[data-off]')?.dataset.off;
+    if (off) {
+      view.onOpenOffCity();
+      loadOffCityDiff(view, off);
+      return;
+    }
     const path = closest(e.target, '.sb-rv[data-path]')?.dataset.path;
     if (path) view.onSelect(path);
   });
@@ -351,6 +365,7 @@ export function createSidebar(
     },
     setSelection(desc) {
       state.selected = desc;
+      state.offSel = null;
       state.openPrs.clear();
       state.allCommits = false;
       renderSelected();
@@ -603,9 +618,10 @@ export function createSidebar(
     const files = view.files.slice().sort((a, b) =>
       b[key] - a[key] || b.new - a.new || (a.path < b.path ? -1 : 1));
     const sel = state.selected?.codePath ?? null;
-    // One row: name + folder, then a line of signals (`sig` is markup). No `data-path`, no click.
-    const rvRow = (path: string, cls: string, sig: string, clickable = true, lead = ''): string =>
-      `<div class="sb-rv${cls}${path === sel ? ' sel' : ''}"${clickable ? ` data-path="${escapeHtml(path)}"` : ''}>` +
+    // One row: name + folder, then a line of signals (`sig` is markup). `attr` = what a click opens.
+    const rvRow = (path: string, cls: string, sig: string, attr: 'path' | 'off' | null = 'path', lead = ''): string =>
+      `<div class="sb-rv${cls}${path === sel || path === state.offSel ? ' sel' : ''}"` +
+      `${attr ? ` data-${attr}="${escapeHtml(path)}"` : ''}>` +
       `<div class="ln">${lead}<span class="nm">${escapeHtml(baseName(path))}</span>` +
       `<span class="dir">${escapeHtml(dirName(path))}</span></div><div class="sig">${sig}</div></div>`;
     const sorts: ReviewSort[] = ['new', 'fix', 'importers', 'deleted'];
@@ -635,7 +651,7 @@ export function createSidebar(
       const check = `<span class="sb-rv-visit${on ? ' on' : ''}" data-visit="${escapeHtml(f.path)}" ` +
         `title="${on ? 'Visited — click to unmark' : 'Mark visited (V)'}">&#10003;</span>`;
       parts.push(rvRow(f.path, on ? ' visited' : '', sig.map(([k, text, why]) =>
-        `<span class="${k}${k === key ? ' on' : ''}" title="${why}">${text}</span>`).join(''), true, check));
+        `<span class="${k}${k === key ? ' on' : ''}" title="${why}">${text}</span>`).join(''), 'path', check));
     }
 
     // The rest of the inventory: changed paths with no building, grouped by why.
@@ -647,7 +663,10 @@ export function createSidebar(
         parts.push(`<div class="sb-hint">${label} · ${fmt(rows.length)}</div>`);
         for (const o of rows) {
           const from = o.oldPath ? ` · from ${escapeHtml(o.oldPath)}` : '';
-          parts.push(rvRow(o.path, ` off ${escapeHtml(o.status)}`, `<span class="via">${escapeHtml(o.status)}${from}</span>`, false));
+          // Binary rows (deleted ones too) have no lines to show; the rest open their range diff when a host can serve it.
+          const opens = !o.binary && o.why !== 'binary' && !!view.base && !!view.head && opts.host.available();
+          parts.push(rvRow(o.path, ` off ${escapeHtml(o.status)}`, `<span class="via">${escapeHtml(o.status)}${from}</span>`,
+            opens ? 'off' : null));
         }
       }
     }
@@ -796,6 +815,17 @@ export function createSidebar(
     secCode.innerHTML = head + CONTENT_RENDERERS[kind](src, Number(src.start) || start);
     if (d.rangeDiff) await loadRangeDiff(d.rangeDiff, codePath, token);
     else await loadLatestDiff(d, token);
+  }
+
+  /** A changed path with no building: its range diff alone fills the code pane. */
+  async function loadOffCityDiff(view: ReviewView, path: string): Promise<void> {
+    const token = ++state.codeToken;
+    state.offSel = path;
+    renderReview();
+    secCode.style.display = '';
+    secCode.innerHTML = `<div class="h"><span>Diff</span><em>${escapeHtml(baseName(path))}</em></div>` +
+      `<div class="sb-sub">${escapeHtml(path)}</div>`;
+    await loadRangeDiff({ base: view.base, head: view.head }, path, token);
   }
 
   /** Appends the analyzed range's diff of this file — only a module's own hunks when it is one. */
