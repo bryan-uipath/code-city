@@ -297,6 +297,9 @@ it shows is already in data.json.
   pointer to where breakage would surface, not a transitive blast-radius graph,
   which on a hub file like `types.ts` is the whole repo and says nothing.
 - A row click is `revealPath` (select + fly); the selected row is marked.
+- While anything is selected the queue folds to one strip, `REVIEW · k/n visited · list ▾`
+  plus `next <file> ▸` (first unvisited in the current sort), so the code pane
+  sits near the top. The header unfolds it until the selection clears.
 
 ### Changes-first code pane (implemented)
 
