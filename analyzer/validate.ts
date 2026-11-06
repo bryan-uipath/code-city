@@ -295,7 +295,7 @@ function validatePr(x: unknown, at: string): Pr {
 // Narrowing helpers — each throws with the location it checked
 // ---------------------------------------------------------------------------
 
-function record(x: unknown, at: string): Record<string, unknown> {
+export function record(x: unknown, at: string): Record<string, unknown> {
   if (!isRecord(x)) throw new SnapshotError(`${at}: not an object`);
   return x;
 }
@@ -304,14 +304,14 @@ function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null && !Array.isArray(x);
 }
 
-function list(x: unknown, at: string, max: number): unknown[] {
+export function list(x: unknown, at: string, max: number): unknown[] {
   if (!Array.isArray(x)) throw new SnapshotError(`${at}: not an array`);
   if (x.length > max) throw new SnapshotError(`${at}: more than ${max} entries`);
   return x;
 }
 
 /** Display text: a string within `max` chars; empty only when `allowEmpty`. */
-function text(x: unknown, at: string, max: number, allowEmpty = false): string {
+export function text(x: unknown, at: string, max: number, allowEmpty = false): string {
   if (typeof x !== 'string') throw new SnapshotError(`${at}: not a string`);
   if (!allowEmpty && !x.trim()) throw new SnapshotError(`${at}: empty`);
   if (x.length > max) throw new SnapshotError(`${at}: longer than ${max} chars`);
@@ -319,7 +319,7 @@ function text(x: unknown, at: string, max: number, allowEmpty = false): string {
 }
 
 /** An identifier (key, event id): non-empty, bounded, no control characters. */
-function token(x: unknown, at: string, max: number, allowEmpty = false): string {
+export function token(x: unknown, at: string, max: number, allowEmpty = false): string {
   const s = text(x, at, max, allowEmpty);
   if (/[\u0000-\u001f\u007f]/.test(s)) throw new SnapshotError(`${at}: contains control characters`);
   return s;
@@ -342,7 +342,7 @@ function time(x: unknown, at: string): number {
 }
 
 /** A non-negative integer, or (with `fractional`) any non-negative finite number — mass may be points or hours. */
-function count(x: unknown, at: string, fractional = false): number {
+export function count(x: unknown, at: string, fractional = false): number {
   const n = finite(x, at);
   if (n < 0 || n > MAX_INT || (!fractional && !Number.isInteger(n))) {
     throw new SnapshotError(`${at}: not a non-negative ${fractional ? 'number' : 'integer'}`);
@@ -351,7 +351,7 @@ function count(x: unknown, at: string, fractional = false): number {
 }
 
 /** A 1-based line number. */
-function line(x: unknown, at: string): number {
+export function line(x: unknown, at: string): number {
   const n = count(x, at);
   if (n < 1) throw new SnapshotError(`${at}: line numbers start at 1`);
   return n;
