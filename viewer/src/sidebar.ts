@@ -666,7 +666,7 @@ export function createSidebar(
         ` · list ▾</em></div>` +
         (next ? `<div class="sb-rv-next sb-rv" data-path="${escapeHtml(next.path)}">next ` +
           `<span class="nm">${escapeHtml(baseName(next.path))}</span> <span class="dir">${escapeHtml(dirName(next.path))}</span> ▸</div>`
-          : `<div class="sb-hint">every file visited</div>`);
+          : `<div class="sb-hint">${seen >= files.length ? 'every file visited' : 'no other unvisited file'}</div>`);
       return;
     }
     const parts: string[] = [
