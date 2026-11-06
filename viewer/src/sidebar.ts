@@ -179,6 +179,8 @@ export interface Descriptor {
   filterNote?: string;
   /** Its share of the analyzed diff — `+449 · 87% verbatim · 3% reshaped · 10% new`. */
   provNote?: string;
+  /** The active `--layer` reading — `duplication · 42 removable lines · …`. */
+  layerNote?: string;
   /** In the analyzed diff: the code pane shows base→head instead of the latest commit. */
   rangeDiff?: RangeDiff;
   /** Replaces the default LOC/CHURN/FIX/RECENT grid (PR descriptors). */
@@ -505,6 +507,7 @@ export function createSidebar(
       `<div class="sb-path">${escapeHtml(d.path || '—')}</div>` +
       (d.note ? `<div class="sb-note">${escapeHtml(d.note)}</div>` : '') +
       (d.filterNote ? `<div class="sb-note filter">${escapeHtml(d.filterNote)}</div>` : '') +
+      (d.layerNote ? `<div class="sb-note layer">${escapeHtml(d.layerNote)}</div>` : '') +
       (d.provNote ? `<div class="sb-note prov">${escapeHtml(d.provNote)}</div>` : '') +
       `<div class="sb-grid">${grid}</div>` +
       coupling

@@ -17,7 +17,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 import type { CityHost } from '../../shared/host.js';
 import { HttpHost } from '../../shared/host.js';
-import type { CityData, DiffFile, FileNode, HunkHeader, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr, SourceResponse } from '../../shared/types.js';
+import type { CityData, CityLayer, DiffFile, FileNode, HunkHeader, FolderNode, MemberKind, ModuleInfo, ModuleKind, Pr, SourceResponse } from '../../shared/types.js';
 import { layoutCity, plateTop, buildingHeight, streetWidth, setWorldScale, worldScale } from './layout.js';
 import {
   buildCity, buildEnvironment, disposeObject, tallestBuilding,
@@ -34,7 +34,7 @@ import {
   type Descriptor, type OutlineEntry, type RangeDiff, type ReviewConsumer, type ReviewFile, type ReviewOffCity, type Sidebar, type WorkChange, type WorkKind,
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
-import { readVocabulary, wordsOf, type Words } from '../../shared/vocab.js';
+import { readVocabulary, SLUG_RE, wordsOf, type Words } from '../../shared/vocab.js';
 import { createSearch, type HighlightSpec, type SearchPalette, type SearchResultsPayload } from './search.js';
 import type { TourTarget } from '../../shared/tour.js';
 import { validateCheckpoints } from '../../shared/tour.js';
@@ -137,7 +137,8 @@ let words: Words = wordsOf({});
  * when the analyzer ran with `--diff` — carries its own heights instead, because
  * commit mass answers the wrong question about a diff (see `bandMassing`).
  */
-type Mode = 'structure' | 'churn' | 'fix' | 'recent' | 'strata' | 'prov';
+/** `layer` paints the `--layer` named by `state.layer` (see DESIGN.md "Layers"). */
+type Mode = 'structure' | 'churn' | 'fix' | 'recent' | 'strata' | 'prov' | 'layer';
 
 /**
  * Which renderer is on stage. A view is not a mode: the mode says how the
@@ -169,6 +170,8 @@ const state: {
   data: CityData | null;
   root: VNode | null;
   mode: Mode;
+  /** The `--layer` id painting while `mode` is `layer`. */
+  layer: string | null;
   view: View;
   coupling: boolean;
   people: boolean;
@@ -183,6 +186,7 @@ const state: {
   data: null,
   root: null,
   mode: 'recent',
+  layer: null,
   view: 'city',
   coupling: false,
   people: true,
@@ -592,11 +596,10 @@ function applyUiSettings(s: UiSettings): void {
       refreshPickables();
     }
   }
-  if (isMode(s.mode) && s.mode !== state.mode) {
+  // A layer is per dataset, so it is never the remembered mode.
+  if (isMode(s.mode) && s.mode !== 'layer' && s.mode !== state.mode) {
     state.mode = s.mode;
-    for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) {
-      b.classList.toggle('active', b.dataset.mode === state.mode);
-    }
+    markModeButtons();
     applyOverlay();
     renderLegend();
   }
@@ -668,6 +671,34 @@ function normalizeTree(node: VNode, parent: VNode | null = null): VNode {
   return node;
 }
 
+/** One `--layer`: per-file values (a file with none is unmeasured, not zero), notes, and the ramp's top. */
+interface LayerEntry {
+  layer: CityLayer;
+  values: Map<string, number>;
+  notes: Map<string, string>;
+  max: number;
+}
+
+const layerIndex = new Map<string, LayerEntry>();
+
+function activeLayer(): LayerEntry | null {
+  return state.mode === 'layer' && state.layer ? layerIndex.get(state.layer) ?? null : null;
+}
+
+/** The active layer's value for a file; undefined = not measured (or no layer on). */
+function layerValue(node: VNode): number | undefined {
+  const real = realFileOf(node);
+  return real ? activeLayer()?.values.get(real.path) : undefined;
+}
+
+/** Top of the heat ramp for the metric modes. */
+function heatMax(mode: Mode): number {
+  return mode === 'churn' ? index.max.churn
+    : mode === 'fix' ? index.max.fixChurn
+    : mode === 'layer' ? activeLayer()?.max ?? 1
+    : index.max.recentChurn;
+}
+
 function buildIndex(data: CityData): void {
   const root = state.root;
   if (!root) return;
@@ -680,6 +711,21 @@ function buildIndex(data: CityData): void {
       index.max.recentChurn = Math.max(index.max.recentChurn, n.recentChurn);
     }
   });
+
+  // Lenient like the rest of data.json: a malformed layer or entry is skipped, not fatal.
+  for (const layer of Array.isArray(data.layers) ? data.layers : []) {
+    if (!layer || typeof layer.id !== 'string' || !SLUG_RE.test(layer.id) || layerIndex.has(layer.id)) continue;
+    const values = new Map<string, number>();
+    const notes = new Map<string, string>();
+    let max = 0;
+    for (const it of Array.isArray(layer.items) ? layer.items : []) {
+      if (!it || !index.filesByPath.has(it.path) || !Number.isFinite(it.v) || it.v < 0) continue;
+      values.set(it.path, it.v);
+      if (typeof it.note === 'string') notes.set(it.path, it.note);
+      max = Math.max(max, it.v);
+    }
+    layerIndex.set(layer.id, { layer, values, notes, max });
+  }
 
   data.prs = Array.isArray(data.prs) ? data.prs : [];
   for (const pr of data.prs) {
@@ -1236,6 +1282,14 @@ function refreshPickables(): void {
 
 function buildHud(): void {
   renderLegend();
+  // One overlay button per `--layer`, after Provenance.
+  let after: Element = dom.provBtn;
+  for (const { layer } of layerIndex.values()) {
+    after.insertAdjacentHTML('afterend',
+      `<button class="mode" data-mode="layer" data-layer="${escapeHtml(layer.id)}" title="${escapeHtml(layer.label)} — from --layer">` +
+      `${escapeHtml(layer.label)}</button>`);
+    after = after.nextElementSibling ?? after;
+  }
 
   dom.modes.addEventListener('click', (e) => {
     const btn = closest(e.target, 'button.mode');
@@ -1253,10 +1307,9 @@ function buildHud(): void {
     const asFixFilter = clicked === 'fix' && strata.build !== null && reworkTypes().length > 0;
     const mode = asFixFilter ? 'strata' : clicked;
     state.mode = mode;
-    saveUiSetting('mode', mode);
-    for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) {
-      b.classList.toggle('active', b.dataset.mode === mode);
-    }
+    state.layer = mode === 'layer' ? btn.dataset.layer ?? null : null;
+    if (mode !== 'layer') saveUiSetting('mode', mode);
+    markModeButtons();
     if (asFixFilter) {
       strata.filter.types.clear();
       for (const key of reworkTypes()) strata.filter.types.add(key);
@@ -1286,6 +1339,8 @@ function buildHud(): void {
     if (bandMassing() !== strata.bands) startRise();
     applyOverlay();
     renderLegend();
+    // The inspector carries the active layer's reading (`layerNote`), so it follows the mode.
+    if (state.selection) showSelection(describe(state.selection));
   });
 
   dom.views.addEventListener('click', (e) => {
@@ -1337,11 +1392,19 @@ function buildHud(): void {
 
 function isMode(value: string | undefined): value is Mode {
   return value === 'structure' || value === 'churn' || value === 'fix'
-    || value === 'recent' || value === 'strata' || value === 'prov';
+    || value === 'recent' || value === 'strata' || value === 'prov' || value === 'layer';
+}
+
+/** Mark the mode button on stage; a layer button also has to be the active layer. */
+function markModeButtons(): void {
+  for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) {
+    b.classList.toggle('active', b.dataset.mode === state.mode && (state.mode !== 'layer' || b.dataset.layer === state.layer));
+  }
 }
 
 function renderLegend(): void {
   const rows: string[] = [];
+  const active = activeLayer();
   const stacked = strata.build !== null;
   const inFile = realFileOf(state.focus) !== null;
   if (inFile || state.mode === 'structure') {
@@ -1403,6 +1466,22 @@ function renderLegend(): void {
       `<div class="row"><i class="sw" style="background:#1b2432"></i><span>untouched in range</span></div>`,
       `<div class="row"><span>${massingNote()}</span></div>`
     );
+  } else if (active) {
+    const { layer, values, max } = active;
+    rows.push(
+      `<div id="ramp"></div>`,
+      `<div class="ramp-labels"><span>0</span><span>${escapeHtml(layer.unit ?? layer.label)}</span><span>${fmt(max)}</span></div>`,
+      `<div class="row"><i class="sw" style="background:#1b2432"></i><span>not measured · ${fmt(index.filesByPath.size - values.size)} files</span></div>`
+    );
+    // Who measured, at which commit — and a warning when the city is at another one.
+    const src = layer.source;
+    const head = state.data?.commits[0]?.h ?? '';
+    if (src?.tool || src?.rev) {
+      rows.push(`<div class="row"><span>${escapeHtml([src.tool, src.rev?.slice(0, 7)].filter(Boolean).join(' @ '))}</span></div>`);
+    }
+    if (src?.rev && head && !src.rev.startsWith(head) && !head.startsWith(src.rev)) {
+      rows.push(`<div class="row stale"><span>stale · city is at ${escapeHtml(head.slice(0, 7))}</span></div>`);
+    }
   } else {
     const label = escapeHtml(state.mode === 'churn' ? `${words.event.many} / 12mo` : `${reworkLabel()} ${words.event.many} / 12mo`);
     const max = state.mode === 'churn' ? index.max.churn : index.max.fixChurn;
@@ -1570,6 +1649,7 @@ function heatValue(fileNode: VNode): number {
   if (state.mode === 'churn') return fileNode.churn;
   if (state.mode === 'fix') return fileNode.fixChurn;
   if (state.mode === 'recent') return recentValue(fileNode).count;
+  if (state.mode === 'layer') return layerValue(fileNode) ?? 0;
   return 0;
 }
 
@@ -1627,11 +1707,7 @@ function applyOverlay(): void {
   paintStrata();
   const mode = state.mode;
   const scrubbing = mode === 'recent' && state.timeCursor !== null;
-  const maxV =
-    mode === 'churn' ? index.max.churn :
-    mode === 'fix' ? index.max.fixChurn :
-    mode === 'recent' ? index.max.recentChurn : 1;
-  const denom = Math.sqrt(Math.max(maxV, 1));
+  const denom = Math.sqrt(Math.max(heatMax(mode), 1));
   const green = new THREE.Color(PALETTE.green);
 
   // Inside a file every module shares the file's stats, so the overlays have
@@ -1653,6 +1729,8 @@ function applyOverlay(): void {
         const r = recentValue(rec.file);
         if (r.count > 0) _color.copy(green).multiplyScalar(scrubbing ? 1 + r.flash * 1.6 : 1);
         else _color.copy(rec.baseColor).multiplyScalar(0.15);
+      } else if (mode === 'layer' && layerValue(rec.file) === undefined) {
+        _color.copy(DORMANT);
       } else {
         heatColor(Math.sqrt(Math.max(heatValue(rec.file), 0)) / denom, _color);
       }
@@ -1674,6 +1752,8 @@ function applyOverlay(): void {
         const r = recentValue(rec.node);
         if (r.count > 0) _color.copy(green).multiplyScalar(0.28 + (scrubbing ? r.flash * 0.5 : 0));
         else _color.copy(rec.baseColor).multiplyScalar(0.5);
+      } else if (mode === 'layer' && layerValue(rec.node) === undefined) {
+        _color.copy(DORMANT).multiplyScalar(0.6);
       } else {
         heatColor(Math.sqrt(Math.max(heatValue(rec.node), 0)) / denom, _color).multiplyScalar(0.42);
       }
@@ -2061,16 +2141,13 @@ function currentStrataPaint(): StrataPaint {
  */
 function metricStrataPaint(): StrataPaint {
   const mode = state.mode;
-  const maxV =
-    mode === 'churn' ? index.max.churn :
-    mode === 'fix' ? index.max.fixChurn :
-    index.max.recentChurn;
-  const denom = Math.sqrt(Math.max(maxV, 1));
+  const denom = Math.sqrt(Math.max(heatMax(mode), 1));
   const green = new THREE.Color(PALETTE.green);
   const scrubbing = mode === 'recent' && state.timeCursor !== null;
 
   return (record, _age, target) => {
     const file = record.file;
+    if (mode === 'layer' && layerValue(file) === undefined) return target.copy(DORMANT);
     if (mode === 'prov') return provColor(file, target);
     if (mode === 'structure') return target.copy(dominantKindColor(file));
     if (mode === 'recent') {
@@ -2905,6 +2982,18 @@ function untouchedModule(node: VNode, mod: VMod): boolean {
   return head === null || !spansOverlap(head, spans);
 }
 
+/** The inspector line for the active layer: `duplication · 42 removable lines · <note>`. */
+function layerNote(node: VNode): string | undefined {
+  const active = activeLayer();
+  const real = realFileOf(node);
+  if (!active || !real) return undefined;
+  const v = active.values.get(real.path);
+  const { label, unit } = active.layer;
+  if (v === undefined) return `${label} · not measured`;
+  const note = active.notes.get(real.path);
+  return [label, `${fmt(v)}${unit ? ` ${unit}` : ''}`, note].filter(Boolean).join(' · ');
+}
+
 /** The inspector line: `+449 · 87% verbatim · 3% reshaped · 10% new`. */
 function provNote(node: VNode, mod?: VMod): string | undefined {
   if (mod && untouchedModule(node, mod)) return 'untouched by the diff';
@@ -3391,7 +3480,7 @@ function onTimeCursor(t: number | null): void {
   // diff rather than the timeline, so both keep their own overlay.
   if (t !== null && state.mode !== 'recent' && state.mode !== 'strata' && state.mode !== 'prov') {
     state.mode = 'recent';
-    for (const b of dom.modes.querySelectorAll<HTMLElement>('button.mode')) b.classList.toggle('active', b.dataset.mode === 'recent');
+    markModeButtons();
     renderLegend();
   }
   recency.dirty = true;
@@ -4375,6 +4464,7 @@ function describe(target: Target | null): Descriptor | null {
       ? `${fmt(match.matched)} of ${fmt(match.total)} ${words.event.many} match filter (${filterLabels()})`
       : undefined,
     provNote: provNote(node, mod),
+    layerNote: layerNote(node),
     rangeDiff: real ? rangeDiffFor(real, node, mod) : undefined,
     loc: mod ? mod.loc : node.loc,
     churn: node.churn,

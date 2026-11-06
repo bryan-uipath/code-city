@@ -10,6 +10,7 @@ import { compile } from './compile.js';
 import { collectGit, type GitOptions } from './git.js';
 import type { AdapterResult } from './snapshot.js';
 import { MAX_SNAPSHOT_BYTES, SnapshotError, validateSnapshot } from './validate.js';
+import { LayerError, readLayer, resolveLayer } from './layer.js';
 
 const MAX_JSON_BYTES = 25 * 1024 * 1024;
 
@@ -17,18 +18,31 @@ interface Options extends GitOptions {
   out: string;
   /** A producer's Snapshot JSON, compiled instead of running an adapter. */
   snapshot: string | null;
+  /** Layer files draped on the compiled city (`--layer`, repeatable). */
+  layers: string[];
 }
 
 main().catch((err: unknown) => {
-  console.error(err instanceof SnapshotError ? `snapshot rejected: ${err.message}` : err);
+  console.error(err instanceof SnapshotError ? `snapshot rejected: ${err.message}`
+    : err instanceof LayerError ? `layer rejected: ${err.message}` : err);
   process.exit(1);
 });
 
 async function main(): Promise<void> {
   const started = Date.now();
   const opts = parseArgs(process.argv.slice(2));
+  // Read before the (slow) adapter: a malformed layer should fail in a second.
+  const layerInputs = opts.layers.map((f) => ({ file: f, layer: readLayer(f) }));
   const { snapshot, summary } = opts.snapshot ? readSnapshot(opts.snapshot) : await collectGit(opts);
   const data = compile(snapshot);
+  const layerSummary: string[] = [];
+  for (const { file, layer: input } of layerInputs) {
+    if (data.layers?.some((l) => l.id === input.id)) throw new LayerError(`${file}: duplicate layer id "${input.id}"`);
+    const { layer, dropped } = resolveLayer(input, data);
+    (data.layers ??= []).push(layer);
+    layerSummary.push(`layer ${layer.id}: ${layer.items.length} items, ${layer.edges?.length ?? 0} edges` +
+      (dropped ? ` (${dropped} not in the city, dropped)` : ''));
+  }
 
   const outPath = path.resolve(opts.out);
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -49,7 +63,7 @@ async function main(): Promise<void> {
     `files: ${data.files.length}\nmodules: ${modules}\nedges: ${data.edges.length}\nprs: ${data.prs.length}\n` +
     `commits: ${data.commits.length}${droppedCommits ? ` (dropped ${droppedCommits} oldest for size)` : ''}` +
     `${oldest ? ` back to ${new Date(oldest * 1000).toISOString().slice(0, 10)}` : ''}\n` +
-    summary.map((line) => line + '\n').join('') +
+    [...summary, ...layerSummary].map((line) => line + '\n').join('') +
     `out: ${outPath} (${(json.length / 1e6).toFixed(2)} MB)\nelapsed: ${((Date.now() - started) / 1000).toFixed(1)}s`
   );
   const diff = data.diff;
@@ -84,6 +98,7 @@ function parseArgs(argv: string[]): Options {
   let diff: string | null = null;
   let pr: number | null = null;
   let snapshot: string | null = null;
+  const layers: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === undefined) continue;
@@ -101,6 +116,11 @@ function parseArgs(argv: string[]): Options {
       snapshot = argv[++i] ?? '';
       if (!snapshot || snapshot.startsWith('--')) throw new Error('--snapshot needs a file: --snapshot <x.json>');
     }
+    else if (a === '--layer') {
+      const f = argv[++i] ?? '';
+      if (!f || f.startsWith('--')) throw new Error('--layer needs a file: --layer <x.json>');
+      layers.push(f);
+    }
     else if (a === '--no-prs') prs = false;
     else if (a === '--quick') quick = true;
     else if (!a.startsWith('--')) repoPath = a;
@@ -108,12 +128,12 @@ function parseArgs(argv: string[]): Options {
   }
   // A snapshot is the whole input: adapter options would be silently ignored.
   if (snapshot && (repoPath || roots || diff || pr || quick || !prs)) {
-    throw new Error('--snapshot takes only --out: no repo path, --roots, --diff, --pr, --quick or --no-prs');
+    throw new Error('--snapshot takes only --out and --layer: no repo path, --roots, --diff, --pr, --quick or --no-prs');
   }
   if (diff && pr) throw new Error('--diff and --pr both name the diff scope: pick one');
   if (!repoPath) repoPath = '.';
   // Default: the whole repo. A narrower scope is an explicit --roots choice —
   // a "helpful" packages/ heuristic silently hid sibling dirs like src/.
   if (!roots) roots = ['.'];
-  return { repoPath, roots, out, prs, quick, diff, pr, snapshot };
+  return { repoPath, roots, out, prs, quick, diff, pr, snapshot, layers };
 }

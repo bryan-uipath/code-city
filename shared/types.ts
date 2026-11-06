@@ -22,6 +22,44 @@ export interface CityData {
   diff?: DiffScope;
   /** What the source calls its things; absent = code (files, loc, commits). */
   vocab?: Vocabulary;
+  /** Measurements another tool draped on this city (`--layer x.json`); see DESIGN.md "Layers". */
+  layers?: CityLayer[];
+}
+
+/**
+ * One layer: values per file and pairs between files, painted on the city's
+ * fixed massing — never footprint, position or height. Keyed by path here; the
+ * `--layer` input names items by id and the analyzer resolves them.
+ */
+export interface CityLayer {
+  /** SLUG_RE: names the overlay button. */
+  id: string;
+  label: string;
+  /** What `v` counts, for the legend ramp: `removable lines`. */
+  unit?: string;
+  /** Who measured, and the commit they measured: a city at another commit shows the layer as stale. */
+  source?: { tool?: string; rev?: string };
+  items: LayerItem[];
+  /** Pairs between files (duplicates, bypassing imports); carried, not yet drawn. */
+  edges?: LayerEdge[];
+}
+
+export interface LayerItem {
+  path: string;
+  /** ≥ 0; drives the heat ramp. */
+  v: number;
+  /** Plain text for the inspector. */
+  note?: string;
+}
+
+export interface LayerEdge {
+  a: string;
+  b: string;
+  v: number;
+  /** 1-based lines the pair sits at on each side, when finer than the file. */
+  aLine?: number;
+  bLine?: number;
+  note?: string;
 }
 
 /**
