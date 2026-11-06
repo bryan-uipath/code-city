@@ -438,7 +438,13 @@ Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippe
 
 - Background `#05080f`, exponential fog, faint cyan grid floor.
 - Materials: emissive-heavy, slight transparency; additive-blended edge lines on focus; UnrealBloomPass for glow.
-- HUD: monospace/uppercase, thin 1px cyan (#22d3ee) borders on translucent dark panels, orange (#fa4616) for active states. CSS scanline + vignette overlay for the retro-CRT feel.
+- HUD chrome: near-black panels (`#101011`) with chamfered top-left/bottom-right
+  corners (`--cut`, hairline kept on the diagonal: the box paints the border, `::before`
+  the fill), `//`-prefixed uppercase section heads, buttons as nav cards whose
+  left bar lights gold (`--gold`) when active. Gold means "you are here" only;
+  cyan/orange stay on the data (city, diffs, review signals). JetBrains Mono
+  when installed, no webfont (the static export stays offline). CSS scanline +
+  vignette overlay kept.
 
 ## Strata as the shared massing (implemented)
 

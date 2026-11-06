@@ -745,6 +745,54 @@
     border: 1px solid var(--border); padding: 3px 7px; transition: 120ms;
   }
   #embed-chip .open:hover { color: var(--foreground); background: var(--surface-hover); border-color: var(--brand); }
+
+  /* ------------------------------------------------------ chrome: hairline + cut corners
+     Quiet near-black panels with chamfered corners and one warm accent (gold) for
+     "you are here"; cyan/orange stay on the data — the city, diffs, signals. The
+     outer box paints the hairline, ::before the fill, so the cut keeps its border. */
+  :root {
+    --gold: #f2c94c;
+    --panel: rgba(16, 16, 17, 0.9);
+    --panel-solid: rgba(16, 16, 17, 0.97);
+    --border: #2f2f34;
+    --border-subtle: #222226;
+    --mono: "JetBrains Mono", "SFMono-Regular", "Fira Code", Menlo, Consolas, monospace;
+    --cut: 12px;
+    --chamfer: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+  }
+  .panel, #sidebar {
+    background: var(--border); border: 0; box-shadow: none; isolation: isolate; clip-path: var(--chamfer);
+  }
+  .panel::before, #sidebar::before {
+    content: ""; position: absolute; inset: 1px; z-index: -1; width: auto; height: auto;
+    border: 0; opacity: 1; background: var(--panel-solid); clip-path: var(--chamfer);
+  }
+  .panel::after, #sidebar::after { display: none; }
+
+  /* Section heads: `//TITLE`, brighter and a touch larger than the rows under them. */
+  .panel-title, .sb-sec > .h, #sb-head .t { font-size: 10px; letter-spacing: 0.2em; color: var(--foreground); }
+  .panel-title::before, .sb-sec > .h > span::before { content: "//"; color: var(--gold); margin-right: 4px; letter-spacing: 0; }
+  .sb-sec { padding: 12px 14px; }
+
+  /* Buttons as nav cards: dark slab, a left bar that lights gold when active. No glow. */
+  button.mode, button.toggle {
+    background: #161618; border: 1px solid var(--border); border-left: 2px solid var(--border);
+    font-size: 10.5px; letter-spacing: 0.14em;
+  }
+  button.mode:hover, button.toggle:hover { background: #1f1f22; border-color: var(--border); border-left-color: var(--foreground-subtle); }
+  button.mode.active, button.toggle.active {
+    color: var(--foreground); background: #26262a; border-color: var(--border); border-left-color: var(--gold); box-shadow: none;
+  }
+  button.toggle.active .led { background: var(--gold); border-color: var(--gold); box-shadow: none; }
+
+  /* Rows: larger type, gold marks the selection. */
+  .sb-rv { font-size: 10.5px; padding: 3px 4px; border-left: 2px solid transparent; }
+  .sb-rv .sig { font-size: 9.5px; }
+  .sb-rv.sel, .sb-rv.off.sel { background: rgba(242, 201, 76, 0.08); border-left-color: var(--gold); }
+  .sb-hint, .sb-commit, .sb-pr { font-size: 10.5px; }
+  .sb-sub { font-size: 9.5px; letter-spacing: 0.16em; }
+  .sb-hunk { border-color: var(--border); background: #0c0c0d; }
+  .sb-hunk-h:hover { background: #1c1c1f; }
 </style>
 </head>
 <body>
