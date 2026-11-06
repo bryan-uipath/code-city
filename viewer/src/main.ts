@@ -2299,6 +2299,7 @@ function createTourPlayer(): TourPlayer {
     setCheckpoints: (list) => checkpoints.load(list),
     setView: (view) => sidebar.setTour(view),
     getDiff: (path, hash) => host.getDiff(path, hash),
+    getRangeDiff: (path, base, head, start, end) => host.getRangeDiff(path, base, head, start, end),
     notice: showNotice,
     onExit: () => { showSelection(state.selection ? describe(state.selection) : null); },
   });

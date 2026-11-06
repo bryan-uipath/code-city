@@ -55,13 +55,29 @@ export interface TourStep {
 
 export type TourArtifact = TourDiff | TourImage | TourLink;
 
-/** Rendered through `CityHost.getDiff` — never a diff body carried in the file. */
-export interface TourDiff {
+/** Fetched through the host — never a diff body carried in the file. */
+export type TourDiff = TourCommitDiff | TourRangeDiff;
+
+/** One commit's change, via `CityHost.getDiff`. */
+export interface TourCommitDiff {
   type: 'diff';
   /** 7–40 hex characters. */
   commit: string;
   /** Repo-relative path; defaults to the step's target path. */
   path?: string;
+}
+
+/** A range's change (a whole multi-commit PR), via `CityHost.getRangeDiff` — the review pane's diff. */
+export interface TourRangeDiff {
+  type: 'diff';
+  /** 7–40 hex characters each. */
+  base: string;
+  head: string;
+  /** Repo-relative path; defaults to the step's target path. */
+  path?: string;
+  /** Only the hunks changing head lines start..end (1-based, both or neither). */
+  start?: number;
+  end?: number;
 }
 
 export interface TourImage {
@@ -234,9 +250,24 @@ function validateStep(x: unknown): TourStep | null {
 function validateArtifact(x: unknown): TourArtifact | null {
   if (!isRecord(x)) return null;
   if (x.type === 'diff') {
+    const path = str(x.path, 400);
+    // A range (`base` + `head`) wins over `commit`; half a range is malformed, not a fallback.
+    if (x.base !== undefined || x.head !== undefined) {
+      const base = str(x.base, 40);
+      const head = str(x.head, 40);
+      if (!base || !head || !isCommitHash(base) || !isCommitHash(head)) return null;
+      const range: TourRangeDiff = { type: 'diff', base, head };
+      if (path) range.path = path;
+      const start = num(x.start);
+      const end = num(x.end);
+      if (start !== null && end !== null && Number.isInteger(start) && Number.isInteger(end) && start >= 1 && end >= start) {
+        range.start = start;
+        range.end = end;
+      }
+      return range;
+    }
     const commit = str(x.commit, 40);
     if (!commit || !isCommitHash(commit)) return null;
-    const path = str(x.path, 400);
     return path ? { type: 'diff', commit, path } : { type: 'diff', commit };
   }
   if (x.type === 'image') {

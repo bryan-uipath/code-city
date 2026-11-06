@@ -889,7 +889,7 @@ export interface TourStep {
   target: string;            // path, path#module, or path:start-end
   title: string;
   narration: string;         // plain text; blank lines split paragraphs
-  artifacts?: TourArtifact[];// { diff, commit, path? } | { image, src } | { link, href }
+  artifacts?: TourArtifact[];// { diff, commit, path? } | { diff, base, head, path?, start?, end? } | { image, src } | { link, href }
   camera?: 'isolate' | 'frame' | 'orbit';
   highlight?: string[];      // co-highlighted targets — the blast radius
 }
