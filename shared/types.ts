@@ -101,6 +101,8 @@ export interface RepoInfo {
   githubUrl: string | null;
   /** The dev API provider that serves `root` (`notes`); absent = git when `root` exists. */
   provider?: string;
+  /** The checkout's HEAD when analyzed (git only) — what a layer's `source.rev` is checked against. */
+  head?: string;
 }
 
 export type TreeNode = FolderNode | FileNode;
