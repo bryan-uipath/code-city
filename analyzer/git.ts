@@ -81,6 +81,8 @@ export interface GitOptions {
   quick: boolean;
   /** `<base>..<head>` to mine into a diff scope, or null to skip the pass. */
   diff: string | null;
+  /** GitHub PR number: its merge-base..head becomes the diff scope (exclusive with `diff`). */
+  pr: number | null;
 }
 
 /** Commits the --quick pass reads — enough for churn heat and some strata. */
@@ -93,6 +95,8 @@ const FULL_COMMITS_MAX = 20000;
 export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
   const repoRoot = path.resolve(opts.repoPath);
   if (!fs.existsSync(repoRoot)) throw new Error(`repo not found: ${repoRoot}`);
+  // Before mining: a bad PR number or missing gh should fail in seconds, not after the history pass.
+  const pr = opts.pr ? resolvePr(repoRoot, opts.pr) : null;
 
   const files = discoverFiles(repoRoot, opts.roots);
   if (!files.length) throw new Error('no source files found under roots: ' + opts.roots.join(','));
@@ -116,10 +120,12 @@ export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
   const asOf = Math.floor(Date.now() / 1000); // churn's recency reference: when history was read
   const edges = buildEdges(repoRoot, opts.roots, parsed, fileSet);
   const prs = opts.prs && !opts.quick ? await collectPRs(repoRoot, fileSet) : [];
-  const diff = opts.diff ? collectDiffScope(repoRoot, opts.diff) : null;
+  const diff = pr ? collectDiffScope(repoRoot, pr.range, pr)
+    : opts.diff ? collectDiffScope(repoRoot, opts.diff) : null;
   if (diff?.manifest) annotateManifest(diff.manifest, fileSet, opts.roots);
   if (diff && diff.head !== gitHead(repoRoot)) {
-    console.warn(`warn: --diff head ${diff.head.slice(0, 7)} is not the checkout's HEAD; files the range adds may be missing from the city`);
+    const hint = opts.pr ? ` (gh pr checkout ${opts.pr} for the full city)` : '';
+    console.warn(`warn: diff head ${diff.head.slice(0, 7)} is not the checkout's HEAD; files the range adds may be missing from the city${hint}`);
   }
   if (diff) mapWorktree(repoRoot, diff, fileSet);
 
@@ -1059,6 +1065,30 @@ async function pool<T, R>(items: T[], concurrency: number, fn: (item: T) => Prom
 }
 
 // ---------- misc ----------
+
+/**
+ * PR number -> the range GitHub reviews: merge-base(base tip, head)...head.
+ * Fetches `pull/<n>/head` and the base branch (to FETCH_HEAD only) when either
+ * commit is missing locally, e.g. a fork PR. Throws when gh or the PR is unavailable.
+ */
+function resolvePr(repoRoot: string, n: number): { range: string; baseRef: string; headRef: string } {
+  const slug = githubSlug(repoRoot);
+  if (!slug) throw new Error('--pr needs a GitHub origin remote');
+  const raw: unknown = JSON.parse(execFileSync('gh',
+    ['pr', 'view', String(n), '--repo', slug, '--json', 'baseRefName,baseRefOid,headRefOid'], { encoding: 'utf8' }));
+  const { baseRefName, baseRefOid, headRefOid } = isRecord(raw) ? raw : {};
+  if (typeof baseRefName !== 'string' || typeof baseRefOid !== 'string' || typeof headRefOid !== 'string') {
+    throw new Error(`gh pr view ${n}: unexpected response`);
+  }
+  const has = (oid: string): boolean => {
+    try { execFileSync('git', ['-C', repoRoot, 'cat-file', '-e', `${oid}^{commit}`], { stdio: 'ignore' }); return true; } catch { return false; }
+  };
+  if (!has(baseRefOid) || !has(headRefOid)) {
+    console.log(`pr #${n}: fetching pull/${n}/head and ${baseRefName} from origin`);
+    execFileSync('git', ['-C', repoRoot, 'fetch', '--quiet', '--no-tags', 'origin', `pull/${n}/head`, `refs/heads/${baseRefName}`]);
+  }
+  return { range: `${baseRefOid}...${headRefOid}`, baseRef: baseRefName, headRef: `#${n}` };
+}
 
 function githubSlug(repoRoot: string): string | null {
   try {

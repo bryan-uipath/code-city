@@ -62,10 +62,14 @@ interface Loose {
 /**
  * Bucket every changed line of `range` ("base..head", "base...head" = from the
  * merge base, or a bare rev meaning "<rev>..HEAD"). Throws when the range does
- * not resolve.
+ * not resolve. `labels` overrides the display refs (`--pr`: `main`, `#123`).
  */
-export function collectDiffScope(repoRoot: string, range: string): DiffScope {
-  const { base, head, baseRef, headRef } = resolveRange(repoRoot, range);
+export function collectDiffScope(
+  repoRoot: string, range: string, labels?: { baseRef: string; headRef: string }
+): DiffScope {
+  const resolved = resolveRange(repoRoot, range);
+  const { base, head } = resolved;
+  const { baseRef, headRef } = labels ?? resolved;
   // Colors pinned and renames off: the parser reads the palette, so a user's
   // color.diff.* must not leak in; a detected rename would hide its unchanged
   // lines from the diff, and those are exactly the verbatim mass to count.

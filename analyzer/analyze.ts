@@ -82,6 +82,7 @@ function parseArgs(argv: string[]): Options {
   let prs = true;
   let quick = false;
   let diff: string | null = null;
+  let pr: number | null = null;
   let snapshot: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -91,6 +92,10 @@ function parseArgs(argv: string[]): Options {
     else if (a === '--diff') {
       diff = argv[++i] ?? '';
       if (!diff || diff.startsWith('--')) throw new Error('--diff needs a range: --diff <base>..<head>');
+    }
+    else if (a === '--pr') {
+      pr = Number(argv[++i]);
+      if (!Number.isSafeInteger(pr) || pr < 1) throw new Error('--pr needs a PR number: --pr <n>');
     }
     else if (a === '--snapshot') {
       snapshot = argv[++i] ?? '';
@@ -102,12 +107,13 @@ function parseArgs(argv: string[]): Options {
     else throw new Error(`unknown flag: ${a}`);
   }
   // A snapshot is the whole input: adapter options would be silently ignored.
-  if (snapshot && (repoPath || roots || diff || quick || !prs)) {
-    throw new Error('--snapshot takes only --out: no repo path, --roots, --diff, --quick or --no-prs');
+  if (snapshot && (repoPath || roots || diff || pr || quick || !prs)) {
+    throw new Error('--snapshot takes only --out: no repo path, --roots, --diff, --pr, --quick or --no-prs');
   }
+  if (diff && pr) throw new Error('--diff and --pr both name the diff scope: pick one');
   if (!repoPath) repoPath = '.';
   // Default: the whole repo. A narrower scope is an explicit --roots choice —
   // a "helpful" packages/ heuristic silently hid sibling dirs like src/.
   if (!roots) roots = ['.'];
-  return { repoPath, roots, out, prs, quick, diff, snapshot };
+  return { repoPath, roots, out, prs, quick, diff, pr, snapshot };
 }
