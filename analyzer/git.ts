@@ -95,6 +95,8 @@ const FULL_COMMITS_MAX = 20000;
 export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
   const repoRoot = path.resolve(opts.repoPath);
   if (!fs.existsSync(repoRoot)) throw new Error(`repo not found: ${repoRoot}`);
+  // Before mining: a bad PR number or missing gh should fail in seconds, not after the history pass.
+  const pr = opts.pr ? resolvePr(repoRoot, opts.pr) : null;
 
   const files = discoverFiles(repoRoot, opts.roots);
   if (!files.length) throw new Error('no source files found under roots: ' + opts.roots.join(','));
@@ -118,7 +120,6 @@ export async function collectGit(opts: GitOptions): Promise<AdapterResult> {
   const asOf = Math.floor(Date.now() / 1000); // churn's recency reference: when history was read
   const edges = buildEdges(repoRoot, opts.roots, parsed, fileSet);
   const prs = opts.prs && !opts.quick ? await collectPRs(repoRoot, fileSet) : [];
-  const pr = opts.pr ? resolvePr(repoRoot, opts.pr) : null;
   const diff = pr ? collectDiffScope(repoRoot, pr.range, pr)
     : opts.diff ? collectDiffScope(repoRoot, opts.diff) : null;
   if (diff?.manifest) annotateManifest(diff.manifest, fileSet, opts.roots);
