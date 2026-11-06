@@ -354,8 +354,8 @@ The REVIEW section lists them under *Not in the city*, grouped by reason.
 A row has nothing to fly to, so a click opens its range diff in the code pane
 alone and drops the city selection. Binary rows stay inert: no lines. The
 provider reads `/api/rangediff` from the two commits, never the worktree, so
-that route checks paths lexically and does not require them to exist on disk:
-a deleted or not-at-head path still has a diff. A building the
+that route checks paths lexically plus "a blob at base or head" (`cat-file -t`),
+not on disk: a deleted or not-at-head path still has a diff, a directory does not. A building the
 buckets never saw (a blank or punctuation-only edit, a mode change) still joins
 *Read first*, tagged `no substantive lines`, and its code pane still shows the
 range diff. A renamed building shows `from <old path>`. A building always beats
