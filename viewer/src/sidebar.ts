@@ -189,6 +189,8 @@ export interface Descriptor {
   span: { start: number; end: number } | null;
   /** The module's own lines — scopes the commit log; `span` is only the reading window. */
   logSpan?: { start: number; end: number };
+  /** `span` is an explicit line target (a search hit): the code pane opens on source, not changes. */
+  sourceFirst?: boolean;
   /** File-level or deeper — the code pane is worth widening for. */
   deep: boolean;
   /** Filled in from the host when there is no commit stream. */
@@ -818,7 +820,8 @@ export function createSidebar(
     }
     secCode.style.display = '';
     // A changed file opens on its changes; the source window is one click away (`source ▸`).
-    if (d.rangeDiff) {
+    // A reveal aimed at a line (search hit) opens on that line instead, changes below.
+    if (d.rangeDiff && !d.sourceFirst) {
       secCode.innerHTML = `<div class="h"><span>Changes</span><em>${escapeHtml(baseName(codePath))} ` +
         `<span class="sb-src-btn" data-src="1">source ▸</span></em></div>`;
       await loadRangeDiff(d.rangeDiff, codePath, token);
@@ -826,7 +829,8 @@ export function createSidebar(
     }
     secCode.innerHTML = `<div class="h"><span>Code</span><em>loading…</em></div>`;
     await loadSource(d, codePath, token);
-    await loadLatestDiff(d, token);
+    if (d.rangeDiff) await loadRangeDiff(d.rangeDiff, codePath, token);
+    else await loadLatestDiff(d, token);
   }
 
   /** The reading window around the selection: a module's span, or a file's first 160 lines. */
@@ -845,7 +849,7 @@ export function createSidebar(
       `<div class="h"><span>Code</span><em>${escapeHtml(baseName(codePath))} ` +
       `${Number(src.start) || start}–${Number(src.end) || end}</em></div>`;
     // Asked for from the Changes pane: the source goes right under its header, above the hunks.
-    if (d.rangeDiff) secCode.querySelector('.h')?.insertAdjacentHTML('afterend', head + CONTENT_RENDERERS[kind](src, Number(src.start) || start));
+    if (d.rangeDiff && !d.sourceFirst) secCode.querySelector('.h')?.insertAdjacentHTML('afterend', head + CONTENT_RENDERERS[kind](src, Number(src.start) || start));
     else secCode.innerHTML = head + CONTENT_RENDERERS[kind](src, Number(src.start) || start);
   }
 
@@ -965,12 +969,13 @@ function hunksHtml(text: string, truncated: number | undefined, outline: Outline
     let n = h.at;
     const rows = h.lines.map((line) => {
       const c = line[0];
-      const num = c === '-' ? null : n++;
-      return { c, num, text: line.slice(1) };
+      // A deleted row has no head line; it anchors where it was cut (≥ 1: a cut at the top of the file).
+      const at = c === '-' ? Math.max(n, 1) : n++;
+      return { c, num: c === '-' ? null : at, at, text: line.slice(1) };
     });
     const changed = rows.map((r, i) => (r.c === '+' || r.c === '-' ? i : -1)).filter((i) => i >= 0);
     const near = (i: number): boolean => changed.some((j) => Math.abs(i - j) <= HUNK_NEAR);
-    const nums = rows.filter((r) => r.c !== ' ').map((r) => r.num ?? 0).filter((x) => x > 0);
+    const nums = rows.filter((r) => r.c !== ' ').map((r) => r.at);
     const first = nums[0] ?? h.at;
     const last = nums[nums.length - 1] ?? first;
     // Owner: the innermost module holding every change (a method, not its class). A hunk across
