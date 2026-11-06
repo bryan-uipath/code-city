@@ -24,8 +24,11 @@ tour — so the reviewer *flies* the change instead of scrolling a flat file lis
    a paragraph or three, blank line between paragraphs. No markdown syntax —
    the player renders narration as plain text, deliberately (tour files are
    untrusted input, so nothing in them is ever interpreted as markup).
-5. **Attach artifacts** where they earn their place: the commit that introduced
-   a file, a demo screenshot, a link to the PR or the design doc.
+5. **Attach artifacts** where they earn their place: the PR's own diff of a
+   file (a range artifact — `base`/`head` from `gh pr view <n> --json
+   baseRefOid,headRefOid`, optionally `start`/`end` for one function's hunks),
+   the commit that introduced a file, a demo screenshot, a link to the PR or the
+   design doc.
 6. **Hand it over.** Either write it to `<name>.cctour` next to the project it
    describes and have the user drop it on the window, or paste it into the
    console as `window.cityTour.load({…})` against a city they already have open.
@@ -69,6 +72,12 @@ The city must have been analyzed from the same repo the targets refer to
         // Fetched live through the dev server (`git show <commit> -- <path>`).
         // `path` defaults to the step's target path. Commit = 7–40 hex chars.
         { "type": "diff", "commit": "9db96f3", "path": "viewer/src/strata.ts" },
+
+        // A range instead (`git diff <base> <head> -- <path>`): a multi-commit
+        // PR's change, as the review pane shows it. `start`/`end` (head lines,
+        // both or neither) keep only the hunks that touch them. Half a range is
+        // dropped, not read as a commit.
+        { "type": "diff", "base": "b447786", "head": "31d7b9b", "path": "viewer/src/main.ts", "start": 2650, "end": 2700 },
 
         // https: or data:image/…;base64 only. Rendered width-constrained.
         { "type": "image", "src": "https://…/demo.png", "caption": "After" },

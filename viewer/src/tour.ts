@@ -44,6 +44,8 @@ export interface TourHost {
   setView(view: TourView | null): void;
   /** `git show <hash> -- <path>` through the environment adapter. */
   getDiff(path: string, hash: string): Promise<DiffResponse | null>;
+  /** `git diff <base> <head> -- <path>`, optionally clipped to head lines start..end. */
+  getRangeDiff(path: string, base: string, head: string, start?: number, end?: number): Promise<DiffResponse | null>;
   /** Transient HUD message. */
   notice(msg: string): void;
   /** Called on exit, so the host can restore its normal sidebar/selection. */
@@ -173,7 +175,8 @@ export function createTour(host: TourHost): TourPlayer {
         const path = a.path ?? target.path;
         out.push({
           type: 'diff',
-          label: `${a.commit.slice(0, 7)} · ${path}`,
+          label: `${'commit' in a ? a.commit.slice(0, 7) : `${a.base.slice(0, 7)}→${a.head.slice(0, 7)}`} · ${path}` +
+            ('start' in a && a.start !== undefined ? ` · ${a.start}–${a.end}` : ''),
           diff: diffs ? diffs.get(a) ?? null : null,
         });
       } else if (a.type === 'image') {
@@ -190,7 +193,9 @@ export function createTour(host: TourHost): TourPlayer {
     if (!wanted.length) return;
     const diffs = new Map<TourArtifact, DiffResponse | null>();
     for (const a of wanted) {
-      const res = await host.getDiff(a.path ?? target.path, a.commit);
+      const path = a.path ?? target.path;
+      const res = 'commit' in a ? await host.getDiff(path, a.commit)
+        : await host.getRangeDiff(path, a.base, a.head, a.start, a.end);
       if (token !== state.token) return;
       diffs.set(a, res && typeof res.diff === 'string' ? res : null);
     }
