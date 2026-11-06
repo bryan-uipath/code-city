@@ -152,6 +152,15 @@ export interface RangeDiff {
   base: string;
   head: string;
   lines?: { start: number; end: number } | null;
+  /** The file's modules and members, head-numbered: each hunk is labelled by the innermost one around it. */
+  outline?: OutlineEntry[];
+}
+
+export interface OutlineEntry {
+  name: string;
+  kind: string;
+  start: number;
+  end: number;
 }
 
 /** What main.ts hands over for one hovered / selected thing. */
@@ -318,6 +327,17 @@ export function createSidebar(
     const row = closest(e.target, '.sb-work[data-path]');
     const path = row?.dataset.path;
     if (path) work.onSelect(path);
+  });
+
+  secCode.addEventListener('click', (e) => {
+    const d = state.selected;
+    if (closest(e.target, '.sb-src-btn[data-src]')) {
+      if (!d || !d.codePath || secCode.querySelector('.sb-src-btn.on')) return;
+      closest(e.target, '.sb-src-btn')?.classList.add('on');
+      void loadSource(d, d.codePath, state.codeToken);
+      return;
+    }
+    closest(e.target, '.sb-hunk-h')?.parentElement?.classList.toggle('open');
   });
 
   secReview.addEventListener('click', (e) => {
@@ -797,24 +817,36 @@ export function createSidebar(
       return;
     }
     secCode.style.display = '';
+    // A changed file opens on its changes; the source window is one click away (`source ▸`).
+    if (d.rangeDiff) {
+      secCode.innerHTML = `<div class="h"><span>Changes</span><em>${escapeHtml(baseName(codePath))} ` +
+        `<span class="sb-src-btn" data-src="1">source ▸</span></em></div>`;
+      await loadRangeDiff(d.rangeDiff, codePath, token);
+      return;
+    }
     secCode.innerHTML = `<div class="h"><span>Code</span><em>loading…</em></div>`;
+    await loadSource(d, codePath, token);
+    await loadLatestDiff(d, token);
+  }
 
+  /** The reading window around the selection: a module's span, or a file's first 160 lines. */
+  async function loadSource(d: Descriptor, codePath: string, token: number): Promise<void> {
     const start = d.span ? d.span.start : 1;
     const end = d.span ? d.span.end : start + 160;
     const src = await opts.host.getSource(codePath, start, end);
     if (token !== state.codeToken) return;
     const kind = src ? contentKind(src) : null;
     if (!src || !kind) {
-      secCode.style.display = 'none';
+      if (!d.rangeDiff) secCode.style.display = 'none';
       return;
     }
 
     const head =
       `<div class="h"><span>Code</span><em>${escapeHtml(baseName(codePath))} ` +
       `${Number(src.start) || start}–${Number(src.end) || end}</em></div>`;
-    secCode.innerHTML = head + CONTENT_RENDERERS[kind](src, Number(src.start) || start);
-    if (d.rangeDiff) await loadRangeDiff(d.rangeDiff, codePath, token);
-    else await loadLatestDiff(d, token);
+    // Asked for from the Changes pane: the source goes right under its header, above the hunks.
+    if (d.rangeDiff) secCode.querySelector('.h')?.insertAdjacentHTML('afterend', head + CONTENT_RENDERERS[kind](src, Number(src.start) || start));
+    else secCode.innerHTML = head + CONTENT_RENDERERS[kind](src, Number(src.start) || start);
   }
 
   /** A changed path with no building: its range diff alone fills the code pane. */
@@ -839,7 +871,7 @@ export function createSidebar(
     secCode.insertAdjacentHTML(
       'beforeend',
       `<div class="sb-sub sb-diff-head">${label}</div>` +
-      (res.diff ? diffHtml(res.diff, res.truncated) : `<div class="sb-hint">No hunk of the diff touches these lines</div>`)
+      (res.diff ? hunksHtml(res.diff, res.truncated, range.outline ?? []) : `<div class="sb-hint">No hunk of the diff touches these lines</div>`)
     );
   }
 
@@ -910,6 +942,81 @@ function sourceHtml(src: SourceResponse, start: number): string {
   return `<div class="sb-code">${out.join('\n')}</div>`;
 }
 
+/** Context lines kept either side of a change while a hunk card is closed. */
+const HUNK_NEAR = 1;
+
+/**
+ * A range diff as one card per hunk, headed by the innermost module around its
+ * first change (git's own `@@ … @@` context when none) with head line numbers.
+ * Closed, a card shows only changed lines and HUNK_NEAR either side; git's file
+ * header lines are dropped. A diff with no hunk (binary, mode-only) falls back raw.
+ */
+function hunksHtml(text: string, truncated: number | undefined, outline: OutlineEntry[]): string {
+  const all = String(text).split('\n');
+  const hunks: Array<{ at: number; ctx: string; lines: string[] }> = [];
+  for (const line of all.slice(0, 400)) {
+    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/.exec(line);
+    if (m) hunks.push({ at: Number(m[1]), ctx: m[2] ?? '', lines: [] });
+    else if (line && !line.startsWith('\\')) hunks[hunks.length - 1]?.lines.push(line);
+  }
+  if (!hunks.length) return diffHtml(text, truncated);
+  // The 400-line cut can leave a last hunk of context only; it has nothing to show.
+  const cards = hunks.filter((h) => h.lines.some((l) => l[0] === '+' || l[0] === '-')).map((h) => {
+    let n = h.at;
+    const rows = h.lines.map((line) => {
+      const c = line[0];
+      const num = c === '-' ? null : n++;
+      return { c, num, text: line.slice(1) };
+    });
+    const changed = rows.map((r, i) => (r.c === '+' || r.c === '-' ? i : -1)).filter((i) => i >= 0);
+    const near = (i: number): boolean => changed.some((j) => Math.abs(i - j) <= HUNK_NEAR);
+    const nums = rows.filter((r) => r.c !== ' ').map((r) => r.num ?? 0).filter((x) => x > 0);
+    const first = nums[0] ?? h.at;
+    const last = nums[nums.length - 1] ?? first;
+    // Owner: the innermost module holding every change (a method, not its class). A hunk across
+    // several modules names the first outermost one it touches, `+N more` for the rest.
+    const size = (o: OutlineEntry): number => o.end - o.start;
+    const holds = outline.filter((o) => o.start <= first && o.end >= last).sort((a, b) => size(a) - size(b));
+    const touched = outline.filter((o) => nums.some((x) => o.start <= x && o.end >= x));
+    const outer = touched.filter((o) => !touched.some((p) => p !== o && p.start <= o.start && p.end >= o.end && size(p) > size(o)))
+      .sort((a, b) => a.start - b.start);
+    const owner = holds[0] ?? outer[0];
+    const more = holds[0] ? 0 : Math.max(outer.length - 1, 0);
+    const adds = rows.filter((r) => r.c === '+').length;
+    const dels = rows.filter((r) => r.c === '-').length;
+    const label = owner
+      ? `<span class="k">${escapeHtml(owner.kind)}</span><span class="nm">${escapeHtml(owner.name)}</span>` +
+        (more ? `<span class="k">+${fmt(more)} more</span>` : '')
+      : `<span class="nm">${escapeHtml(h.ctx.trim() || 'top of file')}</span>`;
+    const body: string[] = [];
+    let gap = 0;
+    const flushGap = (): void => {
+      if (gap) body.push(`<div class="r gap">⋯ ${fmt(gap)} line${gap === 1 ? '' : 's'}</div>`);
+      gap = 0;
+    };
+    rows.forEach((r, i) => {
+      const far = r.c === ' ' && !near(i);
+      if (far) gap++; else flushGap();
+      const cls = r.c === '+' ? 'add' : r.c === '-' ? 'del' : far ? 'far' : '';
+      body.push(`<div class="r ${cls}"><span class="g">${r.num ?? ''}</span>${escapeHtml(r.c === ' ' ? r.text : r.c + r.text)}</div>`);
+    });
+    flushGap();
+    return `<div class="sb-hunk"><div class="sb-hunk-h" title="Show surrounding context">${label}` +
+      `<span class="at">L${fmt(first)}${last !== first ? `–${fmt(last)}` : ''}</span>` +
+      `<span class="add">+${fmt(adds)}</span><span class="del">−${fmt(dels)}</span></div>` +
+      `<div class="sb-code">${body.join('')}</div></div>`;
+  });
+  return cutNote(Math.min(all.length, 400), Math.max(truncated ?? 0, all.length)) +
+    `<div class="sb-hint sb-hunk-n">${fmt(cards.length)} change${cards.length === 1 ? '' : 's'} · click a header for context</div>` +
+    cards.join('');
+}
+
+/** "400 of 601 lines shown · rest truncated" when the diff was cut; '' otherwise. */
+function cutNote(shown: number, total: number): string {
+  return total > shown
+    ? `<div class="sb-hint sb-diff-cut">${fmt(shown)} of ${fmt(total)} lines shown · rest truncated</div>` : '';
+}
+
 function diffHtml(text: string, truncated?: number): string {
   const all = String(text).split('\n');
   const lines = all.slice(0, 400);
@@ -923,10 +1030,7 @@ function diffHtml(text: string, truncated?: number): string {
     return cls ? `<span class="${cls}">${escapeHtml(line)}</span>` : escapeHtml(line);
   });
   // Provider cap or this one: say so up front rather than end mid-hunk. e.g. "400 of 601 lines shown".
-  const total = Math.max(truncated ?? 0, all.length);
-  const cut = total > lines.length
-    ? `<div class="sb-hint sb-diff-cut">${fmt(lines.length)} of ${fmt(total)} lines shown · rest truncated</div>` : '';
-  return `${cut}<div class="sb-code">${out.join('\n')}</div>`;
+  return `${cutNote(lines.length, Math.max(truncated ?? 0, all.length))}<div class="sb-code">${out.join('\n')}</div>`;
 }
 
 /**

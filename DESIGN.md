@@ -298,6 +298,18 @@ it shows is already in data.json.
   which on a hub file like `types.ts` is the whole repo and says nothing.
 - A row click is `revealPath` (select + fly); the selected row is marked.
 
+### Changes-first code pane (implemented)
+
+A changed file used to open on its first 160 lines (header, imports) with the
+raw range diff below: two blocks, neither the part asked for. It now opens on
+its changes alone. Git's file header lines go; each hunk is a card headed by
+the innermost module or member holding all its changes (`RangeDiff.outline`,
+head-numbered via `headSpanOf`), else the first outermost one it touches with
+`+N more`, else git's own `@@` context. A closed card shows changed lines ±1
+with head line numbers and `⋯ N lines` gaps; its header opens the full hunk.
+`source ▸` puts the reading window above the cards on demand. A file outside
+the diff keeps the old source + latest-commit pane.
+
 ### Hunk-level scope (implemented)
 
 The file list says *which files*; inside a 1,000-line file that is not enough.
