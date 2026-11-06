@@ -1217,6 +1217,35 @@ split + typed content (`code`, `markdown`), ids on nodes — **first slice done*
 (see above for what is deferred); (5) Confluence;
 (6) Jira, with `getLive` for the backlog; (7) container mass if `_self` fails.
 
+## Layers (contract implemented; duped is the first producer)
+
+The neighborhood is pluggable (adapter → Snapshot → compile); what is draped on
+it was not — every overlay was a `Mode` literal with bespoke paint. A **layer**
+is another tool's measurements painted on the fixed massing: it may color,
+badge, arc and annotate, never move a footprint, a position or a height (a
+thing that needs its own massing, like Provenance, is not a layer). Rule of
+thumb: layers paint, scopes filter, massings shape.
+
+- **Input**: `--layer x.json` (repeatable, also with `--snapshot`):
+  `{ id (SLUG_RE), label, unit?, source?: { tool?, rev? }, items: [{ id, v ≥ 0,
+  note? }], edges?: [{ a, b, v, aLine?, bLine?, note? }] }`. Untrusted:
+  `analyzer/layer.ts` rebuilds every object, caps sizes (16 MB, 100k entries),
+  rejects (never repairs) and is read before the adapter runs, so a bad file
+  fails in a second.
+- **Resolution**: item ids map onto the compiled city (`TreeNode.id ?? path`,
+  files only); unknown ids are dropped and counted in the analyzer's summary —
+  the producer's root can differ from ours, so a miss must be loud.
+- **data.json** carries `layers: CityLayer[]`, path-keyed, so the static
+  export stays self-contained.
+- **Viewer**: one Overlay button per layer after Provenance (`mode: 'layer'`,
+  `state.layer`); paint is the shared heat ramp through `heatMax`/`heatValue`,
+  so city and skyline agree. A file without a value is *not measured*
+  (dormant), not zero. The legend names the producer and flags a layer whose
+  `source.rev` is not the city's newest commit as stale. The inspector shows
+  the file's reading (`layerNote`). Layer modes are not remembered across
+  sessions: they are per dataset.
+- Edges are carried, not yet drawn.
+
 ## Future ideas (recorded, not scheduled)
 
 - **VS Code extension** (deliberately deferred until the core UX and fit &
@@ -1257,12 +1286,13 @@ shared/types.ts           # the data.json contract, shared analyzer <-> viewer
 shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
 shared/tour.ts            # Tour SDK types + validateTour (the untrusted-input boundary)
 shared/vocab.ts           # source vocabulary rules + the viewer's lenient readVocabulary
-analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick] [--diff base..head | --pr n] | --snapshot x.json [--out]
+analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick] [--diff base..head | --pr n] [--layer x.json]... | --snapshot x.json [--out] [--layer x.json]...
 analyzer/snapshot.ts      # the adapter contract: items, events, links, inflight
 analyzer/validate.ts      # validateSnapshot: the untrusted-input boundary for --snapshot files
 analyzer/compile.ts       # Snapshot -> data.json (paths, sums, churn, commit index)
 analyzer/git.ts           # git adapter: modules, history + cache, imports, PRs
 analyzer/diff-scope.ts    # one range -> changed-file set + per-file provenance buckets
+analyzer/layer.ts         # --layer files: validateLayer (untrusted boundary) + id -> path resolution
 viewer/vite.config.js     # dev API router: /api/* -> the dataset's provider
 viewer/providers/git.js   # git provider: detail, history, change, live, search (owns path/hash validation)
 viewer/providers/notes.js # notes provider: markdown detail + search under its root, no git

@@ -693,7 +693,7 @@ function isCommit(value: unknown): value is Commit {
     && Array.isArray(value.f) && (value.d === undefined || Array.isArray(value.d));
 }
 
-function gitHead(repoRoot: string): string | null {
+export function gitHead(repoRoot: string): string | null {
   try {
     return execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() || null;
   } catch {
