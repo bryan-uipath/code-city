@@ -1244,7 +1244,17 @@ thumb: layers paint, scopes filter, massings shape.
   `source.rev` is not the city's newest commit as stale. The inspector shows
   the file's reading (`layerNote`). Layer modes are not remembered across
   sessions: they are per dataset.
-- Edges are carried, not yet drawn.
+- **Edges** are pairs: with a layer on and a file selected, its pairs replace
+  the coupling arcs (toggle or not) and the inspector lists them (`Pairs · N`,
+  partner + line + note; a row reveals the partner). `absent` names what a
+  file without a value means (`no duplicate found`).
+- **duped** (`scripts/duped-layer.mjs <repo> [--base <ref>]`) is the first
+  producer: `duped report --json --root <repo>` (the root pin makes its paths
+  the city's), v = duplicate findings per file, one edge per file pair landing
+  on its first matched declaration, the top finding's evidence as the note.
+  `--base` keeps pairs touching the change — pairs that *touch* changed files,
+  not only duplicates the change introduced. Failed detectors and truncation
+  are warned about on stderr.
 
 ## Future ideas (recorded, not scheduled)
 
@@ -1296,6 +1306,7 @@ analyzer/layer.ts         # --layer files: validateLayer (untrusted boundary) + 
 viewer/vite.config.js     # dev API router: /api/* -> the dataset's provider
 viewer/providers/git.js   # git provider: detail, history, change, live, search (owns path/hash validation)
 viewer/providers/notes.js # notes provider: markdown detail + search under its root, no git
+scripts/duped-layer.mjs   # duped report --json -> a --layer file (duplication heat + pairs)
 viewer/index.html         # HUD markup + CSS
 viewer/src/main.ts        # scene, interaction, overlays
 viewer/src/vtree.ts       # the viewer's augmented node type (layout, synthetic scopes)

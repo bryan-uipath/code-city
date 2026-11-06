@@ -17,6 +17,7 @@ npm run analyze -- /path/to/repo --roots src,lib --out other.json --no-prs
 npm run analyze -- /path/to/repo --diff <base>..<head>   # + diff scope & PR provenance overlay
 npm run analyze -- /path/to/repo --pr <n>               # same, range from a GitHub PR (via gh)
 npm run analyze -- /path/to/repo --layer x.json         # + another tool's per-file measurements as an overlay (DESIGN.md "Layers")
+node scripts/duped-layer.mjs /path/to/repo [--base main] > duped.json   # duplication layer via ~/code/duped
 npm run analyze -- .                        # required before the bundled welcome tour works
 npm run analyze -- --snapshot x.json        # compile any producer's Snapshot (untrusted; see DESIGN.md "Adapters")
 npm run dev                                 # vite dev server (source/diff/status/search API live)

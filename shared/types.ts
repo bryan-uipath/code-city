@@ -37,6 +37,8 @@ export interface CityLayer {
   label: string;
   /** What `v` counts, for the legend ramp: `removable lines`. */
   unit?: string;
+  /** What a file without an item means, for the legend: `no duplicate found`. Default: not measured. */
+  absent?: string;
   /** Who measured, and the commit they measured: a city at another commit shows the layer as stale. */
   source?: { tool?: string; rev?: string };
   items: LayerItem[];
