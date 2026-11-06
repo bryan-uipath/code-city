@@ -25,8 +25,10 @@ tour — so the reviewer *flies* the change instead of scrolling a flat file lis
    the player renders narration as plain text, deliberately (tour files are
    untrusted input, so nothing in them is ever interpreted as markup).
 5. **Attach artifacts** where they earn their place: the PR's own diff of a
-   file (a range artifact — `base`/`head` from `gh pr view <n> --json
-   baseRefOid,headRefOid`, optionally `start`/`end` for one function's hunks),
+   file (a range artifact — `head` = the PR's `headRefOid`, `base` =
+   `git merge-base <baseRefOid> <headRefOid>` (the base tip alone would show
+   main's later commits as reverted), or simply `data.diff.base`/`head` from a
+   `--pr` city; optionally `start`/`end` for one function's hunks),
    the commit that introduced a file, a demo screenshot, a link to the PR or the
    design doc.
 6. **Hand it over.** Either write it to `<name>.cctour` next to the project it
