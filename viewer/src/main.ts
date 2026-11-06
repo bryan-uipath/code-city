@@ -3402,6 +3402,7 @@ function revealPath(path: string, opts: { module?: string | null; line?: number 
     const desc = describe(target);
     if (desc) {
       desc.span = { start: Math.max(1, line - 12), end: line + 60 };
+      desc.sourceFirst = true;
       desc.deep = true;
       showSelection(desc);
     }
