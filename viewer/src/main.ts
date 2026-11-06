@@ -31,7 +31,7 @@ import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
 import { canSign, createTerraceSigns, type TerraceSigns } from './terrace.js';
 import {
   contentKind, createSidebar, escapeHtml,
-  type Descriptor, type RangeDiff, type ReviewConsumer, type ReviewFile, type ReviewOffCity, type Sidebar, type WorkChange, type WorkKind,
+  type Descriptor, type OutlineEntry, type RangeDiff, type ReviewConsumer, type ReviewFile, type ReviewOffCity, type Sidebar, type WorkChange, type WorkKind,
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
 import { readVocabulary, wordsOf, type Words } from '../../shared/vocab.js';
@@ -2842,10 +2842,24 @@ function hunkSpansOf(node: VNode): [number, number][] | null {
 function rangeDiffFor(real: VNode, node: VNode, mod: VMod | undefined): RangeDiff | undefined {
   const d = state.data?.diff;
   if (!d || !(diffScope.byNode.has(real) || bucketless.has(real.path))) return undefined;
-  const range = { base: String(d.base || ''), head: String(d.head || '') };
+  const range = { base: String(d.base || ''), head: String(d.head || ''), outline: outlineOf(real) };
   // Only a DiffFile carries the working-copy mapping; a bucketless file keeps its whole-file diff.
   const lines = mod && diffScope.byPath.has(real.path) ? headSpanOf(node, mod) : undefined;
   return lines === undefined ? range : { ...range, lines };
+}
+
+/** Every module and member of a file in head numbering — names the code pane's hunks. */
+function outlineOf(real: VNode): OutlineEntry[] {
+  const out: OutlineEntry[] = [];
+  const walk = (mods: VMod[] | undefined): void => {
+    for (const m of mods ?? []) {
+      const lines = headSpanOf(real, m);
+      if (lines) out.push({ name: m.name, kind: m.kind, ...lines });
+      walk(m.children);
+    }
+  };
+  walk(real.modules);
+  return out;
 }
 
 /**
@@ -3299,6 +3313,7 @@ function revealPath(path: string, opts: { module?: string | null; line?: number 
     const desc = describe(target);
     if (desc) {
       desc.span = { start: Math.max(1, line - 12), end: line + 60 };
+      desc.sourceFirst = true;
       desc.deep = true;
       showSelection(desc);
     }
