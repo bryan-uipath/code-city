@@ -663,9 +663,10 @@ export function createSidebar(
         parts.push(`<div class="sb-hint">${label} · ${fmt(rows.length)}</div>`);
         for (const o of rows) {
           const from = o.oldPath ? ` · from ${escapeHtml(o.oldPath)}` : '';
-          // Binary rows have no lines to show; every other one opens its range diff.
+          // Binary rows (deleted ones too) have no lines to show; the rest open their range diff when a host can serve it.
+          const opens = !o.binary && o.why !== 'binary' && !!view.base && !!view.head && opts.host.available();
           parts.push(rvRow(o.path, ` off ${escapeHtml(o.status)}`, `<span class="via">${escapeHtml(o.status)}${from}</span>`,
-            o.why === 'binary' || !view.base || !view.head ? null : 'off'));
+            opens ? 'off' : null));
         }
       }
     }
@@ -822,13 +823,9 @@ export function createSidebar(
     state.offSel = path;
     renderReview();
     secCode.style.display = '';
-    const head = `<div class="h"><span>Diff</span><em>${escapeHtml(baseName(path))} · ` +
-      `${escapeHtml(view.base.slice(0, 7))}&rarr;${escapeHtml(view.head.slice(0, 7))}</em></div>`;
-    secCode.innerHTML = head + `<div class="sb-hint">loading…</div>`;
-    const res = opts.host.available() ? await opts.host.getRangeDiff(path, view.base, view.head) : null;
-    if (token !== state.codeToken) return;
-    secCode.innerHTML = head + `<div class="sb-sub">${escapeHtml(path)}</div>` +
-      (res?.diff ? diffHtml(res.diff, res.truncated) : `<div class="sb-hint">diff unavailable</div>`);
+    secCode.innerHTML = `<div class="h"><span>Diff</span><em>${escapeHtml(baseName(path))}</em></div>` +
+      `<div class="sb-sub">${escapeHtml(path)}</div>`;
+    await loadRangeDiff({ base: view.base, head: view.head }, path, token);
   }
 
   /** Appends the analyzed range's diff of this file — only a module's own hunks when it is one. */
@@ -914,7 +911,8 @@ function sourceHtml(src: SourceResponse, start: number): string {
 }
 
 function diffHtml(text: string, truncated?: number): string {
-  const lines = String(text).split('\n').slice(0, 400);
+  const all = String(text).split('\n');
+  const lines = all.slice(0, 400);
   const out = lines.map((line) => {
     const cls =
       line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('diff ')
@@ -924,9 +922,10 @@ function diffHtml(text: string, truncated?: number): string {
         : '';
     return cls ? `<span class="${cls}">${escapeHtml(line)}</span>` : escapeHtml(line);
   });
-  // The provider caps diffs; say so up front rather than end mid-hunk. e.g. "400 of 601 lines shown".
-  const cut = typeof truncated === 'number' && truncated > lines.length
-    ? `<div class="sb-hint sb-diff-cut">${fmt(lines.length)} of ${fmt(truncated)} lines shown · rest truncated</div>` : '';
+  // Provider cap or this one: say so up front rather than end mid-hunk. e.g. "400 of 601 lines shown".
+  const total = Math.max(truncated ?? 0, all.length);
+  const cut = total > lines.length
+    ? `<div class="sb-hint sb-diff-cut">${fmt(lines.length)} of ${fmt(total)} lines shown · rest truncated</div>` : '';
   return `${cut}<div class="sb-code">${out.join('\n')}</div>`;
 }
 

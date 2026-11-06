@@ -97,6 +97,9 @@ export function createGitProvider(root) {
       const base = baseParam || '';
       const head = headParam || '';
       if (!HASH_RE.test(base) || !HASH_RE.test(head)) throw new Error('invalid hash');
+      // The lexical check admits directories; clipHunks needs one file, a blob on at least one side.
+      const isBlob = (rev) => git(root, ['cat-file', '-t', `${rev}:${rel}`]).then((r) => r.stdout.trim() === 'blob', () => false);
+      if (!(await isBlob(head)) && !(await isBlob(base))) throw new Error('invalid path');
       // Pinned: clipHunks counts head lines, so blank context must keep its ' ' and every hunk its context;
       // literal pathspecs so `app/[id]/page.tsx` is that file, not a glob.
       const { stdout } = await git(root, [
