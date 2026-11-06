@@ -45,6 +45,7 @@ export function validateLayer(raw: unknown): LayerInput {
   if (!SLUG_RE.test(id)) throw new LayerError(`id: must match ${SLUG_RE}`);
   const out: LayerInput = { id, label: text(x.label, 'label', MAX_LABEL), items: [], edges: [] };
   if (x.unit !== undefined) out.unit = text(x.unit, 'unit', MAX_LABEL);
+  if (x.absent !== undefined) out.absent = text(x.absent, 'absent', MAX_LABEL);
   if (x.source !== undefined) {
     const s = record(x.source, 'source');
     const source: { tool?: string; rev?: string } = {};
@@ -103,6 +104,7 @@ export function resolveLayer(layer: LayerInput, data: CityData): { layer: CityLa
   }
   const out: CityLayer = { id: layer.id, label: layer.label, items };
   if (layer.unit) out.unit = layer.unit;
+  if (layer.absent) out.absent = layer.absent;
   if (layer.source) out.source = layer.source;
   if (edges.length) out.edges = edges;
   return { layer: out, dropped };

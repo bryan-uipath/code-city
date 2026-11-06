@@ -16,6 +16,8 @@ const MAX_COMMITS = 8;
 /** Commit rows shown before the "+N more" expander. */
 const COMMIT_PEEK = 5;
 const PR_PEEK = 6;
+/** Layer pairs listed under a selection. */
+const PAIR_PEEK = 8;
 /** Search result rows shown before the list is cut off. */
 const SEARCH_FILE_PEEK = 40;
 const SEARCH_LINE_PEEK = 12;
@@ -156,6 +158,14 @@ export interface RangeDiff {
   outline?: OutlineEntry[];
 }
 
+export interface LayerPair {
+  path: string;
+  v: number;
+  note?: string;
+  /** The partner's line the pair sits at. */
+  line?: number;
+}
+
 export interface OutlineEntry {
   name: string;
   kind: string;
@@ -181,6 +191,8 @@ export interface Descriptor {
   provNote?: string;
   /** The active `--layer` reading — `duplication · 42 removable lines · …`. */
   layerNote?: string;
+  /** The active layer's pairs of this file (duplicates…), strongest first; a row reveals the partner. */
+  layerPairs?: LayerPair[];
   /** In the analyzed diff: the code pane shows base→head instead of the latest commit. */
   rangeDiff?: RangeDiff;
   /** Replaces the default LOC/CHURN/FIX/RECENT grid (PR descriptors). */
@@ -221,7 +233,12 @@ export interface Sidebar {
 }
 
 export function createSidebar(
-  opts: { host: CityHost; timeline: Timeline | null; githubUrl?: string | null; words: Words; onWidthChange?: (wide: boolean) => void }
+  opts: {
+    host: CityHost; timeline: Timeline | null; githubUrl?: string | null; words: Words;
+    onWidthChange?: (wide: boolean) => void;
+    /** Select and fly to a path (a layer pair's partner). */
+    onReveal?: (path: string) => void;
+  }
 ): Sidebar {
   const words = opts.words;
   const root = requireEl('sidebar');
@@ -289,6 +306,11 @@ export function createSidebar(
 
   // Compact rows expand in place rather than opening anything.
   secSelected.addEventListener('click', (e) => {
+    const reveal = closest(e.target, '.sb-pair[data-reveal]')?.dataset.reveal;
+    if (reveal) {
+      opts.onReveal?.(reveal);
+      return;
+    }
     const pr = closest(e.target, '.sb-pr[data-pr]');
     if (pr) {
       const n = Number(pr.dataset.pr);
@@ -512,8 +534,19 @@ export function createSidebar(
       (d.layerNote ? `<div class="sb-note layer">${escapeHtml(d.layerNote)}</div>` : '') +
       (d.provNote ? `<div class="sb-note prov">${escapeHtml(d.provNote)}</div>` : '') +
       `<div class="sb-grid">${grid}</div>` +
-      coupling
+      coupling +
+      pairsHtml(d.layerPairs)
     );
+  }
+
+  /** The active layer's partners of this file: `sidebar.ts :1119 · names · = baseName …`. */
+  function pairsHtml(pairs: LayerPair[] | undefined): string {
+    if (!pairs?.length) return '';
+    return `<div class="sb-sub">Pairs · ${fmt(pairs.length)}</div>` + pairs.slice(0, PAIR_PEEK).map((p) =>
+      `<div class="sb-pair" data-reveal="${escapeHtml(p.path)}"><span class="nm">${escapeHtml(baseName(p.path))}</span>` +
+      `${p.line ? `<span class="at">:${fmt(p.line)}</span>` : ''}<span class="dir">${escapeHtml(dirName(p.path))}</span>` +
+      (p.note ? `<div class="sig">${escapeHtml(p.note)}</div>` : '') + `</div>`
+    ).join('') + (pairs.length > PAIR_PEEK ? `<div class="sb-hint">+${fmt(pairs.length - PAIR_PEEK)} more</div>` : '');
   }
 
   /** One line per PR — `#3088 · title · @author · 3d` — full detail on click. */

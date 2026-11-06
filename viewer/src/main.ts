@@ -31,7 +31,7 @@ import { createLabeler, type LabelCandidate, type Labeler } from './labels.js';
 import { canSign, createTerraceSigns, type TerraceSigns } from './terrace.js';
 import {
   contentKind, createSidebar, escapeHtml,
-  type Descriptor, type OutlineEntry, type RangeDiff, type ReviewConsumer, type ReviewFile, type ReviewOffCity, type Sidebar, type WorkChange, type WorkKind,
+  type Descriptor, type LayerPair, type OutlineEntry, type RangeDiff, type ReviewConsumer, type ReviewFile, type ReviewOffCity, type Sidebar, type WorkChange, type WorkKind,
 } from './sidebar.js';
 import { createTimeline, RECENT_WINDOW, FLASH_WINDOW, type Timeline } from './timeline.js';
 import { readVocabulary, SLUG_RE, wordsOf, type Words } from '../../shared/vocab.js';
@@ -501,7 +501,7 @@ async function main(): Promise<void> {
     onRange: () => { strata.dirty = true; },
   });
   checkpoints = createCheckpoints();
-  sidebar = createSidebar({ host, timeline, githubUrl: data.repo?.githubUrl, words });
+  sidebar = createSidebar({ host, timeline, githubUrl: data.repo?.githubUrl, words, onReveal: revealPath });
   initVisited(data);
   pushReviewToSidebar();
   labeler = createLabeler(scene, camera);
@@ -678,6 +678,8 @@ interface LayerEntry {
   notes: Map<string, string>;
   /** Folder path -> its hottest measured descendant: a skyline bar that is a folder. */
   folders: Map<string, number>;
+  /** Both directions of every edge: path -> its partners, strongest first. */
+  pairs: Map<string, LayerPair[]>;
   max: number;
 }
 
@@ -728,6 +730,14 @@ function buildIndex(data: CityData): void {
       if (typeof it.note === 'string') notes.set(it.path, it.note);
       max = Math.max(max, it.v);
     }
+    const pairs = new Map<string, LayerPair[]>();
+    for (const e of Array.isArray(layer.edges) ? layer.edges : []) {
+      if (!e || !index.filesByPath.has(e.a) || !index.filesByPath.has(e.b) || e.a === e.b || !Number.isFinite(e.v)) continue;
+      const note = typeof e.note === 'string' ? e.note : undefined;
+      push(pairs, e.a, { path: e.b, v: e.v, note, line: e.bLine });
+      push(pairs, e.b, { path: e.a, v: e.v, note, line: e.aLine });
+    }
+    for (const list of pairs.values()) list.sort((a, b) => b.v - a.v);
     // Max, not sum: a folder bar reads as its worst file, on the same ramp as the files.
     const folders = new Map<string, number>();
     for (const [p, v] of values) {
@@ -737,7 +747,7 @@ function buildIndex(data: CityData): void {
       }
       folders.set('', Math.max(folders.get('') ?? 0, v));
     }
-    layerIndex.set(layer.id, { layer, values, notes, folders, max });
+    layerIndex.set(layer.id, { layer, values, notes, folders, pairs, max });
   }
 
   data.prs = Array.isArray(data.prs) ? data.prs : [];
@@ -1353,9 +1363,12 @@ function buildHud(): void {
     if (bandMassing() !== strata.bands) startRise();
     applyOverlay();
     renderLegend();
-    // The inspector carries the active layer's reading: refresh only across a layer change —
-    // a re-render resets the code pane's opened cards.
-    if (activeLayer() !== prevLayer && state.selection) showSelection(describe(state.selection));
+    // The inspector carries the active layer's reading, and its arcs the layer's pairs: refresh
+    // only across a layer change — a re-render resets the code pane's opened cards.
+    if (activeLayer() !== prevLayer) {
+      if (state.selection) showSelection(describe(state.selection));
+      rebuildArcs();
+    }
   });
 
   dom.views.addEventListener('click', (e) => {
@@ -1486,8 +1499,9 @@ function renderLegend(): void {
     rows.push(
       `<div id="ramp"></div>`,
       `<div class="ramp-labels"><span>0</span><span>${escapeHtml(layer.unit ?? layer.label)}</span><span>${fmt(max)}</span></div>`,
-      `<div class="row"><i class="sw" style="background:#1b2432"></i><span>not measured · ${fmt(index.filesByPath.size - values.size)} files</span></div>`
+      `<div class="row"><i class="sw" style="background:#1b2432"></i><span>${escapeHtml(layer.absent ?? 'not measured')} · ${fmt(index.filesByPath.size - values.size)} files</span></div>`
     );
+    if (active.pairs.size) rows.push(`<div class="row"><span>select a file · arcs = its pairs</span></div>`);
     // Who measured, at which commit — and a warning when the city is at another one.
     const src = layer.source;
     // Against the analyzed HEAD, not commits[0]: that is only the newest commit touching an analyzed file.
@@ -2998,6 +3012,12 @@ function untouchedModule(node: VNode, mod: VMod): boolean {
   return head === null || !spansOverlap(head, spans);
 }
 
+/** The active layer's pairs of a file, for the inspector list. */
+function layerPairsOf(node: VNode): LayerPair[] | undefined {
+  const real = realFileOf(node);
+  return real ? activeLayer()?.pairs.get(real.path) : undefined;
+}
+
 /** The inspector line for the active layer: `duplication · 42 removable lines · <note>`. */
 function layerNote(node: VNode): string | undefined {
   const active = activeLayer();
@@ -3005,7 +3025,7 @@ function layerNote(node: VNode): string | undefined {
   if (!active || !real) return undefined;
   const v = active.values.get(real.path);
   const { label, unit } = active.layer;
-  if (v === undefined) return `${label} · not measured`;
+  if (v === undefined) return `${label} · ${active.layer.absent ?? 'not measured'}`;
   const note = active.notes.get(real.path);
   return [label, `${fmt(v)}${unit ? ` ${unit}` : ''}`, note].filter(Boolean).join(' · ');
 }
@@ -3501,8 +3521,11 @@ function onTimeCursor(t: number | null): void {
     state.layer = null;
     markModeButtons();
     renderLegend();
-    // The layer's inspector reading goes with it.
-    if (leftLayer && state.selection) showSelection(describe(state.selection));
+    // The layer's inspector reading and its pair arcs go with it.
+    if (leftLayer) {
+      if (state.selection) showSelection(describe(state.selection));
+      rebuildArcs();
+    }
   }
   recency.dirty = true;
   sidebar.setCursor(t);
@@ -3525,10 +3548,19 @@ function clearArcs(): void {
 
 function rebuildArcs(): void {
   clearArcs();
-  if (!state.coupling || !city) return;
+  if (!city) return;
 
   const sel = state.selection && state.selection.type !== 'pr' ? state.selection.node : null;
   const inFile = scope.root?.synth === 'fileScope';
+  // A layer with pairs owns the arcs around a selected file, toggle or not — none in scope draws
+  // none, never the import web under a "pairs" legend.
+  if (sel && !inFile && activeLayer()?.pairs.size) {
+    const pairs = layerArcsFor(sel);
+    arcMesh = pairs.length ? buildCouplingArcs(pairs, { thick: true, scale: CITY_SIZE / 900 }) : null;
+    if (arcMesh) stage.add(arcMesh);
+    return;
+  }
+  if (!state.coupling) return;
   // Only a module carries arcs: a member stands in for its class, the file for none.
   let selMod = inFile ? sel : null;
   while (selMod && !(selMod.mod && selMod.synth !== 'member')) selMod = selMod.parent ?? null;
@@ -3540,6 +3572,21 @@ function rebuildArcs(): void {
   if (arcMesh) stage.add(arcMesh);
   arcFlow = buildArcFlow(arcs, { thick });
   if (arcFlow) stage.add(arcFlow.points);
+}
+
+/** The selected file's layer pairs as arcs to partners in scope, strength = v / the strongest. */
+function layerArcsFor(node: VNode): Arc[] {
+  const list = layerPairsOf(node)?.filter((p) => scope.byRealPath.has(p.path)).slice(0, MAX_ARCS) ?? [];
+  const max = list[0]?.v || 1;
+  const anchor = nodeAnchor(node);
+  if (!anchor) return [];
+  const out: Arc[] = [];
+  for (const p of list) {
+    const target = scope.byRealPath.get(p.path);
+    const far = target?.rect ? nodeAnchor(target) : null;
+    if (far) out.push({ from: anchor.clone(), to: far, strength: p.v / max });
+  }
+  return out;
 }
 
 /** Directional arcs between the node and other files inside the current scope. */
@@ -4486,6 +4533,7 @@ function describe(target: Target | null): Descriptor | null {
       : undefined,
     provNote: provNote(node, mod),
     layerNote: layerNote(node),
+    layerPairs: layerPairsOf(node),
     rangeDiff: real ? rangeDiffFor(real, node, mod) : undefined,
     loc: mod ? mod.loc : node.loc,
     churn: node.churn,
