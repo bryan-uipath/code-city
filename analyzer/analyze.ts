@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { compile } from './compile.js';
-import { collectGit, type GitOptions } from './git.js';
+import { collectGit, gitHead, type GitOptions } from './git.js';
 import type { AdapterResult } from './snapshot.js';
 import { MAX_SNAPSHOT_BYTES, SnapshotError, validateSnapshot } from './validate.js';
 import { LayerError, readLayer, resolveLayer } from './layer.js';
@@ -35,6 +35,8 @@ async function main(): Promise<void> {
   const layerInputs = opts.layers.map((f) => ({ file: f, layer: readLayer(f) }));
   const { snapshot, summary } = opts.snapshot ? readSnapshot(opts.snapshot) : await collectGit(opts);
   const data = compile(snapshot);
+  const head = opts.snapshot ? null : gitHead(path.resolve(opts.repoPath));
+  if (head) data.repo.head = head;
   const layerSummary: string[] = [];
   for (const { file, layer: input } of layerInputs) {
     if (data.layers?.some((l) => l.id === input.id)) throw new LayerError(`${file}: duplicate layer id "${input.id}"`);

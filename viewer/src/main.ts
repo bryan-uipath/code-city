@@ -676,6 +676,8 @@ interface LayerEntry {
   layer: CityLayer;
   values: Map<string, number>;
   notes: Map<string, string>;
+  /** Folder path -> its hottest measured descendant: a skyline bar that is a folder. */
+  folders: Map<string, number>;
   /** Both directions of every edge: path -> its partners, strongest first. */
   pairs: Map<string, LayerPair[]>;
   max: number;
@@ -687,10 +689,12 @@ function activeLayer(): LayerEntry | null {
   return state.mode === 'layer' && state.layer ? layerIndex.get(state.layer) ?? null : null;
 }
 
-/** The active layer's value for a file; undefined = not measured (or no layer on). */
+/** The active layer's value for a file, or a folder's hottest file; undefined = not measured (or no layer on). */
 function layerValue(node: VNode): number | undefined {
+  const active = activeLayer();
+  if (!active) return undefined;
   const real = realFileOf(node);
-  return real ? activeLayer()?.values.get(real.path) : undefined;
+  return real ? active.values.get(real.path) : node.type === 'folder' ? active.folders.get(node.path) : undefined;
 }
 
 /** Top of the heat ramp for the metric modes. */
@@ -734,7 +738,16 @@ function buildIndex(data: CityData): void {
       push(pairs, e.b, { path: e.a, v: e.v, note, line: e.aLine });
     }
     for (const list of pairs.values()) list.sort((a, b) => b.v - a.v);
-    layerIndex.set(layer.id, { layer, values, notes, pairs, max });
+    // Max, not sum: a folder bar reads as its worst file, on the same ramp as the files.
+    const folders = new Map<string, number>();
+    for (const [p, v] of values) {
+      for (let at = p.lastIndexOf('/'); at > 0; at = p.lastIndexOf('/', at - 1)) {
+        const dir = p.slice(0, at);
+        folders.set(dir, Math.max(folders.get(dir) ?? 0, v));
+      }
+      folders.set('', Math.max(folders.get('') ?? 0, v));
+    }
+    layerIndex.set(layer.id, { layer, values, notes, folders, pairs, max });
   }
 
   data.prs = Array.isArray(data.prs) ? data.prs : [];
@@ -1316,6 +1329,7 @@ function buildHud(): void {
     }
     const asFixFilter = clicked === 'fix' && strata.build !== null && reworkTypes().length > 0;
     const mode = asFixFilter ? 'strata' : clicked;
+    const prevLayer = activeLayer();
     state.mode = mode;
     state.layer = mode === 'layer' ? btn.dataset.layer ?? null : null;
     if (mode !== 'layer') saveUiSetting('mode', mode);
@@ -1349,9 +1363,12 @@ function buildHud(): void {
     if (bandMassing() !== strata.bands) startRise();
     applyOverlay();
     renderLegend();
-    // The inspector carries the active layer's reading, and its arcs the layer's pairs.
-    if (state.selection) showSelection(describe(state.selection));
-    rebuildArcs();
+    // The inspector carries the active layer's reading, and its arcs the layer's pairs: refresh
+    // only across a layer change — a re-render resets the code pane's opened cards.
+    if (activeLayer() !== prevLayer) {
+      if (state.selection) showSelection(describe(state.selection));
+      rebuildArcs();
+    }
   });
 
   dom.views.addEventListener('click', (e) => {
@@ -1487,7 +1504,8 @@ function renderLegend(): void {
     if (active.pairs.size) rows.push(`<div class="row"><span>select a file · arcs = its pairs</span></div>`);
     // Who measured, at which commit — and a warning when the city is at another one.
     const src = layer.source;
-    const head = state.data?.commits[0]?.h ?? '';
+    // Against the analyzed HEAD, not commits[0]: that is only the newest commit touching an analyzed file.
+    const head = state.data?.repo.head ?? '';
     if (src?.tool || src?.rev) {
       rows.push(`<div class="row"><span>${escapeHtml([src.tool, src.rev?.slice(0, 7)].filter(Boolean).join(' @ '))}</span></div>`);
     }
@@ -3420,6 +3438,7 @@ function revealPath(path: string, opts: { module?: string | null; line?: number 
     const desc = describe(target);
     if (desc) {
       desc.span = { start: Math.max(1, line - 12), end: line + 60 };
+      desc.sourceFirst = true;
       desc.deep = true;
       showSelection(desc);
     }
@@ -3497,9 +3516,16 @@ function onTimeCursor(t: number | null): void {
   // Strata reads the cursor as its base snapshot, and provenance is about one
   // diff rather than the timeline, so both keep their own overlay.
   if (t !== null && state.mode !== 'recent' && state.mode !== 'strata' && state.mode !== 'prov') {
+    const leftLayer = state.mode === 'layer';
     state.mode = 'recent';
+    state.layer = null;
     markModeButtons();
     renderLegend();
+    // The layer's inspector reading and its pair arcs go with it.
+    if (leftLayer) {
+      if (state.selection) showSelection(describe(state.selection));
+      rebuildArcs();
+    }
   }
   recency.dirty = true;
   sidebar.setCursor(t);
@@ -3526,10 +3552,11 @@ function rebuildArcs(): void {
 
   const sel = state.selection && state.selection.type !== 'pr' ? state.selection.node : null;
   const inFile = scope.root?.synth === 'fileScope';
-  // An active layer's pairs replace the coupling web around a selected file, toggle or not.
-  const pairs = sel && !inFile ? layerArcsFor(sel) : [];
-  if (pairs.length) {
-    arcMesh = buildCouplingArcs(pairs, { thick: true, scale: CITY_SIZE / 900 });
+  // A layer with pairs owns the arcs around a selected file, toggle or not — none in scope draws
+  // none, never the import web under a "pairs" legend.
+  if (sel && !inFile && activeLayer()?.pairs.size) {
+    const pairs = layerArcsFor(sel);
+    arcMesh = pairs.length ? buildCouplingArcs(pairs, { thick: true, scale: CITY_SIZE / 900 }) : null;
     if (arcMesh) stage.add(arcMesh);
     return;
   }
