@@ -383,6 +383,9 @@
   /* No building to fly to: not clickable. */
   .sb-rv.off { cursor: default; opacity: 0.7; }
   .sb-rv.off:hover { background: none; }
+  .sb-rv.off[data-off] { cursor: pointer; }
+  .sb-rv.off[data-off]:hover { background: rgba(8,145,178,0.14); opacity: 1; }
+  .sb-rv.off.sel { background: rgba(8,145,178,0.24); opacity: 1; }
   .sb-rv.off.deleted .nm { color: #ef4444; text-decoration: line-through; }
   /* Review progress: the check marks, a visited row recedes like its building. */
   .sb-rv-visit {

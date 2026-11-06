@@ -2620,7 +2620,10 @@ function pushReviewToSidebar(): void {
     hop2Capped: hop2.size > REVIEW_HOP2_CAP,
     offCity,
     visited,
+    base: String(state.data?.diff?.base ?? ''),
+    head: String(state.data?.diff?.head ?? ''),
     onSelect: (path) => { revealPath(path); },
+    onOpenOffCity: () => setSelection(null),
     onVisit: toggleVisited,
   });
 }
