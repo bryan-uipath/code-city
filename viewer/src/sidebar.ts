@@ -911,7 +911,8 @@ function sourceHtml(src: SourceResponse, start: number): string {
 }
 
 function diffHtml(text: string, truncated?: number): string {
-  const lines = String(text).split('\n').slice(0, 400);
+  const all = String(text).split('\n');
+  const lines = all.slice(0, 400);
   const out = lines.map((line) => {
     const cls =
       line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('diff ')
@@ -921,9 +922,10 @@ function diffHtml(text: string, truncated?: number): string {
         : '';
     return cls ? `<span class="${cls}">${escapeHtml(line)}</span>` : escapeHtml(line);
   });
-  // The provider caps diffs; say so up front rather than end mid-hunk. e.g. "400 of 601 lines shown".
-  const cut = typeof truncated === 'number' && truncated > lines.length
-    ? `<div class="sb-hint sb-diff-cut">${fmt(lines.length)} of ${fmt(truncated)} lines shown · rest truncated</div>` : '';
+  // Provider cap or this one: say so up front rather than end mid-hunk. e.g. "400 of 601 lines shown".
+  const total = Math.max(truncated ?? 0, all.length);
+  const cut = total > lines.length
+    ? `<div class="sb-hint sb-diff-cut">${fmt(lines.length)} of ${fmt(total)} lines shown · rest truncated</div>` : '';
   return `${cut}<div class="sb-code">${out.join('\n')}</div>`;
 }
 
