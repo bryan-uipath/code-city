@@ -398,8 +398,8 @@ strata paint. Inside a file the hunk dim keeps priority. The header counts
 
 - `GET /api/source?path=<repo-rel>&start=<1-based>&end=` → `{ kind: 'code' | 'markdown', path, start, end, lines: [...] }` (cap 400 lines)
 - `GET /api/log?path=` → `{ commits: [{h, ts, a, s}] }` — last 15 commits touching that path
-- `GET /api/diff?path=&h=<hash>` → `{ diff: "unified diff text" }` — `git show <h> -- <path>`, cap ~400 lines; hash validated as /^[0-9a-f]{7,40}$/
-- `GET /api/rangediff?path=&base=&head=[&start=&end=]` → `{ diff }` — `git diff <base> <head> -- <path>`, optionally only the hunks changing head lines start..end; both hashes validated the same way
+- `GET /api/diff?path=&h=<hash>` → `{ diff: "unified diff text", truncated? }` — `git show <h> -- <path>`, cap 400 lines (`truncated` = full line count when cut; the pane says "400 of N lines shown"); hash validated as /^[0-9a-f]{7,40}$/
+- `GET /api/rangediff?path=&base=&head=[&start=&end=]` → `{ diff, truncated? }` — `git diff <base> <head> -- <path>`, same cap, optionally only the hunks changing head lines start..end; both hashes validated the same way
 
 Viewer must degrade gracefully when these 404 (e.g. static hosting): hide snippet/diff sections.
 

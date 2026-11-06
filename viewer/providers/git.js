@@ -85,7 +85,7 @@ export function createGitProvider(root) {
       const h = event || '';
       if (!HASH_RE.test(h)) throw new Error('invalid hash');
       const { stdout } = await git(root, [LITERAL, 'show', h, '--', rel]);
-      return { diff: stdout.split('\n').slice(0, MAX_LINES).join('\n') };
+      return capDiff(stdout);
     },
 
     // A path's diff across the analyzed range, optionally only the hunks that
@@ -104,7 +104,7 @@ export function createGitProvider(root) {
       const start = intParam(startParam, 0);
       const end = intParam(endParam, 0);
       const text = start >= 1 && end >= start ? clipHunks(stdout, start, end) : stdout;
-      return { diff: text.split('\n').slice(0, MAX_LINES).join('\n') };
+      return capDiff(text);
     },
 
     // Working-tree state: modified / added / deleted / untracked (the "now" view),
@@ -250,6 +250,13 @@ function clipHunks(diff, lo, hi) {
   }
   flush();
   return kept.length ? [...header, ...kept].join('\n') : '';
+}
+
+/** First MAX_LINES lines of a diff; `truncated` = the full line count when cut, so the viewer can say so. */
+function capDiff(text) {
+  const lines = text.replace(/\n$/, '').split('\n');
+  if (lines.length <= MAX_LINES) return { diff: text };
+  return { diff: lines.slice(0, MAX_LINES).join('\n'), truncated: lines.length };
 }
 
 // Repo-relative, no absolute/backslash/`..`, resolved under root, and must exist.
