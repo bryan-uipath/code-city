@@ -251,6 +251,8 @@ export function createSidebar(
     reviewHop2: boolean;
     /** The off-city path whose diff fills the code pane; a city selection clears it. */
     offSel: string | null;
+    /** The reviewer unfolded the queue while something is selected; deselecting resets it. */
+    reviewOpen: boolean;
     tour: TourView | null;
     search: SearchResults | null;
     /** Result files expanded to their matched lines. */
@@ -270,6 +272,7 @@ export function createSidebar(
     reviewSort: 'new',
     reviewHop2: false,
     offSel: null,
+    reviewOpen: false,
     tour: null,
     search: null,
     openHits: new Set(),
@@ -354,6 +357,11 @@ export function createSidebar(
       renderReview();
       return;
     }
+    if (closest(e.target, '.sb-rv-fold[data-fold]')) {
+      state.reviewOpen = !state.reviewOpen;
+      renderReview();
+      return;
+    }
     // The check marks; the rest of the row selects and flies.
     const visit = closest(e.target, '.sb-rv-visit[data-visit]')?.dataset.visit;
     if (visit) {
@@ -386,6 +394,7 @@ export function createSidebar(
     setSelection(desc) {
       state.selected = desc;
       state.offSel = null;
+      if (!desc) state.reviewOpen = false;
       state.openPrs.clear();
       state.allCommits = false;
       renderSelected();
@@ -646,9 +655,22 @@ export function createSidebar(
       `<span class="dir">${escapeHtml(dirName(path))}</span></div><div class="sig">${sig}</div></div>`;
     const sorts: ReviewSort[] = ['new', 'fix', 'importers', 'deleted'];
     const seen = files.filter((f) => view.visited.has(f.path)).length;
+    // While something is selected the queue folds to one strip, so the code pane sits near the top:
+    // `REVIEW · 3/25 visited · next main.ts ▸ · list ▾`. The header click unfolds it until deselect.
+    if ((state.selected || state.offSel) && !state.reviewOpen) {
+      const next = files.find((f) => !view.visited.has(f.path) && f.path !== sel);
+      secReview.innerHTML =
+        `<div class="h sb-rv-fold" data-fold="1"><span>Review</span><em>${fmt(seen)}/${fmt(files.length)} visited` +
+        ` · list ▾</em></div>` +
+        (next ? `<div class="sb-rv-next sb-rv" data-path="${escapeHtml(next.path)}">next ` +
+          `<span class="nm">${escapeHtml(baseName(next.path))}</span> <span class="dir">${escapeHtml(dirName(next.path))}</span> ▸</div>`
+          : `<div class="sb-hint">every file visited</div>`);
+      return;
+    }
     const parts: string[] = [
-      `<div class="h"><span>Review</span><em>${fmt(files.length + view.offCity.length)} changed` +
-        `${seen ? ` · ${fmt(seen)}/${fmt(files.length)} visited` : ''}</em></div>`,
+      `<div class="h${state.selected || state.offSel ? ' sb-rv-fold' : ''}" data-fold="1"><span>Review</span>` +
+        `<em>${fmt(files.length + view.offCity.length)} changed` +
+        `${seen ? ` · ${fmt(seen)}/${fmt(files.length)} visited` : ''}${state.selected || state.offSel ? ' · fold ▴' : ''}</em></div>`,
       `<div class="sb-sub">Read first · by ` +
         sorts.map((k) => `<span class="sb-rv-sort${k === key ? ' on' : ''}" data-sort="${k}">${k}</span>`).join(' ') +
         `</div>`,
