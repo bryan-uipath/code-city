@@ -283,6 +283,8 @@ export interface LogResponse {
 
 export interface DiffResponse {
   diff: string;
+  /** Full line count when the provider cut `diff` short; absent = complete. */
+  truncated?: number;
 }
 
 /** One `git status --porcelain` entry: `x` = index status, `y` = worktree. */

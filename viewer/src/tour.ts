@@ -165,7 +165,7 @@ export function createTour(host: TourHost): TourPlayer {
   function artifactViews(
     step: TourStep,
     target: TourTarget,
-    diffs: Map<TourArtifact, string | null> | null
+    diffs: Map<TourArtifact, DiffResponse | null> | null
   ): TourArtifactView[] {
     const out: TourArtifactView[] = [];
     for (const a of step.artifacts ?? []) {
@@ -188,11 +188,11 @@ export function createTour(host: TourHost): TourPlayer {
   async function resolveArtifacts(step: TourStep, target: TourTarget, token: number): Promise<void> {
     const wanted = (step.artifacts ?? []).filter(isDiffArtifact);
     if (!wanted.length) return;
-    const diffs = new Map<TourArtifact, string | null>();
+    const diffs = new Map<TourArtifact, DiffResponse | null>();
     for (const a of wanted) {
       const res = await host.getDiff(a.path ?? target.path, a.commit);
       if (token !== state.token) return;
-      diffs.set(a, res && typeof res.diff === 'string' ? res.diff : null);
+      diffs.set(a, res && typeof res.diff === 'string' ? res : null);
     }
     const tour = state.tour;
     if (!tour || token !== state.token) return;

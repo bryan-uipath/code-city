@@ -8,7 +8,7 @@
  * Everything data-derived is escaped before it reaches innerHTML.
  */
 import { isCommitHash, type CityHost } from '../../shared/host.js';
-import type { ContentKind, DiffEntry, LogCommit, OffCity, Pr, SourceResponse } from '../../shared/types.js';
+import type { ContentKind, DiffEntry, DiffResponse, LogCommit, OffCity, Pr, SourceResponse } from '../../shared/types.js';
 import type { Words } from '../../shared/vocab.js';
 import { relTime, type Timeline } from './timeline.js';
 
@@ -126,7 +126,7 @@ export interface SearchResults {
  * the player (diffs fetched through the host, URLs scheme-validated).
  */
 export type TourArtifactView =
-  | { type: 'diff'; label: string; diff: string | null }
+  | { type: 'diff'; label: string; diff: DiffResponse | null }
   | { type: 'image'; src: string; caption: string | null }
   | { type: 'link'; href: string; label: string };
 
@@ -809,7 +809,7 @@ export function createSidebar(
     secCode.insertAdjacentHTML(
       'beforeend',
       `<div class="sb-sub sb-diff-head">${label}</div>` +
-      (res.diff ? diffHtml(res.diff) : `<div class="sb-hint">No hunk of the diff touches these lines</div>`)
+      (res.diff ? diffHtml(res.diff, res.truncated) : `<div class="sb-hint">No hunk of the diff touches these lines</div>`)
     );
   }
 
@@ -825,7 +825,7 @@ export function createSidebar(
     if (token !== state.codeToken || !diff || !diff.diff || secCode.querySelector('.sb-diff-head')) return;
     secCode.insertAdjacentHTML(
       'beforeend',
-      `<div class="sb-sub sb-diff-head">Latest diff · ${escapeHtml(latest.slice(0, 7))}</div>` + diffHtml(diff.diff)
+      `<div class="sb-sub sb-diff-head">Latest diff · ${escapeHtml(latest.slice(0, 7))}</div>` + diffHtml(diff.diff, diff.truncated)
     );
   }
 
@@ -880,7 +880,7 @@ function sourceHtml(src: SourceResponse, start: number): string {
   return `<div class="sb-code">${out.join('\n')}</div>`;
 }
 
-function diffHtml(text: string): string {
+function diffHtml(text: string, truncated?: number): string {
   const lines = String(text).split('\n').slice(0, 400);
   const out = lines.map((line) => {
     const cls =
@@ -891,7 +891,10 @@ function diffHtml(text: string): string {
         : '';
     return cls ? `<span class="${cls}">${escapeHtml(line)}</span>` : escapeHtml(line);
   });
-  return `<div class="sb-code">${out.join('\n')}</div>`;
+  // The provider caps diffs; say so up front rather than end mid-hunk. e.g. "400 of 601 lines shown".
+  const cut = typeof truncated === 'number' && truncated > lines.length
+    ? `<div class="sb-hint sb-diff-cut">${fmt(lines.length)} of ${fmt(truncated)} lines shown · rest truncated</div>` : '';
+  return `${cut}<div class="sb-code">${out.join('\n')}</div>`;
 }
 
 /**
@@ -902,7 +905,7 @@ function artifactHtml(a: TourArtifactView): string {
   if (a.type === 'diff') {
     return (
       `<div class="sb-sub">Diff · ${escapeHtml(a.label)}</div>` +
-      (a.diff ? diffHtml(a.diff) : `<div class="sb-hint">diff unavailable</div>`)
+      (a.diff?.diff ? diffHtml(a.diff.diff, a.diff.truncated) : `<div class="sb-hint">diff unavailable</div>`)
     );
   }
   if (a.type === 'image') {
