@@ -102,7 +102,10 @@ Notes:
 ## Data contract v3 — diff scope (`data.diff`, optional)
 
 Emitted only for `npm run analyze -- <repo> --diff <base>..<head>`
-(`base...head` = from the merge base; a bare rev means `<rev>..HEAD`):
+(`base...head` = from the merge base; a bare rev means `<rev>..HEAD`), or
+`--pr <n>`: `gh pr view` gives the base tip and head, the range is
+`base...head` (what GitHub reviews), refs display as `main` → `#n`, and missing
+commits are fetched (`pull/<n>/head`, to FETCH_HEAD only):
 
 ```jsonc
 "diff": {
@@ -1229,7 +1232,7 @@ shared/types.ts           # the data.json contract, shared analyzer <-> viewer
 shared/host.ts            # CityHost adapter (HttpHost today, VS Code webview later)
 shared/tour.ts            # Tour SDK types + validateTour (the untrusted-input boundary)
 shared/vocab.ts           # source vocabulary rules + the viewer's lenient readVocabulary
-analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick] [--diff base..head] | --snapshot x.json [--out]
+analyzer/analyze.ts       # tsx analyzer/analyze.ts <repoPath> [--roots a,b] [--out viewer/public/data.json] [--no-prs] [--quick] [--diff base..head | --pr n] | --snapshot x.json [--out]
 analyzer/snapshot.ts      # the adapter contract: items, events, links, inflight
 analyzer/validate.ts      # validateSnapshot: the untrusted-input boundary for --snapshot files
 analyzer/compile.ts       # Snapshot -> data.json (paths, sums, churn, commit index)
