@@ -330,6 +330,11 @@ it shows is already in data.json.
   that button chose, and the separate Legend panel is gone. Scene toggles are a
   2×2 chip grid (`Arcs PRs / FX Worktree`, full names in titles). Keyboard help
   is behind `?` (key or the `? keys` button), not always on.
+- **One context bar**: the brand leads the breadcrumb (`● CODE CITY repo / viewer
+  / src`, current crumb gold) instead of a separate brand panel repeating the
+  repo name; then the diff chip, the City/Skyline switch (a view, not an
+  overlay, so it left the overlay column) and one muted stats line. The
+  timeline is one row: play · date · strip · range.
 
 ### Changes-first code pane (implemented)
 

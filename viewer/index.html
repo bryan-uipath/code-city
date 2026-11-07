@@ -112,16 +112,15 @@
   }
   #topbar > * { pointer-events: auto; }
 
-  #brand {
-    padding: 9px 14px; display: flex; align-items: center; gap: 10px;
+  .bc-brand {
+    display: flex; align-items: center; gap: 10px; margin-right: 6px;
     text-transform: uppercase; white-space: nowrap; flex: none;
   }
-  #brand .dot {
+  .bc-brand .dot {
     width: 7px; height: 7px; background: var(--orange); border-radius: 50%;
     box-shadow: 0 0 10px var(--orange); animation: pulse 2.4s ease-in-out infinite;
   }
-  #brand b { color: var(--foreground); font-weight: 600; letter-spacing: 0.2em; }
-  #brand span { color: var(--foreground-muted); font-size: 10px; letter-spacing: 0.16em; }
+  .bc-brand b { color: var(--foreground); font-weight: 600; letter-spacing: 0.2em; }
   /* The diff chip: says which range the city is showing, in every mode. */
   #diff-chip {
     flex: none; display: flex; align-items: center; padding: 9px 14px; cursor: pointer;
@@ -707,7 +706,7 @@
      breadcrumb trail, the strata timeline, and the overlay controls, those last
      tucked into a drawer so the resting view is pure city.
      Every rule below is scoped to body.embedded; standalone is untouched. */
-  body.embedded #brand,
+  body.embedded .bc-brand,
   body.embedded #stats,
   body.embedded #help,
   body.embedded #sidebar,
@@ -815,6 +814,20 @@
     color: var(--foreground); background: #26262a; border-color: var(--border); border-left-color: var(--gold); box-shadow: none;
   }
   button.toggle.active .led { background: var(--gold); border-color: var(--gold); box-shadow: none; }
+  /* Context bar: crumbs are quiet text, the current one gold; stats are one muted line. */
+  #breadcrumb .crumb { padding: 3px 4px; border: 0; color: var(--foreground-muted); }
+  #breadcrumb .crumb:hover { background: none; color: var(--foreground); }
+  #breadcrumb .crumb.active { color: var(--gold); background: none; }
+  #breadcrumb .sep { margin: 0 2px; }
+  #view-panel { padding: 5px 6px; flex: none; display: flex; align-items: center; }
+  #view-panel button.mode { padding: 4px 12px; font-size: 9.5px; }
+  #view-panel .btnrow { gap: 4px; }
+  #stats { padding: 9px 14px; font-size: 10px; gap: 10px; text-transform: lowercase; letter-spacing: 0.06em; }
+  /* Timeline on one row: play · date · strip · range. */
+  #timeline.on { display: flex; align-items: center; gap: 10px; padding: 6px 10px; }
+  #tl-top { display: contents; }
+  #tl-track { flex: 1; min-width: 0; height: 26px; margin-top: 0; order: 1; }
+  #tl-meta { order: 2; margin-left: 0; }
   /* Scene toggles: a 2×2 chip grid (full names in their titles). */
   #toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
   #toggles button.toggle { padding: 6px 8px; font-size: 9.5px; letter-spacing: 0.1em; }
@@ -841,11 +854,15 @@
 
   <!-- top bar -->
   <div id="topbar" class="hud">
-    <div id="brand" class="panel">
-      <i class="dot"></i><b>CODE&nbsp;CITY</b><span id="repo-name">—</span>
-    </div>
-    <div id="diff-chip" class="panel" title="This city carries a diff — click for Provenance" style="display:none"></div>
+    <!-- one context bar: brand + where you are, the range, how you look at it, how big it is -->
     <nav id="breadcrumb" class="panel"></nav>
+    <div id="diff-chip" class="panel" title="This city carries a diff — click for Provenance" style="display:none"></div>
+    <div id="view-panel" class="panel">
+      <div class="btnrow split" id="views">
+        <button class="mode active" data-view="city">City</button>
+        <button class="mode" data-view="skyline">Skyline</button>
+      </div>
+    </div>
     <div id="stats" class="panel">
       <div><span id="stat-files-label">FILES</span> <b id="stat-files">0</b></div>
       <div><span id="stat-modules-label">MODULES</span> <b id="stat-modules">0</b></div>
@@ -856,14 +873,6 @@
 
   <!-- left controls -->
   <div id="controls" class="hud">
-    <div class="panel">
-      <div class="panel-title">View</div>
-      <div class="btnrow split" id="views">
-        <button class="mode active" data-view="city">City</button>
-        <button class="mode" data-view="skyline">Skyline</button>
-      </div>
-    </div>
-
     <div class="panel" id="overlay-panel">
       <div class="panel-title">Overlay</div>
       <div class="btnrow" id="modes">
