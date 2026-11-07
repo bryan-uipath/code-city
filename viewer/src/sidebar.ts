@@ -477,7 +477,8 @@ export function createSidebar(
   function renderInspect(): void {
     const d = state.hover;
     const sel = state.selected;
-    const same = d && sel && d.path === sel.path && d.name === sel.name;
+    // Same = the pinned thing itself; another strata slab of the pinned file (its own note) is not.
+    const same = d && sel && d.path === sel.path && d.name === sel.name && d.note === sel.note;
     secInspect.innerHTML = d && !same ? hoverHtml(d)
       : `<div class="sb-hover scope">${escapeHtml(state.scope || 'Hover a plate or building')}</div>`;
   }
@@ -486,8 +487,10 @@ export function createSidebar(
     const stats = d.grid
       ? d.grid.map(([k, v]) => `${typeof v === 'number' ? fmt(v) : escapeHtml(String(v))} ${escapeHtml(k.toLowerCase())}`)
       : [`${fmt(d.loc)} ${escapeHtml(words.mass)}`, `churn ${fmt(d.churn)}`, `fix ${fmt(d.fixChurn)}`, `recent ${fmt(d.recentChurn)}`];
-    const note = d.layerNote ?? d.provNote ?? d.note;
-    return `<div class="sb-hover" title="${escapeHtml(`${d.path} · ${stats.join(' · ')}`)}"><span class="nm">${escapeHtml(d.name)}</span>` +
+    // A slab's own commit beats the file-wide readings: it is what the pointer is on.
+    const note = d.note ?? d.layerNote ?? d.provNote;
+    return `<div class="sb-hover" data-path="${escapeHtml(d.path)}" title="${escapeHtml(`${d.path} · ${stats.join(' · ')}`)}">` +
+      `<span class="nm">${escapeHtml(d.name)}</span>` +
       `<span class="k" style="color:${cssColor(d.kindColor)}">${escapeHtml(d.kind || '')}</span>` +
       `<span class="st">${stats.join(' · ')}</span></div>` +
       (note ? `<div class="sb-hover note">${escapeHtml(note)}</div>` : '');
