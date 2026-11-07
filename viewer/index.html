@@ -829,7 +829,9 @@
   /* Timeline on one row: play · date · strip · range. */
   #timeline.on { display: flex; align-items: center; gap: 10px; padding: 6px 10px; }
   #tl-top { display: contents; }
-  #tl-track { flex: 1; min-width: 0; height: 26px; margin-top: 0; order: 1; }
+  /* The strip keeps a usable width; the labels around it give way (ellipsis) first. */
+  #tl-track { flex: 1 0 140px; height: 26px; margin-top: 0; order: 1; }
+  #tl-date, #tl-meta { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   #tl-meta { order: 2; margin-left: 0; }
   /* Scene toggles: a 2×2 chip grid (full names in their titles). */
   #toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }

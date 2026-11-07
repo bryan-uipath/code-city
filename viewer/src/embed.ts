@@ -101,6 +101,9 @@ function buildDrawer(): { isOpen(): boolean; close(): void } {
   const panel = document.createElement('div');
   panel.id = 'embed-drawer';
   if (controls) {
+    // City/Skyline sits in the standalone topbar; embedded, the resting view stays city + breadcrumbs.
+    const views = document.getElementById('view-panel');
+    if (views) controls.prepend(views);
     panel.appendChild(controls);
     addTimelineRow(controls);
   }
