@@ -219,7 +219,6 @@ const dom = {
   boot: requireEl('boot'),
   notice: requireEl('notice'),
   breadcrumb: requireEl('breadcrumb'),
-  repoName: requireEl('repo-name'),
   statFiles: requireEl('stat-files'),
   statFilesLabel: requireEl('stat-files-label'),
   statModules: requireEl('stat-modules'),
@@ -971,7 +970,6 @@ function buildStaticScene(): void {
   // are stage-local, and they must follow the stage's home offset.
   stage.add(selectionBox, hoverBox);
 
-  dom.repoName.textContent = '// ' + (state.data?.repo?.name || 'repo');
 }
 
 /** Where a node sits in a layout: its centre and average side length. */
@@ -1655,7 +1653,8 @@ function renderBreadcrumb(): void {
   let n = state.focus || state.root;
   while (n) { crumbNodes.unshift(n); n = n.parent ?? null; }
 
-  const html: string[] = [];
+  // The brand leads the trail: `● CODE CITY  repo / viewer / src` is one context, not two panels.
+  const html: string[] = ['<span class="bc-brand"><i class="dot"></i><b>CODE&nbsp;CITY</b></span>'];
   crumbNodes.forEach((node, i) => {
     if (i > 0) html.push('<i class="sep">/</i>');
     const label = i === 0 ? (state.data?.repo?.name || node.name) : node.name;
