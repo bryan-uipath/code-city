@@ -18,6 +18,9 @@ const COMMIT_PEEK = 5;
 const PR_PEEK = 6;
 /** Layer pairs listed under a selection. */
 const PAIR_PEEK = 8;
+type FoldKey = 'pairs' | 'prs' | 'commits' | 'work';
+/** Lists open until the reader closes them: pairs, because the arcs on screen point at them. */
+const FOLD_OPEN: Record<FoldKey, boolean> = { pairs: true, prs: false, commits: false, work: false };
 /** Search result rows shown before the list is cut off. */
 const SEARCH_FILE_PEEK = 40;
 const SEARCH_LINE_PEEK = 12;
@@ -254,7 +257,9 @@ export function createSidebar(
   const secSelected = section('selected');
   const secWork = section('worktree');
   const secCode = section('code');
-  body.append(secInspect, secTour, secSearch, secReview, secSelected, secWork, secCode);
+  const secMore = section('more');
+  // The code pane sits right under the identity; the lists fold below it (see `foldHtml`).
+  body.append(secInspect, secTour, secSearch, secReview, secSelected, secCode, secMore, secWork);
 
   const spanLogs = new Map<string, { commits: LogCommit[]; scoped: boolean }>(); // span key -> its log
   const state: {
@@ -277,6 +282,8 @@ export function createSidebar(
     offSel: string | null;
     /** The reviewer unfolded the queue while something is selected; deselecting resets it. */
     reviewOpen: boolean;
+    /** Lists the reader toggled away from their default (`FOLD_OPEN`), by key; kept across selections. */
+    folds: Set<string>;
     tour: TourView | null;
     search: SearchResults | null;
     /** Result files expanded to their matched lines. */
@@ -298,6 +305,7 @@ export function createSidebar(
     reviewHop2: false,
     offSel: null,
     reviewOpen: false,
+    folds: new Set(),
     tour: null,
     search: null,
     openHits: new Set(),
@@ -310,9 +318,16 @@ export function createSidebar(
 
   // Compact rows expand in place rather than opening anything.
   secSelected.addEventListener('click', (e) => {
+    if (toggleFold(e.target)) {
+      renderSelected();
+      return;
+    }
     const reveal = closest(e.target, '.sb-pair[data-reveal]')?.dataset.reveal;
-    if (reveal) {
-      opts.onReveal?.(reveal);
+    if (reveal) opts.onReveal?.(reveal);
+  });
+  secMore.addEventListener('click', (e) => {
+    if (toggleFold(e.target)) {
+      renderMore();
       return;
     }
     const pr = closest(e.target, '.sb-pr[data-pr]');
@@ -355,6 +370,10 @@ export function createSidebar(
     if (!work) return;
     if (closest(e.target, '#sb-work-refresh')) {
       work.onRefresh();
+      return;
+    }
+    if (toggleFold(e.target)) {
+      renderWork();
       return;
     }
     const row = closest(e.target, '.sb-work[data-path]');
@@ -528,6 +547,7 @@ export function createSidebar(
   }
 
   function renderSelected(): void {
+    renderMore();
     // The tour owns this slot while it plays.
     if (state.tour) {
       secSelected.style.display = 'none';
@@ -544,9 +564,39 @@ export function createSidebar(
     secSelected.innerHTML =
       `<div class="h"><span>Selected</span><em>${escapeHtml(d.kind || '')}</em></div>` +
       statsHtml(d) +
-      prsHtml(d.prs || []) +
-      commitsHtml(d);
+      // Pairs exist only while a layer paints them, and the arcs on screen point at them: above the code.
+      pairsHtml(d.layerPairs);
     loadFallbackCommits(d);
+  }
+
+  /** The selection's lists under the code pane, each behind one summary row: PRs, commits. */
+  function renderMore(): void {
+    const d = state.tour ? null : state.selected;
+    const html = d ? prsHtml(d.prs || []) + commitsHtml(d) : '';
+    secMore.style.display = html ? '' : 'none';
+    secMore.innerHTML = html;
+  }
+
+  /** A list behind one summary row — `▸ COMMITS 8 · 8h feat: duplication…` — the row toggles it. */
+  function foldHtml(key: FoldKey, title: string, summary: string, body: string): string {
+    const open = isOpen(key);
+    return `<div class="sb-fold${open ? ' open' : ''}"><div class="sb-fold-h" data-fold="${key}">` +
+      `<span class="t">${open ? '▾' : '▸'} ${escapeHtml(title)}</span><span class="s">${summary}</span></div>` +
+      (open ? `<div class="sb-fold-b">${body}</div>` : '') + `</div>`;
+  }
+
+  /** Open = its default (`FOLD_OPEN`) unless the reader flipped it. */
+  function isOpen(key: FoldKey): boolean {
+    return FOLD_OPEN[key] !== state.folds.has(key);
+  }
+
+  /** Flip the fold under a click; false when the click was not on a fold header. */
+  function toggleFold(target: EventTarget | null): boolean {
+    const key = closest(target, '.sb-fold-h[data-fold]')?.dataset.fold;
+    if (!key) return false;
+    if (state.folds.has(key)) state.folds.delete(key);
+    else state.folds.add(key);
+    return true;
   }
 
   // Two lines where there were seven: `sidebar.ts  viewer/src` then `1,223 loc · churn 21 · fix 1 · recent 12`;
@@ -565,19 +615,19 @@ export function createSidebar(
       (d.note ? `<div class="sb-note">${escapeHtml(d.note)}</div>` : '') +
       (d.filterNote ? `<div class="sb-note filter">${escapeHtml(d.filterNote)}</div>` : '') +
       (d.layerNote ? `<div class="sb-note layer">${escapeHtml(d.layerNote)}</div>` : '') +
-      (d.provNote ? `<div class="sb-note prov">${escapeHtml(d.provNote)}</div>` : '') +
-      pairsHtml(d.layerPairs)
+      (d.provNote ? `<div class="sb-note prov">${escapeHtml(d.provNote)}</div>` : '')
     );
   }
 
   /** The active layer's partners of this file: `sidebar.ts :1119 · names · = baseName …`. */
   function pairsHtml(pairs: LayerPair[] | undefined): string {
     if (!pairs?.length) return '';
-    return `<div class="sb-sub">Pairs · ${fmt(pairs.length)}</div>` + pairs.slice(0, PAIR_PEEK).map((p) =>
+    const names = pairs.slice(0, 3).map((p) => escapeHtml(baseName(p.path))).join(', ');
+    return foldHtml('pairs', `Pairs ${fmt(pairs.length)}`, names, pairs.slice(0, PAIR_PEEK).map((p) =>
       `<div class="sb-pair" data-reveal="${escapeHtml(p.path)}"><span class="nm">${escapeHtml(baseName(p.path))}</span>` +
       `${p.line ? `<span class="at">:${fmt(p.line)}</span>` : ''}<span class="dir">${escapeHtml(dirName(p.path))}</span>` +
       (p.note ? `<div class="sig">${escapeHtml(p.note)}</div>` : '') + `</div>`
-    ).join('') + (pairs.length > PAIR_PEEK ? `<div class="sb-hint">+${fmt(pairs.length - PAIR_PEEK)} more</div>` : '');
+    ).join('') + (pairs.length > PAIR_PEEK ? `<div class="sb-hint">+${fmt(pairs.length - PAIR_PEEK)} more</div>` : ''));
   }
 
   /** One line per PR — `#3088 · title · @author · 3d` — full detail on click. */
@@ -606,7 +656,9 @@ export function createSidebar(
       return `<div class="sb-pr${open ? ' open' : ''}" data-pr="${num}"><div class="ln">${head}</div>${detail}</div>`;
     });
     const more = prs.length > PR_PEEK ? `<div class="sb-pr who">+${prs.length - PR_PEEK} more</div>` : '';
-    return `<div class="sb-sub">${prs.length} open PR${prs.length > 1 ? 's' : ''}</div>` + rows.join('') + more;
+    const first = prs[0];
+    const peek = first ? `#${Number(first.number) || 0} ${escapeHtml(truncate(first.title || '', 28))}` : '';
+    return foldHtml('prs', `${prs.length} open PR${prs.length > 1 ? 's' : ''}`, peek, rows.join('') + more);
   }
 
   function commitsHtml(d: Descriptor): string {
@@ -640,7 +692,9 @@ export function createSidebar(
     const more = hidden > 0 || state.allCommits
       ? `<div class="sb-more">${state.allCommits ? '− less' : `+${hidden} more`}</div>`
       : '';
-    return `<div class="sb-sub">${title}</div>` + rows.join('') + more;
+    const top = list[0];
+    const peek = top ? `${escapeHtml(t === null ? shortAge(relTime(top.ts)) : '')} ${escapeHtml(truncate(top.s || '', 30))}` : '';
+    return foldHtml('commits', `${title} ${fmt(list.length)}`, peek, rows.join('') + more);
   }
 
   // --- search results ------------------------------------------------------
@@ -815,14 +869,18 @@ export function createSidebar(
       return;
     }
     secWork.style.display = '';
+    const order: WorkKind[] = ['modified', 'untracked', 'deleted'];
+    // Repo-wide, not about the selection: one summary row (`2 modified · 5 untracked ↻`) until opened.
+    const counts = order.map((k) => [k, work.changes.filter((c) => c.kind === k).length] as const).filter(([, n]) => n);
+    const open = isOpen('work');
     const head =
-      `<div class="h"><span>Working tree</span>` +
-      `<button id="sb-work-refresh" type="button" title="Re-read git status">&#8635;</button></div>`;
-    if (!work.changes.length) {
-      secWork.innerHTML = head + `<div class="sb-hint">Clean</div>`;
+      `<div class="h sb-fold-h" data-fold="work"><span>${open ? '▾' : '▸'} Working tree</span>` +
+      `<em>${counts.length ? counts.map(([k, n]) => `${fmt(n)} ${k}`).join(' · ') : 'clean'}` +
+      `<button id="sb-work-refresh" type="button" title="Re-read git status">&#8635;</button></em></div>`;
+    if (!work.changes.length || !open) {
+      secWork.innerHTML = head;
       return;
     }
-    const order: WorkKind[] = ['modified', 'untracked', 'deleted'];
     const parts: string[] = [];
     for (const kind of order) {
       const rows = work.changes.filter((c) => c.kind === kind);

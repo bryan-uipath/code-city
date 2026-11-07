@@ -312,6 +312,13 @@ it shows is already in data.json.
   `1,223 loc · 21 churn · 1 fix · 12 recent · imports …` — then one line per
   note (layer, filter, provenance: different facts). Nothing pinned hides the
   section.
+- **Lists fold to one summary row** — `▸ RECENT COMMITS 8 · 8h feat: …`,
+  `▸ 2 OPEN PRS · #24 …`, `▸ WORKING TREE · 2 modified · 5 untracked ↻` — and
+  sit *below* the code pane, so a selection reads identity → code. The working
+  tree is repo-wide, so it goes last. Pairs are the exception: they exist only
+  while a layer paints them and the arcs on screen point at them, so they stay
+  above the code and open by default. A toggled fold is remembered across
+  selections (`state.folds`, flips of `FOLD_OPEN`).
 
 ### Changes-first code pane (implemented)
 
