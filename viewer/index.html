@@ -299,6 +299,14 @@
   .sb-note { color: var(--accent-muted); font-size: 9.5px; margin-top: 4px; word-break: break-word; letter-spacing: 0.04em; }
   .sb-note.filter { color: #ffd9cd; text-transform: uppercase; letter-spacing: 0.12em; font-size: 9px; }
   .sb-note.layer { color: var(--gold); letter-spacing: 0.06em; }
+  /* Hover: one line under the header, the pinned thing's details stay in SELECTED. */
+  #sb-inspect { padding: 7px 14px; }
+  .sb-hover { display: flex; align-items: baseline; gap: 8px; font-size: 10.5px; white-space: nowrap; overflow: hidden; }
+  .sb-hover .nm { color: var(--foreground); }
+  .sb-hover .k { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; }
+  .sb-hover .st { color: var(--foreground-muted); overflow: hidden; text-overflow: ellipsis; }
+  .sb-hover.note { color: var(--gold); font-size: 9.5px; margin-top: 2px; }
+  .sb-hover.scope { color: var(--foreground-muted); }
   .sb-pair { cursor: pointer; font-size: 10.5px; padding: 3px 4px; border-left: 2px solid transparent; }
   .sb-pair:hover { background: #1c1c1f; border-left-color: var(--gold); }
   .sb-pair .nm { color: var(--foreground); margin-right: 4px; }

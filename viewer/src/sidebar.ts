@@ -212,8 +212,10 @@ export interface Descriptor {
 }
 
 export interface Sidebar {
-  /** Live hover descriptor (null clears to the hint). */
+  /** Live hover descriptor (null shows the scope line). */
   setHover(desc: Descriptor | null): void;
+  /** What the city shows right now — `viewer/src · 18 files · 9,412 loc` — for the idle hover line. */
+  setScope(text: string): void;
   /** Pinned selection descriptor; triggers PR/commit/code refresh. */
   setSelection(desc: Descriptor | null): void;
   /** Time cursor (epoch seconds or null) — re-renders the commit list. */
@@ -258,6 +260,7 @@ export function createSidebar(
   const state: {
     hover: Descriptor | null;
     selected: Descriptor | null;
+    scope: string;
     manualWide: boolean | null;
     wide: boolean;
     codeToken: number;
@@ -281,6 +284,7 @@ export function createSidebar(
   } = {
     hover: null,
     selected: null,
+    scope: '',
     /** null = follow auto-expand, true/false = manual override. */
     manualWide: null,
     wide: false,
@@ -417,9 +421,14 @@ export function createSidebar(
       state.hover = desc;
       renderInspect();
     },
+    setScope(text) {
+      state.scope = text;
+      renderInspect();
+    },
     setSelection(desc) {
       state.selected = desc;
       state.offSel = null;
+      renderInspect();
       if (!desc) state.reviewOpen = false;
       state.openPrs.clear();
       state.allCommits = false;
@@ -463,11 +472,28 @@ export function createSidebar(
 
   // --- sections ------------------------------------------------------------
 
+  // Hover is one line, not a second copy of SELECTED: `sidebar.ts FILE · 1,200 loc · churn 25 · …`.
+  // Hovering the pinned thing adds nothing; hovering nothing shows the scope.
   function renderInspect(): void {
     const d = state.hover;
-    secInspect.innerHTML =
-      `<div class="h"><span>Inspect</span><em>hover</em></div>` +
-      (d ? statsHtml(d) : `<div class="sb-hint">Hover a plate or building</div>`);
+    const sel = state.selected;
+    // Same = the pinned thing itself; another strata slab of the pinned file (its own note) is not.
+    const same = d && sel && d.path === sel.path && d.name === sel.name && d.note === sel.note;
+    secInspect.innerHTML = d && !same ? hoverHtml(d)
+      : `<div class="sb-hover scope">${escapeHtml(state.scope || 'Hover a plate or building')}</div>`;
+  }
+
+  function hoverHtml(d: Descriptor): string {
+    const stats = d.grid
+      ? d.grid.map(([k, v]) => `${typeof v === 'number' ? fmt(v) : escapeHtml(String(v))} ${escapeHtml(k.toLowerCase())}`)
+      : [`${fmt(d.loc)} ${escapeHtml(words.mass)}`, `churn ${fmt(d.churn)}`, `fix ${fmt(d.fixChurn)}`, `recent ${fmt(d.recentChurn)}`];
+    // A slab's own commit beats the file-wide readings: it is what the pointer is on.
+    const note = d.note ?? d.layerNote ?? d.provNote;
+    return `<div class="sb-hover" data-path="${escapeHtml(d.path)}" title="${escapeHtml(`${d.path} · ${stats.join(' · ')}`)}">` +
+      `<span class="nm">${escapeHtml(d.name)}</span>` +
+      `<span class="k" style="color:${cssColor(d.kindColor)}">${escapeHtml(d.kind || '')}</span>` +
+      `<span class="st">${stats.join(' · ')}</span></div>` +
+      (note ? `<div class="sb-hover note">${escapeHtml(note)}</div>` : '');
   }
 
   /**

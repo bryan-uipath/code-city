@@ -327,9 +327,9 @@ async function sweep(page) {
           new PointerEvent('pointermove', { clientX: x, clientY: y, bubbles: true, pointerType: 'mouse' })
         );
         await frame();
-        const sec = document.querySelector('#sb-body .sb-sec');
-        const name = sec?.querySelector('.sb-name')?.textContent?.trim() || '';
-        const p = sec?.querySelector('.sb-path')?.textContent?.trim() || '';
+        const row = document.querySelector('#sb-body .sb-hover[data-path]');
+        const name = row?.querySelector('.nm')?.textContent?.trim() || '';
+        const p = row?.getAttribute('data-path') || '';
         if (name) out.push({ x, y, name, path: p });
       }
     }
