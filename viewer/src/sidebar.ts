@@ -208,8 +208,6 @@ export interface Descriptor {
   logSpan?: { start: number; end: number };
   /** `span` is an explicit line target (a search hit): the code pane opens on source, not changes. */
   sourceFirst?: boolean;
-  /** File-level or deeper — the code pane is worth widening for. */
-  deep: boolean;
   /** Filled in from the host when there is no commit stream. */
   logCommits?: LogCommit[];
 }
@@ -267,6 +265,8 @@ export function createSidebar(
     selected: Descriptor | null;
     scope: string;
     manualWide: boolean | null;
+    /** The reader opened code to read (see `read`); reset by the next selection. */
+    reading: boolean;
     wide: boolean;
     codeToken: number;
     cursor: number | null;
@@ -294,6 +294,7 @@ export function createSidebar(
     scope: '',
     /** null = follow auto-expand, true/false = manual override. */
     manualWide: null,
+    reading: false,
     wide: false,
     codeToken: 0,
     cursor: null,
@@ -387,10 +388,22 @@ export function createSidebar(
       if (!d || !d.codePath || secCode.querySelector('.sb-src-btn.on')) return;
       closest(e.target, '.sb-src-btn')?.classList.add('on');
       void loadSource(d, d.codePath, state.codeToken);
+      read();
       return;
     }
-    closest(e.target, '.sb-hunk-h')?.parentElement?.classList.toggle('open');
+    const card = closest(e.target, '.sb-hunk-h')?.parentElement;
+    if (card) {
+      card.classList.toggle('open');
+      if (card.classList.contains('open')) read();
+    }
   });
+
+  /** The reader asked to read (opened a hunk, the source): the pane widens until the next selection. */
+  function read(): void {
+    if (state.reading) return;
+    state.reading = true;
+    applyWidth();
+  }
 
   secReview.addEventListener('click', (e) => {
     const view = state.review;
@@ -447,6 +460,8 @@ export function createSidebar(
     setSelection(desc) {
       state.selected = desc;
       state.offSel = null;
+      // A line target (search hit) is a request to read; any other selection starts narrow.
+      state.reading = !!desc?.sourceFirst;
       renderInspect();
       if (!desc) state.reviewOpen = false;
       state.openPrs.clear();
@@ -1047,7 +1062,9 @@ export function createSidebar(
   // --- width ---------------------------------------------------------------
 
   function applyWidth(): void {
-    const auto = !!(state.selected && state.selected.deep);
+    // Inspecting stays narrow (the city keeps its width); reading — an opened hunk, the source,
+    // a search hit — goes wide. The width button still overrides either way.
+    const auto = state.reading && !!state.selected;
     state.wide = state.manualWide === null ? auto : state.manualWide;
     root.classList.toggle('wide', state.wide);
     // The timeline bar sizes itself against this so the two never overlap.

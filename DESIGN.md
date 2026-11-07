@@ -319,6 +319,12 @@ it shows is already in data.json.
   while a layer paints them and the arcs on screen point at them, so they stay
   above the code and open by default. A toggled fold is remembered across
   selections (`state.folds`, flips of `FOLD_OPEN`).
+- **Width follows reading, not depth.** Selecting anything leaves the
+  inspector at 300px, so the city keeps its width; hunk code wraps there.
+  Opening a hunk card, `source ▸`, or a search hit (`sourceFirst`) is a request
+  to read and widens it to 560px until the next selection. The width button
+  still overrides. Camera framing reads the target width (`--sb-w`, set before
+  the panel animates) instead of assuming 560 at file level.
 
 ### Changes-first code pane (implemented)
 
