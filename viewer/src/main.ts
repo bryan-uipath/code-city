@@ -556,8 +556,9 @@ async function main(): Promise<void> {
   embed = initEmbed({ openSelection: (mode) => bridge.openSelection(mode) });
   if (state.selection) showSelection(describe(state.selection));
   if (new URLSearchParams(location.search).get('view') === 'skyline') setView('skyline');
-  // FPS is a developer's number: shown only with ?debug.
-  if (!new URLSearchParams(location.search).has('debug')) dom.statFps.parentElement?.remove();
+  // FPS is a developer's number: shown only with ?debug (and to the motion probe, which reads it).
+  const qs = new URLSearchParams(location.search);
+  if (!qs.has('debug') && !qs.has('probe')) dom.statFps.parentElement?.remove();
   animate();
 
   requestAnimationFrame(() => dom.boot.classList.add('hide'));
