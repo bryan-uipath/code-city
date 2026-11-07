@@ -579,10 +579,15 @@ export function createSidebar(
 
   /** A list behind one summary row — `▸ COMMITS 8 · 8h feat: duplication…` — the row toggles it. */
   function foldHtml(key: FoldKey, title: string, summary: string, body: string): string {
-    const open = FOLD_OPEN[key] !== state.folds.has(key);
+    const open = isOpen(key);
     return `<div class="sb-fold${open ? ' open' : ''}"><div class="sb-fold-h" data-fold="${key}">` +
       `<span class="t">${open ? '▾' : '▸'} ${escapeHtml(title)}</span><span class="s">${summary}</span></div>` +
       (open ? `<div class="sb-fold-b">${body}</div>` : '') + `</div>`;
+  }
+
+  /** Open = its default (`FOLD_OPEN`) unless the reader flipped it. */
+  function isOpen(key: FoldKey): boolean {
+    return FOLD_OPEN[key] !== state.folds.has(key);
   }
 
   /** Flip the fold under a click; false when the click was not on a fold header. */
@@ -867,7 +872,7 @@ export function createSidebar(
     const order: WorkKind[] = ['modified', 'untracked', 'deleted'];
     // Repo-wide, not about the selection: one summary row (`2 modified · 5 untracked ↻`) until opened.
     const counts = order.map((k) => [k, work.changes.filter((c) => c.kind === k).length] as const).filter(([, n]) => n);
-    const open = FOLD_OPEN.work !== state.folds.has('work');
+    const open = isOpen('work');
     const head =
       `<div class="h sb-fold-h" data-fold="work"><span>${open ? '▾' : '▸'} Working tree</span>` +
       `<em>${counts.length ? counts.map(([k, n]) => `${fmt(n)} ${k}`).join(' · ') : 'clean'}` +
