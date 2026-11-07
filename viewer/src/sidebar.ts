@@ -458,10 +458,14 @@ export function createSidebar(
       renderInspect();
     },
     setSelection(desc) {
+      // A new thing starts narrow, unless it is a line target (search hit): a request to read.
+      // A re-describe of the same thing (filter, layer, focus change) keeps the reader's width.
+      const prev = state.selected;
+      if (!desc || !prev || desc.path !== prev.path || desc.name !== prev.name || desc.sourceFirst) {
+        state.reading = !!desc?.sourceFirst;
+      }
       state.selected = desc;
       state.offSel = null;
-      // A line target (search hit) is a request to read; any other selection starts narrow.
-      state.reading = !!desc?.sourceFirst;
       renderInspect();
       if (!desc) state.reviewOpen = false;
       state.openPrs.clear();
@@ -1076,7 +1080,7 @@ export function createSidebar(
   function applyWidth(): void {
     // Inspecting stays narrow (the city keeps its width); reading — an opened hunk, the source,
     // a search hit — goes wide. The width button still overrides either way.
-    const auto = state.reading && !!state.selected;
+    const auto = state.reading && !!state.selected?.codePath && opts.host.available();
     state.wide = state.manualWide === null ? auto : state.manualWide;
     root.classList.toggle('wide', state.wide);
     // The timeline bar sizes itself against this so the two never overlap.
