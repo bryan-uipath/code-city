@@ -556,8 +556,9 @@ async function main(): Promise<void> {
   embed = initEmbed({ openSelection: (mode) => bridge.openSelection(mode) });
   if (state.selection) showSelection(describe(state.selection));
   if (new URLSearchParams(location.search).get('view') === 'skyline') setView('skyline');
-  // FPS is a developer's number: shown only with ?debug.
-  if (!new URLSearchParams(location.search).has('debug')) dom.statFps.parentElement?.remove();
+  // FPS is a developer's number: shown only with ?debug (and to the motion probe, which reads it).
+  const qs = new URLSearchParams(location.search);
+  if (!qs.has('debug') && !qs.has('probe')) dom.statFps.parentElement?.remove();
   animate();
 
   requestAnimationFrame(() => dom.boot.classList.add('hide'));
@@ -4035,9 +4036,8 @@ function framingFor(node: VNode): Framing | null {
 
   // The HUD eats both edges of the viewport, so fit the footprint to the free
   // strip between the control stack and the sidebar, then slide the framing into
-  // it. The sidebar's width is its target (`--sb-w`, set before it animates), not
-  // a measurement: its CSS transition would lag the camera move.
-  const sbW = parseInt(document.documentElement.style.getPropertyValue('--sb-w'), 10) || 300;
+  // it. The sidebar's width is its target, not a measurement: its CSS transition would lag the camera move.
+  const sbW = sidebarWidth();
   const freeRight = window.innerWidth - (sbW + 14);
   const freeWidth = Math.max(freeRight - 240, 240);
   const freeCenter = (240 + freeRight) / 2;
@@ -5170,8 +5170,14 @@ function updateSnippet(dt: number): void {
 }
 
 /** The viewport, in NDC, not covered by the control stack, top bar, timeline or sidebar. */
+/** The inspector's target width (`--sb-w`, set before it animates); 0 embedded, where there is none. */
+function sidebarWidth(): number {
+  if (EMBEDDED) return 0;
+  return parseInt(document.documentElement.style.getPropertyValue('--sb-w'), 10) || 300;
+}
+
 function freeStrip(): { left: number; right: number; top: number; bottom: number } {
-  const sbW = realFileOf(state.focus) ? 580 : 320;
+  const sbW = sidebarWidth() + 20;
   return {
     left: -1 + (2 * 250) / window.innerWidth,
     right: 1 - (2 * sbW) / window.innerWidth,

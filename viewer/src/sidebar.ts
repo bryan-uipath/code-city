@@ -458,10 +458,14 @@ export function createSidebar(
       renderInspect();
     },
     setSelection(desc) {
+      // A new thing starts narrow, unless it is a line target (search hit): a request to read.
+      // A re-describe of the same thing (filter, layer, focus change) keeps the reader's width.
+      const prev = state.selected;
+      if (!desc || !prev || desc.path !== prev.path || desc.name !== prev.name || desc.sourceFirst) {
+        state.reading = !!desc?.sourceFirst;
+      }
       state.selected = desc;
       state.offSel = null;
-      // A line target (search hit) is a request to read; any other selection starts narrow.
-      state.reading = !!desc?.sourceFirst;
       renderInspect();
       if (!desc) state.reviewOpen = false;
       state.openPrs.clear();
@@ -506,24 +510,32 @@ export function createSidebar(
 
   // --- sections ------------------------------------------------------------
 
+  /** The descriptor's numbers, `[label, value]`: a PR's own grid, else loc · churn · fix · recent. */
+  function statPairs(d: Descriptor): Array<[string, string | number | undefined]> {
+    return d.grid
+      ? d.grid.map(([k, v]): [string, string | number] => [k.toLowerCase(), v])
+      : [[words.mass, d.loc], ['churn', d.churn], ['fix', d.fixChurn], ['recent', d.recentChurn]];
+  }
+
   // Hover is one line, not a second copy of SELECTED: `sidebar.ts FILE · 1,200 loc · churn 25 · …`.
   // Hovering the pinned thing adds nothing; hovering nothing shows the scope.
   function renderInspect(): void {
     const d = state.hover;
     const sel = state.selected;
-    const same = d && sel && d.path === sel.path && d.name === sel.name;
+    // Same = the pinned thing itself; another strata slab of the pinned file (its own note) is not.
+    const same = d && sel && d.path === sel.path && d.name === sel.name && d.note === sel.note;
     secInspect.innerHTML = d && !same ? hoverHtml(d)
       : `<div class="sb-hover scope">${escapeHtml(state.scope || 'Hover a plate or building')}</div>`;
   }
 
   function hoverHtml(d: Descriptor): string {
-    const stats = d.grid
-      ? d.grid.map(([k, v]) => `${typeof v === 'number' ? fmt(v) : escapeHtml(String(v))} ${escapeHtml(k.toLowerCase())}`)
-      : [`${fmt(d.loc)} ${escapeHtml(words.mass)}`, `churn ${fmt(d.churn)}`, `fix ${fmt(d.fixChurn)}`, `recent ${fmt(d.recentChurn)}`];
-    const note = d.layerNote ?? d.provNote ?? d.note;
-    return `<div class="sb-hover" title="${escapeHtml(`${d.path} · ${stats.join(' · ')}`)}"><span class="nm">${escapeHtml(d.name)}</span>` +
+    const stats = statPairs(d).map(([k, v]) => `${typeof v === 'number' ? fmt(v) : String(v ?? '—')} ${k}`);
+    // A slab's own commit beats the file-wide readings: it is what the pointer is on.
+    const note = d.note ?? d.layerNote ?? d.provNote;
+    return `<div class="sb-hover" data-path="${escapeHtml(d.path)}" title="${escapeHtml(`${d.path} · ${stats.join(' · ')}`)}">` +
+      `<span class="nm">${escapeHtml(d.name)}</span>` +
       `<span class="k" style="color:${cssColor(d.kindColor)}">${escapeHtml(d.kind || '')}</span>` +
-      `<span class="st">${stats.join(' · ')}</span></div>` +
+      `<span class="st">${escapeHtml(stats.join(' · '))}</span></div>` +
       (note ? `<div class="sb-hover note">${escapeHtml(note)}</div>` : '');
   }
 
@@ -586,10 +598,15 @@ export function createSidebar(
 
   /** A list behind one summary row — `▸ COMMITS 8 · 8h feat: duplication…` — the row toggles it. */
   function foldHtml(key: FoldKey, title: string, summary: string, body: string): string {
-    const open = FOLD_OPEN[key] !== state.folds.has(key);
+    const open = isOpen(key);
     return `<div class="sb-fold${open ? ' open' : ''}"><div class="sb-fold-h" data-fold="${key}">` +
       `<span class="t">${open ? '▾' : '▸'} ${escapeHtml(title)}</span><span class="s">${summary}</span></div>` +
       (open ? `<div class="sb-fold-b">${body}</div>` : '') + `</div>`;
+  }
+
+  /** Open = its default (`FOLD_OPEN`) unless the reader flipped it. */
+  function isOpen(key: FoldKey): boolean {
+    return FOLD_OPEN[key] !== state.folds.has(key);
   }
 
   /** Flip the fold under a click; false when the click was not on a fold header. */
@@ -604,16 +621,15 @@ export function createSidebar(
   // Two lines where there were seven: `sidebar.ts  viewer/src` then `1,223 loc · churn 21 · fix 1 · recent 12`;
   // the notes follow, one line each (they are different facts), then the import counts.
   function statsHtml(d: Descriptor): string {
-    const stats = d.grid
-      ? d.grid.map(([k, v]) => statHtml(k.toLowerCase(), v))
-      : [statHtml(words.mass, d.loc), statHtml('churn', d.churn), statHtml('fix', d.fixChurn), statHtml('recent', d.recentChurn)];
+    const stats = statPairs(d).map(([k, v]) => statHtml(k, v));
     const coupling = d.coupling
       ? ` · imports ${fmt(d.coupling.out)} · imported by ${fmt(d.coupling.in)}`
       : '';
-    const dir = d.path && d.path !== d.name ? dirName(d.path) : '';
+    // A file names its folder; a module or a PR is not its path's last segment, so it keeps the whole path.
+    const where = baseName(d.path || '') === d.name ? dirName(d.path) : d.path;
     return (
       `<div class="sb-id"><span class="sb-name">${escapeHtml(d.name)}</span>` +
-      (dir ? `<span class="sb-path" title="${escapeHtml(d.path)}">${escapeHtml(dir)}</span>` : '') + `</div>` +
+      (where ? `<span class="sb-path" title="${escapeHtml(d.path)}">${escapeHtml(where)}</span>` : '') + `</div>` +
       `<div class="sb-stats">${stats.join(' · ')}${coupling}</div>` +
       (d.note ? `<div class="sb-note">${escapeHtml(d.note)}</div>` : '') +
       (d.filterNote ? `<div class="sb-note filter">${escapeHtml(d.filterNote)}</div>` : '') +
@@ -875,7 +891,7 @@ export function createSidebar(
     const order: WorkKind[] = ['modified', 'untracked', 'deleted'];
     // Repo-wide, not about the selection: one summary row (`2 modified · 5 untracked ↻`) until opened.
     const counts = order.map((k) => [k, work.changes.filter((c) => c.kind === k).length] as const).filter(([, n]) => n);
-    const open = FOLD_OPEN.work !== state.folds.has('work');
+    const open = isOpen('work');
     const head =
       `<div class="h sb-fold-h" data-fold="work"><span>${open ? '▾' : '▸'} Working tree</span>` +
       `<em>${counts.length ? counts.map(([k, n]) => `${fmt(n)} ${k}`).join(' · ') : 'clean'}` +
@@ -1064,7 +1080,7 @@ export function createSidebar(
   function applyWidth(): void {
     // Inspecting stays narrow (the city keeps its width); reading — an opened hunk, the source,
     // a search hit — goes wide. The width button still overrides either way.
-    const auto = state.reading && !!state.selected;
+    const auto = state.reading && !!state.selected?.codePath && opts.host.available();
     state.wide = state.manualWide === null ? auto : state.manualWide;
     root.classList.toggle('wide', state.wide);
     // The timeline bar sizes itself against this so the two never overlap.
