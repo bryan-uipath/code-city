@@ -159,6 +159,8 @@
     max-height: calc(100vh - 110px);
     overflow: hidden;
   }
+  /* The tour player takes the bottom-left slot the `? keys` button leaves, so the stack clears it. */
+  body.touring #controls { max-height: calc(100vh - 226px); }
   #controls > .panel { padding: 11px 12px; flex: none; }
   /* The overlay card (with its legend) is the one panel with unbounded content: it takes the squeeze. */
   #controls > #overlay-panel { flex: 0 1 auto; min-height: 74px; display: flex; flex-direction: column; overflow: hidden; }
@@ -709,6 +711,7 @@
   body.embedded .bc-brand,
   body.embedded #stats,
   body.embedded #help,
+  body.embedded #help-btn,
   body.embedded #sidebar,
   body.embedded #palette { display: none !important; }
 
