@@ -325,6 +325,11 @@ it shows is already in data.json.
   to read and widens it to 560px until the next selection. The width button
   still overrides. Camera framing reads the target width (`--sb-w`, set before
   the panel animates) instead of assuming 560 at file level.
+- **Left column**: the legend lives inside the active overlay card, under its
+  button (`renderLegend` moves `#legend-body` there) — it explains the paint
+  that button chose, and the separate Legend panel is gone. Scene toggles are a
+  2×2 chip grid (`Arcs PRs / FX Worktree`, full names in titles). Keyboard help
+  is behind `?` (key or the `? keys` button), not always on.
 
 ### Changes-first code pane (implemented)
 
