@@ -294,7 +294,6 @@
 
   /* Data-derived: identifiers render exactly as they are written in the code. */
   .sb-name { color: var(--foreground); font-size: 12.5px; letter-spacing: 0.06em; word-break: break-all; }
-  .sb-kind { font-size: 9.5px; letter-spacing: 0.24em; text-transform: uppercase; margin-top: 2px; }
   .sb-path { color: var(--foreground-muted); font-size: 9.5px; margin-top: 5px; word-break: break-all; letter-spacing: 0.02em; }
   .sb-note { color: var(--accent-muted); font-size: 9.5px; margin-top: 4px; word-break: break-word; letter-spacing: 0.04em; }
   .sb-note.filter { color: #ffd9cd; text-transform: uppercase; letter-spacing: 0.12em; font-size: 9px; }
@@ -307,6 +306,11 @@
   .sb-hover .st { color: var(--foreground-muted); overflow: hidden; text-overflow: ellipsis; }
   .sb-hover.note { color: var(--gold); font-size: 9.5px; margin-top: 2px; }
   .sb-hover.scope { color: var(--foreground-muted); }
+  /* SELECTED identity: name + folder on one line, stats inline on the next. */
+  .sb-id { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .sb-id .sb-path { margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+  .sb-stats { color: var(--foreground-muted); font-size: 10.5px; margin: 3px 0 2px; }
+  .sb-stats b { color: var(--accent-muted); font-weight: normal; }
   .sb-pair { cursor: pointer; font-size: 10.5px; padding: 3px 4px; border-left: 2px solid transparent; }
   .sb-pair:hover { background: #1c1c1f; border-left-color: var(--gold); }
   .sb-pair .nm { color: var(--foreground); margin-right: 4px; }
@@ -314,12 +318,6 @@
   .sb-pair .dir { color: var(--foreground-subtle); }
   .sb-pair .sig { color: var(--foreground-muted); font-size: 9.5px; padding-left: 8px; white-space: normal; }
   .sb-note.prov { color: #a5f3fc; text-transform: uppercase; letter-spacing: 0.12em; font-size: 9px; }
-  .sb-grid {
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 8px;
-    margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-subtle);
-  }
-  .sb-grid .k { color: var(--foreground-muted); font-size: 8.5px; letter-spacing: 0.16em; }
-  .sb-grid .v { color: var(--accent-muted); font-size: 13px; }
 
   .sb-sub { color: var(--foreground-muted); font-size: 9px; letter-spacing: 0.2em; margin: 10px 0 4px; text-transform: uppercase; }
   /* --- compact PR / commit rows (one line, expand on click) */

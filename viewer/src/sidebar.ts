@@ -527,10 +527,10 @@ export function createSidebar(
     }
     secSelected.style.display = '';
     const d = state.selected;
+    // Nothing pinned is not worth a section: the hover line already says what to do.
     if (!d) {
-      secSelected.innerHTML =
-        `<div class="h"><span>Selected</span><em>click to pin</em></div>` +
-        `<div class="sb-hint">Nothing pinned</div>`;
+      secSelected.style.display = 'none';
+      secSelected.innerHTML = '';
       return;
     }
     secSelected.innerHTML =
@@ -541,23 +541,24 @@ export function createSidebar(
     loadFallbackCommits(d);
   }
 
+  // Two lines where there were seven: `sidebar.ts  viewer/src` then `1,223 loc · churn 21 · fix 1 · recent 12`;
+  // the notes follow, one line each (they are different facts), then the import counts.
   function statsHtml(d: Descriptor): string {
-    const grid = d.grid
-      ? d.grid.map(([k, v]) => cell(k, v)).join('')
-      : cell(words.mass.toUpperCase(), d.loc) + cell('CHURN', d.churn) + cell('FIX', d.fixChurn) + cell('RECENT', d.recentChurn);
+    const stats = d.grid
+      ? d.grid.map(([k, v]) => statHtml(k.toLowerCase(), v))
+      : [statHtml(words.mass, d.loc), statHtml('churn', d.churn), statHtml('fix', d.fixChurn), statHtml('recent', d.recentChurn)];
     const coupling = d.coupling
-      ? `<div class="sb-sub">imports ${fmt(d.coupling.out)} &rarr; · &larr; imported by ${fmt(d.coupling.in)}</div>`
+      ? ` · imports ${fmt(d.coupling.out)} · imported by ${fmt(d.coupling.in)}`
       : '';
+    const dir = d.path && d.path !== d.name ? dirName(d.path) : '';
     return (
-      `<div class="sb-name">${escapeHtml(d.name)}</div>` +
-      `<div class="sb-kind" style="color:${cssColor(d.kindColor)}">${escapeHtml(d.kind || '')}</div>` +
-      `<div class="sb-path">${escapeHtml(d.path || '—')}</div>` +
+      `<div class="sb-id"><span class="sb-name">${escapeHtml(d.name)}</span>` +
+      (dir ? `<span class="sb-path" title="${escapeHtml(d.path)}">${escapeHtml(dir)}</span>` : '') + `</div>` +
+      `<div class="sb-stats">${stats.join(' · ')}${coupling}</div>` +
       (d.note ? `<div class="sb-note">${escapeHtml(d.note)}</div>` : '') +
       (d.filterNote ? `<div class="sb-note filter">${escapeHtml(d.filterNote)}</div>` : '') +
       (d.layerNote ? `<div class="sb-note layer">${escapeHtml(d.layerNote)}</div>` : '') +
       (d.provNote ? `<div class="sb-note prov">${escapeHtml(d.provNote)}</div>` : '') +
-      `<div class="sb-grid">${grid}</div>` +
-      coupling +
       pairsHtml(d.layerPairs)
     );
   }
@@ -1154,9 +1155,10 @@ function section(id: string): HTMLDivElement {
   return el;
 }
 
-function cell(k: string, v: string | number | undefined): string {
+/** One inline stat: `<b>1,223</b> loc`. */
+function statHtml(k: string, v: string | number | undefined): string {
   const text = typeof v === 'number' ? fmt(v) : escapeHtml(String(v ?? '—'));
-  return `<div><div class="k">${escapeHtml(k)}</div><div class="v">${text}</div></div>`;
+  return `<b>${text}</b> ${escapeHtml(k)}`;
 }
 
 function cssColor(hex: number | undefined): string {
