@@ -556,6 +556,8 @@ async function main(): Promise<void> {
   embed = initEmbed({ openSelection: (mode) => bridge.openSelection(mode) });
   if (state.selection) showSelection(describe(state.selection));
   if (new URLSearchParams(location.search).get('view') === 'skyline') setView('skyline');
+  // FPS is a developer's number: shown only with ?debug.
+  if (!new URLSearchParams(location.search).has('debug')) dom.statFps.parentElement?.remove();
   animate();
 
   requestAnimationFrame(() => dom.boot.classList.add('hide'));
@@ -1036,6 +1038,7 @@ function rebuildScene(
 
   dom.statFiles.textContent = fmt(scope.fileNodes.length);
   dom.statLoc.textContent = fmt(root.loc);
+  sidebar.setScope(`${root.path || state.data?.repo.name || ''} · ${fmt(scope.fileNodes.length)} ${words.leaf.many} · ${fmt(root.loc)} ${words.mass}`);
   renderBreadcrumb();
   renderLegend();
   if (state.view === 'skyline') syncSkyline();

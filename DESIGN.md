@@ -301,6 +301,14 @@ it shows is already in data.json.
   plus `next <file> ▸` (first unvisited in the current sort), so the code pane
   sits near the top. The header unfolds it until the selection clears.
 
+### Inspector density (implemented)
+
+- **Hover is one line** under the inspector head — `main.ts FILE · 5,743 loc ·
+  churn 33 · …` plus one note (layer, provenance or strata level) — not a
+  second copy of SELECTED. Hovering the pinned thing shows nothing extra; with
+  nothing hovered the line names the scope (`viewer/src · 18 files · 9,412 loc`).
+- FPS is shown only with `?debug`.
+
 ### Changes-first code pane (implemented)
 
 A changed file used to open on its first 160 lines (header, imports) with the
