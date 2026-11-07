@@ -472,6 +472,13 @@ export function createSidebar(
 
   // --- sections ------------------------------------------------------------
 
+  /** The descriptor's numbers, `[label, value]`: a PR's own grid, else loc · churn · fix · recent. */
+  function statPairs(d: Descriptor): Array<[string, string | number | undefined]> {
+    return d.grid
+      ? d.grid.map(([k, v]): [string, string | number] => [k.toLowerCase(), v])
+      : [[words.mass, d.loc], ['churn', d.churn], ['fix', d.fixChurn], ['recent', d.recentChurn]];
+  }
+
   // Hover is one line, not a second copy of SELECTED: `sidebar.ts FILE · 1,200 loc · churn 25 · …`.
   // Hovering the pinned thing adds nothing; hovering nothing shows the scope.
   function renderInspect(): void {
@@ -484,15 +491,13 @@ export function createSidebar(
   }
 
   function hoverHtml(d: Descriptor): string {
-    const stats = d.grid
-      ? d.grid.map(([k, v]) => `${typeof v === 'number' ? fmt(v) : escapeHtml(String(v))} ${escapeHtml(k.toLowerCase())}`)
-      : [`${fmt(d.loc)} ${escapeHtml(words.mass)}`, `churn ${fmt(d.churn)}`, `fix ${fmt(d.fixChurn)}`, `recent ${fmt(d.recentChurn)}`];
+    const stats = statPairs(d).map(([k, v]) => `${typeof v === 'number' ? fmt(v) : String(v ?? '—')} ${k}`);
     // A slab's own commit beats the file-wide readings: it is what the pointer is on.
     const note = d.note ?? d.layerNote ?? d.provNote;
     return `<div class="sb-hover" data-path="${escapeHtml(d.path)}" title="${escapeHtml(`${d.path} · ${stats.join(' · ')}`)}">` +
       `<span class="nm">${escapeHtml(d.name)}</span>` +
       `<span class="k" style="color:${cssColor(d.kindColor)}">${escapeHtml(d.kind || '')}</span>` +
-      `<span class="st">${stats.join(' · ')}</span></div>` +
+      `<span class="st">${escapeHtml(stats.join(' · '))}</span></div>` +
       (note ? `<div class="sb-hover note">${escapeHtml(note)}</div>` : '');
   }
 
@@ -530,10 +535,10 @@ export function createSidebar(
     }
     secSelected.style.display = '';
     const d = state.selected;
+    // Nothing pinned is not worth a section: the hover line already says what to do.
     if (!d) {
-      secSelected.innerHTML =
-        `<div class="h"><span>Selected</span><em>click to pin</em></div>` +
-        `<div class="sb-hint">Nothing pinned</div>`;
+      secSelected.style.display = 'none';
+      secSelected.innerHTML = '';
       return;
     }
     secSelected.innerHTML =
@@ -544,23 +549,23 @@ export function createSidebar(
     loadFallbackCommits(d);
   }
 
+  // Two lines where there were seven: `sidebar.ts  viewer/src` then `1,223 loc · churn 21 · fix 1 · recent 12`;
+  // the notes follow, one line each (they are different facts), then the import counts.
   function statsHtml(d: Descriptor): string {
-    const grid = d.grid
-      ? d.grid.map(([k, v]) => cell(k, v)).join('')
-      : cell(words.mass.toUpperCase(), d.loc) + cell('CHURN', d.churn) + cell('FIX', d.fixChurn) + cell('RECENT', d.recentChurn);
+    const stats = statPairs(d).map(([k, v]) => statHtml(k, v));
     const coupling = d.coupling
-      ? `<div class="sb-sub">imports ${fmt(d.coupling.out)} &rarr; · &larr; imported by ${fmt(d.coupling.in)}</div>`
+      ? ` · imports ${fmt(d.coupling.out)} · imported by ${fmt(d.coupling.in)}`
       : '';
+    // A file names its folder; a module or a PR is not its path's last segment, so it keeps the whole path.
+    const where = baseName(d.path || '') === d.name ? dirName(d.path) : d.path;
     return (
-      `<div class="sb-name">${escapeHtml(d.name)}</div>` +
-      `<div class="sb-kind" style="color:${cssColor(d.kindColor)}">${escapeHtml(d.kind || '')}</div>` +
-      `<div class="sb-path">${escapeHtml(d.path || '—')}</div>` +
+      `<div class="sb-id"><span class="sb-name">${escapeHtml(d.name)}</span>` +
+      (where ? `<span class="sb-path" title="${escapeHtml(d.path)}">${escapeHtml(where)}</span>` : '') + `</div>` +
+      `<div class="sb-stats">${stats.join(' · ')}${coupling}</div>` +
       (d.note ? `<div class="sb-note">${escapeHtml(d.note)}</div>` : '') +
       (d.filterNote ? `<div class="sb-note filter">${escapeHtml(d.filterNote)}</div>` : '') +
       (d.layerNote ? `<div class="sb-note layer">${escapeHtml(d.layerNote)}</div>` : '') +
       (d.provNote ? `<div class="sb-note prov">${escapeHtml(d.provNote)}</div>` : '') +
-      `<div class="sb-grid">${grid}</div>` +
-      coupling +
       pairsHtml(d.layerPairs)
     );
   }
@@ -1157,9 +1162,10 @@ function section(id: string): HTMLDivElement {
   return el;
 }
 
-function cell(k: string, v: string | number | undefined): string {
+/** One inline stat: `<b>1,223</b> loc`. */
+function statHtml(k: string, v: string | number | undefined): string {
   const text = typeof v === 'number' ? fmt(v) : escapeHtml(String(v ?? '—'));
-  return `<div><div class="k">${escapeHtml(k)}</div><div class="v">${text}</div></div>`;
+  return `<b>${text}</b> ${escapeHtml(k)}`;
 }
 
 function cssColor(hex: number | undefined): string {

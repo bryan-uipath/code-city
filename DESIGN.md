@@ -308,6 +308,10 @@ it shows is already in data.json.
   second copy of SELECTED. Hovering the pinned thing shows nothing extra; with
   nothing hovered the line names the scope (`viewer/src · 18 files · 9,412 loc`).
 - FPS is shown only with `?debug`.
+- **SELECTED is two lines of identity** — `sidebar.ts viewer/src`, then
+  `1,223 loc · 21 churn · 1 fix · 12 recent · imports …` — then one line per
+  note (layer, filter, provenance: different facts). Nothing pinned hides the
+  section.
 
 ### Changes-first code pane (implemented)
 
