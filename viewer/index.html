@@ -306,6 +306,15 @@
   .sb-hover .st { color: var(--foreground-muted); overflow: hidden; text-overflow: ellipsis; }
   .sb-hover.note { color: var(--gold); font-size: 9.5px; margin-top: 2px; }
   .sb-hover.scope { color: var(--foreground-muted); }
+  /* Folded lists: one summary row each, `▸ COMMITS 8 · 8h feat: …`; the row toggles. */
+  #sb-more { padding: 6px 14px; }
+  .sb-fold-h { display: flex; align-items: baseline; gap: 8px; cursor: pointer; padding: 4px 0; white-space: nowrap; overflow: hidden; }
+  .sb-fold-h .t { color: var(--foreground); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; flex: none; }
+  .sb-fold-h .s { color: var(--foreground-muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+  .sb-fold-h:hover .t { color: var(--gold); }
+  .sb-fold-b { padding: 2px 0 6px; }
+  #sb-worktree > .h.sb-fold-h { margin-bottom: 0; }
+  #sb-worktree > .h em { display: flex; gap: 8px; align-items: baseline; }
   /* SELECTED identity: name + folder on one line, stats inline on the next. */
   .sb-id { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .sb-id .sb-path { margin-top: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
