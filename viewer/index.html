@@ -155,17 +155,17 @@
   #controls {
     left: 14px; top: 66px; width: 214px;
     display: flex; flex-direction: column; gap: 10px;
-    /* The stack must never grow down into #help. The buttons are pinned and
-       the legend — the one panel with unbounded content — takes the squeeze,
-       so its filter controls stay reachable on a short window. */
-    max-height: calc(100vh - 226px);
+    /* The stack must never grow down into the `? keys` button. The overlay card
+       with its legend takes the squeeze, so filter controls stay reachable. */
+    max-height: calc(100vh - 110px);
     overflow: hidden;
   }
+  /* The tour player takes the bottom-left slot the `? keys` button leaves, so the stack clears it. */
+  body.touring #controls { max-height: calc(100vh - 226px); }
   #controls > .panel { padding: 11px 12px; flex: none; }
-  #controls > #legend {
-    flex: 0 1 auto; min-height: 74px;
-    display: flex; flex-direction: column; overflow: hidden;
-  }
+  /* The overlay card (with its legend) is the one panel with unbounded content: it takes the squeeze. */
+  #controls > #overlay-panel { flex: 0 1 auto; min-height: 74px; display: flex; flex-direction: column; overflow: hidden; }
+  #overlay-panel #modes { overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   #legend-body {
     overflow-y: auto; min-height: 0;
     scrollbar-width: thin; scrollbar-color: var(--border) transparent;
@@ -209,40 +209,47 @@
   button.toggle.off-stage .led { background: none; border-color: var(--border); box-shadow: none; }
 
   /* --- legend */
-  #legend .row { display: flex; align-items: center; gap: 8px; padding: 2.5px 0; color: var(--foreground-muted); }
-  #legend .sw { width: 11px; height: 11px; flex: none; border: 1px solid rgba(255,255,255,0.18); }
-  #legend .row span { text-transform: uppercase; font-size: 10px; letter-spacing: 0.14em; }
+  #legend-body .row { display: flex; align-items: center; gap: 8px; padding: 2.5px 0; color: var(--foreground-muted); }
+  #legend-body .sw { width: 11px; height: 11px; flex: none; border: 1px solid rgba(255,255,255,0.18); }
+  #legend-body .row span { text-transform: uppercase; font-size: 10px; letter-spacing: 0.14em; }
   /* Interactive rows: the commit-type swatches double as the strata filter. */
-  #legend .row.f { cursor: pointer; padding: 2.5px 4px; margin: 0 -4px; border: 1px solid transparent; }
-  #legend .row.f:hover { background: var(--surface-hover); border-color: var(--brand); color: var(--foreground); }
-  #legend .row.f.on {
+  #legend-body .row.f { cursor: pointer; padding: 2.5px 4px; margin: 0 -4px; border: 1px solid transparent; }
+  #legend-body .row.f:hover { background: var(--surface-hover); border-color: var(--brand); color: var(--foreground); }
+  #legend-body .row.f.on {
     border-color: var(--orange); color: #ffd9cd;
     background: linear-gradient(90deg, rgba(250,70,22,0.26), rgba(250,70,22,0.04));
   }
-  #legend .row.f.off { opacity: 0.4; }
-  #legend .fctl { display: flex; gap: 5px; margin: 7px 0 3px; }
-  #legend .fbtn {
+  #legend-body .row.f.off { opacity: 0.4; }
+  #legend-body .fctl { display: flex; gap: 5px; margin: 7px 0 3px; }
+  #legend-body .fbtn {
     appearance: none; flex: 1; cursor: pointer;
     font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
     color: var(--foreground-muted); background: rgba(39, 39, 42, 0.72);
     border: 1px solid var(--border); padding: 4px 5px; transition: 120ms;
   }
-  #legend .fbtn:hover { border-color: var(--brand); color: var(--foreground); background: var(--surface-hover); }
-  #legend .fbtn.on {
+  #legend-body .fbtn:hover { border-color: var(--brand); color: var(--foreground); background: var(--surface-hover); }
+  #legend-body .fbtn.on {
     border-color: var(--orange); color: #ffd9cd;
     background: linear-gradient(90deg, rgba(250,70,22,0.28), rgba(250,70,22,0.06));
   }
   #strata-ramp { height: 8px; margin: 6px 0 4px;
     background: linear-gradient(90deg, #4c1d95, #7c3aed, #22d3ee);
     border: 1px solid var(--border); }
-  #legend .row.stale span { color: var(--orange); }
+  #legend-body .row.stale span { color: var(--orange); }
   #ramp { height: 8px; margin: 6px 0 4px;
     background: linear-gradient(90deg, #3b4658, #fbbf24, #fa4616, #ef4444);
     border: 1px solid var(--border); }
   .ramp-labels { display: flex; justify-content: space-between; color: var(--foreground-muted); font-size: 9px; letter-spacing: 0.14em; }
 
   /* --- help */
-  #help { position: fixed; left: 14px; bottom: 14px; width: 214px; padding: 10px 12px; color: var(--foreground-muted); font-size: 9.5px; line-height: 1.75; }
+  #help { position: fixed; left: 14px; bottom: 48px; width: 214px; padding: 10px 12px; color: var(--foreground-muted); font-size: 9.5px; line-height: 1.75; display: none; }
+  body.help #help { display: block; }
+  #help-btn {
+    position: fixed; left: 14px; bottom: 14px; appearance: none; cursor: pointer;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--foreground-muted); background: #161618; border: 1px solid var(--border); padding: 5px 9px;
+  }
+  #help-btn:hover, body.help #help-btn { color: var(--foreground); border-color: var(--gold); }
   #help kbd {
     color: var(--accent-muted); border: 1px solid var(--border); padding: 0 4px;
     background: rgba(39,39,42,0.7); font-family: var(--mono); font-size: 9px;
@@ -597,7 +604,7 @@
   /* Same footprint as #help, which it replaces, so it clears the timeline. */
   #tour { position: fixed; left: 14px; bottom: 14px; width: 214px; padding: 10px 12px 11px; display: none; }
   #tour.on { display: block; }
-  body.touring #help { display: none; }
+  body.touring #help, body.touring #help-btn { display: none; }
   #tour .t {
     display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
     font-size: 9px; letter-spacing: 0.24em; text-transform: uppercase;
@@ -705,6 +712,7 @@
   body.embedded #brand,
   body.embedded #stats,
   body.embedded #help,
+  body.embedded #help-btn,
   body.embedded #sidebar,
   body.embedded #palette { display: none !important; }
 
@@ -810,6 +818,15 @@
     color: var(--foreground); background: #26262a; border-color: var(--border); border-left-color: var(--gold); box-shadow: none;
   }
   button.toggle.active .led { background: var(--gold); border-color: var(--gold); box-shadow: none; }
+  /* Scene toggles: a 2×2 chip grid (full names in their titles). */
+  #toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  #toggles button.toggle { padding: 6px 8px; font-size: 9.5px; letter-spacing: 0.1em; }
+  button.mode { padding: 6px 9px; }
+  /* The legend sits inside the active overlay card, under its button. */
+  #modes > #legend-body {
+    margin: -6px 0 1px; padding: 7px 8px 8px 10px; background: #1d1d20;
+    border: 1px solid var(--border); border-top: 0; border-left: 2px solid var(--gold);
+  }
 
   /* Rows: larger type, gold marks the selection. */
   .sb-rv { font-size: 10.5px; padding: 3px 4px; border-left: 2px solid transparent; }
@@ -850,7 +867,7 @@
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel" id="overlay-panel">
       <div class="panel-title">Overlay</div>
       <div class="btnrow" id="modes">
         <button class="mode" data-mode="structure">Structure</button>
@@ -865,20 +882,19 @@
     <div class="panel">
       <div class="panel-title">Layers</div>
       <div class="btnrow" id="toggles">
-        <button class="toggle" data-toggle="coupling" data-view-only="city">Coupling arcs<i class="led"></i></button>
-        <button class="toggle active" data-toggle="people" data-view-only="city">People / PRs<i class="led"></i></button>
-        <button class="toggle" data-toggle="fx" data-view-only="city">FX / hologram<i class="led"></i></button>
-        <button class="toggle" data-toggle="worktree" id="toggle-worktree" style="display:none">Working tree<i class="led"></i></button>
-        <button class="toggle active" data-toggle="follow" id="toggle-follow" style="display:none">Follow<i class="led"></i></button>
+        <button class="toggle" data-toggle="coupling" data-view-only="city" title="Coupling arcs">Arcs<i class="led"></i></button>
+        <button class="toggle active" data-toggle="people" data-view-only="city" title="People / PRs">PRs<i class="led"></i></button>
+        <button class="toggle" data-toggle="fx" data-view-only="city" title="FX / hologram">FX<i class="led"></i></button>
+        <button class="toggle" data-toggle="worktree" id="toggle-worktree" style="display:none" title="Working tree">Worktree<i class="led"></i></button>
+        <button class="toggle active" data-toggle="follow" id="toggle-follow" style="display:none" title="Follow">Follow<i class="led"></i></button>
       </div>
     </div>
 
-    <div class="panel" id="legend">
-      <div class="panel-title">Legend</div>
-      <div id="legend-body"></div>
-    </div>
+    <!-- the legend lives inside the active overlay card (renderLegend moves it there) -->
+    <div id="legend-body"></div>
   </div>
 
+  <button id="help-btn" class="hud" type="button" title="Keys (?)">? keys</button>
   <div id="help" class="hud panel">
     <div><kbd>DRAG</kbd> orbit &nbsp; <kbd>MMB</kbd> pan &nbsp; <kbd>WHEEL</kbd> zoom</div>
     <div><kbd>CLICK</kbd> select &nbsp; <kbd>DBL</kbd> isolate</div>

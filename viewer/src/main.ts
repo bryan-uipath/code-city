@@ -1309,6 +1309,7 @@ function refreshPickables(): void {
 
 function buildHud(): void {
   renderLegend();
+  document.getElementById('help-btn')?.addEventListener('click', () => document.body.classList.toggle('help'));
   // One overlay button per `--layer`, after Provenance.
   let after: Element = dom.provBtn;
   for (const { layer } of layerIndex.values()) {
@@ -1435,6 +1436,8 @@ function markModeButtons(): void {
 }
 
 function renderLegend(): void {
+  // Under the active overlay button: the legend explains the paint that button chose.
+  dom.modes.querySelector('button.mode.active')?.after(dom.legend);
   const rows: string[] = [];
   const active = activeLayer();
   const stacked = strata.build !== null;
@@ -4771,6 +4774,10 @@ function bindEvents(): void {
       if (!real || !diffFingerprint(real.path)) return;
       toggleVisited(real.path);
       showNotice((visited.has(real.path) ? 'Visited: ' : 'Not visited: ') + real.path);
+      return;
+    }
+    if (e.key === '?') {
+      document.body.classList.toggle('help');
       return;
     }
     if (e.key === 'c' && !e.metaKey && !e.ctrlKey) {
