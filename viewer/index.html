@@ -476,6 +476,9 @@
   .sb-hunk .r .g { display: inline-block; width: 5ch; margin-right: 1.5ch; text-align: right; color: var(--foreground-subtle); user-select: none; }
   .sb-hunk .r.gap { color: var(--foreground-subtle); font-style: italic; padding-left: 6.5ch; }
   .sb-hunk:not(.open) .r.far { display: none; }
+  /* Narrow (inspecting): code wraps rather than scrolls sideways; wide (reading) keeps lines whole. */
+  #sidebar:not(.wide) .sb-hunk .sb-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #sidebar:not(.wide) .sb-hunk .r { padding-left: 6.5ch; text-indent: -6.5ch; }
   .sb-hunk.open .r.gap { display: none; }
 
   /* --- timeline */

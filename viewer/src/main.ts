@@ -3443,7 +3443,6 @@ function revealPath(path: string, opts: { module?: string | null; line?: number 
     if (desc) {
       desc.span = { start: Math.max(1, line - 12), end: line + 60 };
       desc.sourceFirst = true;
-      desc.deep = true;
       showSelection(desc);
     }
   }
@@ -4034,10 +4033,8 @@ function framingFor(node: VNode): Framing | null {
 
   // The HUD eats both edges of the viewport, so fit the footprint to the free
   // strip between the control stack and the sidebar, then slide the framing into
-  // it. The sidebar width is predicted rather than measured: at file level or
-  // deeper it auto-expands, and its CSS transition would lag the camera move.
-  const sidebarEl = document.getElementById('sidebar');
-  const sbW = realFileOf(state.focus) ? 560 : sidebarEl ? sidebarEl.offsetWidth : 300;
+  // it. The sidebar's width is its target, not a measurement: its CSS transition would lag the camera move.
+  const sbW = sidebarWidth();
   const freeRight = window.innerWidth - (sbW + 14);
   const freeWidth = Math.max(freeRight - 240, 240);
   const freeCenter = (240 + freeRight) / 2;
@@ -4509,7 +4506,6 @@ function describe(target: Target | null): Descriptor | null {
       prs: [pr],
       codePath: null,
       span: null,
-      deep: false,
     };
   }
 
@@ -4548,7 +4544,6 @@ function describe(target: Target | null): Descriptor | null {
     codePath: real ? real.path : null,
     span: modSpan,
     logSpan: modSpan ?? undefined, // revealPath widens `span` into a reading window; the log keeps the real lines
-    deep: !!real,
   };
 }
 
@@ -5168,8 +5163,14 @@ function updateSnippet(dt: number): void {
 }
 
 /** The viewport, in NDC, not covered by the control stack, top bar, timeline or sidebar. */
+/** The inspector's target width (`--sb-w`, set before it animates); 0 embedded, where there is none. */
+function sidebarWidth(): number {
+  if (EMBEDDED) return 0;
+  return parseInt(document.documentElement.style.getPropertyValue('--sb-w'), 10) || 300;
+}
+
 function freeStrip(): { left: number; right: number; top: number; bottom: number } {
-  const sbW = realFileOf(state.focus) ? 580 : 320;
+  const sbW = sidebarWidth() + 20;
   return {
     left: -1 + (2 * 250) / window.innerWidth,
     right: 1 - (2 * sbW) / window.innerWidth,
